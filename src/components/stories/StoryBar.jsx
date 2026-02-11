@@ -109,10 +109,13 @@ export default function StoryBar() {
         ownStoryIds.map(async (storyId) => {
           if (Object.prototype.hasOwnProperty.call(viewCacheRef.current, storyId)) return;
           try {
-            const views = await fetchStoryViews(storyId);
-            const recentViews = views.filter(isStoryViewRecent);
-            viewCacheRef.current[storyId] = recentViews.length;
-            setViewCounts((prev) => ({ ...prev, [storyId]: recentViews.length }));
+            const response = await fetchStoryViews(storyId);
+            const list = Array.isArray(response) ? response : [];
+            const recentViews = list.filter(isStoryViewRecent);
+            const resolvedCount =
+              typeof response?.count === "number" ? response.count : recentViews.length;
+            viewCacheRef.current[storyId] = resolvedCount;
+            setViewCounts((prev) => ({ ...prev, [storyId]: resolvedCount }));
           } catch {
             viewCacheRef.current[storyId] = 0;
           }

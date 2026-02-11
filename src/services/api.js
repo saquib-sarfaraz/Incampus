@@ -607,7 +607,13 @@ export const fetchStoryViews = async (storyId, params) => {
     const data = await apiFetch(`/stories/${storyId}/views`, {
       params: resolvedParams,
     });
-    return normalizeList(data, ["views", "viewers", "items", "data"]);
+    const list = normalizeList(data, ["views", "viewers", "items", "data"]);
+    const count = typeof data?.count === "number" ? data.count : null;
+    if (count !== null && Array.isArray(list)) {
+      list.count = count;
+      return list;
+    }
+    return list.length === 0 && count !== null ? { count } : list;
   } catch (error) {
     if (error?.status && error.status !== 404) {
       throw error;
@@ -617,7 +623,13 @@ export const fetchStoryViews = async (storyId, params) => {
     const data = await apiFetch(`/stories/${storyId}/viewers`, {
       params: resolvedParams,
     });
-    return normalizeList(data, ["views", "viewers", "items", "data"]);
+    const list = normalizeList(data, ["views", "viewers", "items", "data"]);
+    const count = typeof data?.count === "number" ? data.count : null;
+    if (count !== null && Array.isArray(list)) {
+      list.count = count;
+      return list;
+    }
+    return list.length === 0 && count !== null ? { count } : list;
   } catch (error) {
     if (error?.status && error.status !== 404) {
       throw error;
