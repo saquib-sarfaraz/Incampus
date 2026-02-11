@@ -70,12 +70,19 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   useEffect(() => {
     if (!currentStory) return;
 
+    const mediaUrl = resolveStoryMediaUrl(currentStory);
+    const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
+    const durationMs = mediaType === "video" ? 20000 : 15000;
+    const startTime = Date.now();
+
     progressRef.current = 0;
     setProgress(0);
     const interval = setInterval(() => {
-      progressRef.current = Math.min(100, progressRef.current + 2);
-      setProgress(progressRef.current);
-      if (progressRef.current >= 100) {
+      const elapsed = Date.now() - startTime;
+      const nextProgress = Math.min(100, (elapsed / durationMs) * 100);
+      progressRef.current = nextProgress;
+      setProgress(nextProgress);
+      if (nextProgress >= 100) {
         clearInterval(interval);
         setTimeout(() => handleNext(), 0);
       }
