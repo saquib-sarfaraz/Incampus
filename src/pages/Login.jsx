@@ -26,6 +26,7 @@ export default function Login() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (loading) return;
     setError("");
 
     if (!username || !password) {
@@ -47,12 +48,6 @@ export default function Login() {
       setError("Network Error: Could not connect to the InCampus server.");
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleKeyPress = (e) => {
-    if (e.key === "Enter" && username && password) {
-      handleSubmit(e);
     }
   };
 
@@ -149,7 +144,6 @@ export default function Login() {
                     required
                     value={username}
                     onChange={(e) => setUsername(e.target.value)}
-                    onKeyPress={handleKeyPress}
                     placeholder=" Your User ID"
                     className="block w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
                   />
@@ -170,7 +164,6 @@ export default function Login() {
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      onKeyPress={handleKeyPress}
                       placeholder="********"
                       className="block w-full rounded-xl px-3.5 py-2.5 pr-10 text-sm glass-input"
                     />
