@@ -93,7 +93,13 @@ export const AuthProvider = ({ children }) => {
         await refreshCurrentUser();
       } catch (error) {
         console.error("Auth initialization error:", error);
-        logout();
+        const status = error?.status;
+        if (status === 401 || status === 403) {
+          logout();
+        } else {
+          // Keep token on transient/network errors to avoid forced logout.
+          setAuthToken(token);
+        }
       } finally {
         setLoading(false);
       }
