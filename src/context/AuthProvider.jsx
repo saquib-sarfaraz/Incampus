@@ -1,0 +1,155 @@
+import { useEffect, useState, useCallback } from "react";
+import { login as loginAPI, getCurrentUser } from "../services/api";
+import { initSocket, disconnectSocket } from "../services/socket";
+import { AuthContext } from "./authContext";
+
+export const AuthProvider = ({ children }) => {
+  const [authToken, setAuthToken] = useState(localStorage.getItem("authToken"));
+  const [currentUser, setCurrentUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const buildGroupRooms = useCallback((user) => {
+    const universityLabel = user?.university || user?.college || user?.school || "";
+    const universitySlug = encodeURIComponent(String(universityLabel).toLowerCase());
+    return [
+      "group:global",
+      universityLabel ? `group:college:${universitySlug}` : null,
+    ].filter(Boolean);
+  }, []);
+
+  const normalizeUser = useCallback((user) => ({
+    id: user?._id || user?.id,
+    username: user?.username,
+    fullName: user?.fullName,
+    displayName: user?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+    profilePicUrl: user?.profilePicUrl,
+    friends: user?.friends || [],
+    bio: user?.bio || "",
+    university: user?.university || user?.college || user?.school || "",
+    privacyPublic: user?.privacyPublic ?? true,
+    graduationYear: user?.graduationYear || user?.year || "",
+    studentType: user?.studentType || user?.student_type || "student",
+    collegeGroupId:
+      user?.collegeGroupId ||
+      user?.college_group_id ||
+      user?.groupId ||
+      user?.collegeGroup ||
+      null,
+    course: user?.course,
+    year: user?.year,
+    student_type: user?.student_type,
+    groups: user?.groups,
+    groupIds: user?.groupIds,
+    groupMemberships: user?.groupMemberships,
+  }), []);
+
+  const applyUser = useCallback((user) => {
+    if (!user) return null;
+    const normalized = normalizeUser(user);
+    if (normalized.id) {
+      localStorage.setItem("currentUserId", normalized.id);
+    }
+    setCurrentUser(normalized);
+    initSocket(normalized.id, buildGroupRooms(user));
+    return normalized;
+  }, [buildGroupRooms, normalizeUser]);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem("authToken");
+    localStorage.removeItem("currentUserId");
+    setAuthToken(null);
+    setCurrentUser(null);
+    disconnectSocket();
+  }, []);
+
+  useEffect(() => {
+    const handleInvalidToken = () => {
+      logout();
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("auth:invalid-token", handleInvalidToken);
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        window.removeEventListener("auth:invalid-token", handleInvalidToken);
+      }
+    };
+  }, [logout]);
+
+  const refreshCurrentUser = useCallback(async () => {
+    const user = await getCurrentUser();
+    return applyUser(user);
+  }, [applyUser]);
+
+  useEffect(() => {
+    const initializeAuth = async () => {
+      const token = localStorage.getItem("authToken");
+      if (!token) {
+        setLoading(false);
+        return;
+      }
+      try {
+        setAuthToken(token);
+        await refreshCurrentUser();
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+        logout();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+  }, [refreshCurrentUser, logout]);
+
+  const login = async (username, password) => {
+    try {
+      const data = await loginAPI(username, password);
+      const token = data.token || data.accessToken || data.authToken;
+      if (!token) {
+        throw new Error("Login failed: missing auth token.");
+      }
+
+      const userId =
+        data.userId ||
+        data.user?._id ||
+        data.user?.id ||
+        data.id ||
+        data._id ||
+        username;
+
+      localStorage.setItem("authToken", token);
+      localStorage.setItem("currentUserId", userId);
+      setAuthToken(token);
+
+      const user = data.user || (await getCurrentUser());
+      applyUser(user);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  };
+
+  const loginWithToken = async (token) => {
+    if (!token) {
+      throw new Error("Missing auth token.");
+    }
+    localStorage.setItem("authToken", token);
+    setAuthToken(token);
+    const user = await getCurrentUser();
+    return applyUser(user);
+  };
+
+  const value = {
+    authToken,
+    currentUser,
+    login,
+    loginWithToken,
+    logout,
+    loading,
+    setCurrentUser,
+    refreshCurrentUser,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
