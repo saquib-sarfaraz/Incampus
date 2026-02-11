@@ -28,6 +28,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
   const [progress, setProgress] = useState(0);
   const [views, setViews] = useState([]);
+  const [viewsCount, setViewsCount] = useState(0);
   const [viewersOpen, setViewersOpen] = useState(false);
   const [viewsLoading, setViewsLoading] = useState(false);
   const [showReport, setShowReport] = useState(false);
@@ -112,8 +113,11 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
     if (!storyId) return;
     setViewsLoading(true);
     try {
-      const rawViews = await fetchStoryViews(storyId);
+      const response = await fetchStoryViews(storyId);
+      const rawViews = Array.isArray(response) ? response : [];
       const recentViews = rawViews.filter(isStoryViewRecent);
+      const resolvedCount =
+        typeof response?.count === "number" ? response.count : recentViews.length;
       const enriched = await Promise.all(
         recentViews.map(async (view) => {
           const viewerId = view.viewerUserId || view.viewer?._id || view.userId || view.user?._id;
@@ -141,8 +145,10 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
       );
       enriched.sort((a, b) => new Date(b.viewedAt) - new Date(a.viewedAt));
       setViews(enriched);
+      setViewsCount(resolvedCount);
     } catch {
       setViews([]);
+      setViewsCount(0);
     } finally {
       setViewsLoading(false);
     }
@@ -163,6 +169,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
 
   useEffect(() => {
     setViewersOpen(false);
+    setViewsCount(0);
   }, [currentGroupIndex, currentStoryIndex]);
 
   useEffect(() => {
@@ -440,7 +447,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
                 className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-[#faf0e6] backdrop-blur"
               >
                 <i className="fa-regular fa-eye mr-2"></i>
-                {views.length} Views
+                {viewsCount || views.length} Views
               </button>
             )}
           </Motion.div>
