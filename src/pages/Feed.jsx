@@ -19,6 +19,15 @@ const getAuthorId = (post) => {
   return post.author?._id || post.authorId || post.author || "";
 };
 
+const resolvePostKey = (post, index) => {
+  const id = post._id || post.id || post.postId || post.post_id;
+  if (id) return String(id);
+  const authorId = getAuthorId(post);
+  const createdAt = post.createdAt || post.created_at || post.timestamp || "";
+  if (authorId || createdAt) return `${authorId || "post"}-${createdAt || index}`;
+  return `post-${index}`;
+};
+
 const resolveUserCampus = (user) => {
   return (
     user?.university ||
@@ -209,8 +218,8 @@ export default function Feed() {
                     <span className="text-xs text-[#b9b4c7]">Campus priority</span>
                   </div>
                   <div className="space-y-6">
-                    {campusPosts.map((post) => (
-                      <Post key={post._id} post={post} />
+                    {campusPosts.map((post, index) => (
+                      <Post key={resolvePostKey(post, index)} post={post} />
                     ))}
                   </div>
                 </div>
@@ -223,8 +232,8 @@ export default function Feed() {
                     <span className="text-xs text-[#b9b4c7]">All campuses</span>
                   </div>
                   <div className="space-y-6">
-                    {globalPosts.map((post) => (
-                      <Post key={post._id} post={post} />
+                    {globalPosts.map((post, index) => (
+                      <Post key={resolvePostKey(post, index)} post={post} />
                     ))}
                   </div>
                 </div>
@@ -232,8 +241,8 @@ export default function Feed() {
 
               {shouldFilterByCollege && (
                 <div className="space-y-6">
-                  {finalFeedPosts.map((post) => (
-                    <Post key={post._id} post={post} />
+                  {finalFeedPosts.map((post, index) => (
+                    <Post key={resolvePostKey(post, index)} post={post} />
                   ))}
                 </div>
               )}
