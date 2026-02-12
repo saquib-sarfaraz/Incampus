@@ -50,15 +50,7 @@ body {
 }
 
 .nav-link .fa-solid {
-  display: none;
-}
-
-.nav-link.active-link .fa-solid {
   display: inline-block;
-}
-
-.nav-link.active-link .fa-regular {
-  display: none;
 }
 
 /* ================= REMOVE WHITE WASH ================= */

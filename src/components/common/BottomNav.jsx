@@ -5,7 +5,15 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
   const navigate = useNavigate();
   const location = useLocation();
 
-  const isActive = (path) => location.pathname === path;
+  const normalizePath = (path = "") => (path.length > 1 ? path.replace(/\/+$/, "") : path);
+  const currentPath = normalizePath(location.pathname);
+  const isActive = (path) => {
+    const normalized = normalizePath(path);
+    if (normalized === "/feed") {
+      return currentPath === "/feed" || currentPath === "/home";
+    }
+    return currentPath === normalized || currentPath.startsWith(`${normalized}/`);
+  };
 
   const navItems = [
     { path: "/feed", icon: "fa-house", label: "Home" },
@@ -41,9 +49,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
           whileTap={{ scale: 0.9 }}
         >
           <i
-            className={`fa-${isActive(navItems[0].path) ? "solid" : "regular"} ${
-              navItems[0].icon
-            } text-base`}
+            className={`fa-solid ${navItems[0].icon} text-base`}
           />
           <span>{navItems[0].label}</span>
         </Motion.button>
@@ -58,9 +64,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
           whileTap={{ scale: 0.9 }}
         >
           <i
-            className={`fa-${isActive(navItems[1].path) ? "solid" : "regular"} ${
-              navItems[1].icon
-            } text-base`}
+            className={`fa-solid ${navItems[1].icon} text-base`}
           />
           <span>{navItems[1].label}</span>
         </Motion.button>
@@ -87,9 +91,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
           whileTap={{ scale: 0.9 }}
         >
           <i
-            className={`fa-${isActive(navItems[2].path) ? "solid" : "regular"} ${
-              navItems[2].icon
-            } text-base`}
+            className={`fa-solid ${navItems[2].icon} text-base`}
           />
           <span>{navItems[2].label}</span>
         </Motion.button>
@@ -104,9 +106,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
           whileTap={{ scale: 0.9 }}
         >
           <i
-            className={`fa-${isActive(navItems[3].path) ? "solid" : "regular"} ${
-              navItems[3].icon
-            } text-base`}
+            className={`fa-solid ${navItems[3].icon} text-base`}
           />
           <span>{navItems[3].label}</span>
         </Motion.button>

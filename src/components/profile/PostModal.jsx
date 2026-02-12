@@ -10,6 +10,41 @@ import ReportModal from "../moderation/ReportModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
+const resolvePostPrivacy = (post) => {
+  const raw = String(
+    post.visibility ||
+      post.privacy ||
+      post.privacyType ||
+      post.postVisibility ||
+      post.audience ||
+      ""
+  ).toLowerCase();
+  if (raw.includes("friend") || raw.includes("private")) return "friends";
+  if (raw.includes("public") || raw.includes("universal")) return "public";
+  if (post.friendsOnly === true || post.isPrivate === true || post.private === true) {
+    return "friends";
+  }
+  return "public";
+};
+
+const resolvePostMediaUrl = (post) => {
+  if (!post) return "";
+  return (
+    post.mediaUrl ||
+    post.media?.url ||
+    post.media?.secure_url ||
+    post.media?.secureUrl ||
+    post.media?.publicUrl ||
+    post.imageUrl ||
+    post.image ||
+    post.videoUrl ||
+    post.video ||
+    post.fileUrl ||
+    post.file ||
+    ""
+  );
+};
+
 export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, addBlockedUser, updatePost } = useApp();
@@ -21,7 +56,8 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const [localLikesCount, setLocalLikesCount] = useState(0);
   const [likePending, setLikePending] = useState(false);
   const [showReport, setShowReport] = useState(false);
-  const postUrl = `${window.location.origin}/feed?post=${post._id || post.id}`;
+  const postId = post._id || post.id;
+  const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const collegeTagName =
     post.collegeTagName ||
     post.college ||
@@ -37,6 +73,20 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const baseIsLiked = baseLikes.includes(currentUser?.id);
   const isLiked = localIsLiked;
   const likesCount = localLikesCount;
+  const postThumbnail = resolvePostMediaUrl(post);
+  const postPreviewText =
+    post.content && post.content.length > 0
+      ? post.content.slice(0, 80)
+      : "Campus update";
+  const isPrivate = resolvePostPrivacy(post) === "friends";
+  const resolvedAuthorName =
+    author?.displayName ||
+    post.authorDisplayName ||
+    post.author?.fullName ||
+    post.author?.username ||
+    post.authorName ||
+    "";
+  const authorId = post.author?._id || post.authorId || post.author;
 
   useEffect(() => {
     const loadAuthor = async () => {
@@ -325,6 +375,11 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
         onClose={() => setShowShare(false)}
         postUrl={postUrl}
         postTitle={post.content}
+        postId={postId}
+        postThumbnail={postThumbnail}
+        postPreviewText={postPreviewText}
+        isPrivate={isPrivate}
+        isAnonymous={post.isAnonymous}
         onShareToChat={() => {
           setShowShare(false);
           setShowShareChat(true);
@@ -336,6 +391,12 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
         onClose={() => setShowShareChat(false)}
         postUrl={postUrl}
         postTitle={post.content}
+        postId={postId}
+        postThumbnail={postThumbnail}
+        postPreviewText={postPreviewText}
+        postIsAnonymous={post.isAnonymous}
+        postAuthorName={resolvedAuthorName}
+        postAuthorId={authorId}
       />
       <ReportModal
         key="post-report-modal"
