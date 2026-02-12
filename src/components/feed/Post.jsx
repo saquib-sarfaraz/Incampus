@@ -34,6 +34,44 @@ const resolvePostViewsCount = (post) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const toNumber = (value) => {
+  if (Array.isArray(value)) return value.length;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const resolvePostLikesCount = (post) => {
+  if (!post) return 0;
+  if (Array.isArray(post.likes)) return post.likes.length;
+  if (Array.isArray(post.likedBy)) return post.likedBy.length;
+  if (Array.isArray(post.liked_by)) return post.liked_by.length;
+  return toNumber(post.likesCount ?? post.likeCount ?? post.likes ?? 0);
+};
+
+const resolvePostCommentsCount = (post) => {
+  if (!post) return 0;
+  if (Array.isArray(post.comments)) return post.comments.length;
+  return toNumber(post.commentsCount ?? post.commentCount ?? post.comments ?? 0);
+};
+
+const resolveLikeIds = (likes = []) => {
+  if (!Array.isArray(likes)) return [];
+  return likes
+    .map((like) =>
+      String(
+        like?._id ||
+          like?.id ||
+          like?.userId ||
+          like?.user ||
+          like?.authorId ||
+          like?.author ||
+          like ||
+          ""
+      )
+    )
+    .filter(Boolean);
+};
+
 const getStoredViewTimestamp = (postId) => {
   if (!postId || typeof window === "undefined") return null;
   try {
@@ -127,11 +165,18 @@ export default function Post({ post, onOpen, badge }) {
     post.author?.profilePic ||
     post.author?.avatarUrl ||
     "";
-  const baseLikes = Array.isArray(post.likes) ? post.likes : [];
-  const baseLikesCount = Array.isArray(post.likes)
-    ? post.likes.length
-    : Number(post.likes || post.likeCount || 0);
-  const baseIsLiked = baseLikes.includes(currentUser?.id);
+  const baseLikesRaw = Array.isArray(post.likes)
+    ? post.likes
+    : Array.isArray(post.likedBy)
+      ? post.likedBy
+      : Array.isArray(post.liked_by)
+        ? post.liked_by
+        : [];
+  const baseLikeIds = resolveLikeIds(baseLikesRaw);
+  const baseLikes = baseLikeIds;
+  const baseLikesCount = resolvePostLikesCount(post);
+  const baseIsLiked =
+    currentUser?.id && baseLikes.some((id) => String(id) === String(currentUser.id));
   const isLiked = optimisticLiked ?? baseIsLiked;
   const likesCount =
     baseLikesCount +
@@ -213,13 +258,41 @@ export default function Post({ post, onOpen, badge }) {
     setOptimisticLiked(nextLiked);
     const nextLikes = nextLiked
       ? Array.from(new Set([...baseLikes, currentUser.id]))
-      : baseLikes.filter((id) => id !== currentUser.id);
-    updatePost(postId, { likes: nextLikes, likeCount: nextLikes.length });
+      : baseLikes.filter((id) => String(id) !== String(currentUser.id));
+    updatePost(postId, {
+      likes: nextLikes,
+      likedBy: nextLikes,
+      likeCount: nextLikes.length,
+      likesCount: nextLikes.length,
+    });
 
     try {
-      await likePost(postId);
+      const response = await likePost(postId);
+      const updatedPost =
+        response?.post || response?.data?.post || response?.data || response || null;
+      if (updatedPost) {
+        const updatedLikesRaw = Array.isArray(updatedPost.likes)
+          ? updatedPost.likes
+          : Array.isArray(updatedPost.likedBy)
+            ? updatedPost.likedBy
+            : Array.isArray(updatedPost.liked_by)
+              ? updatedPost.liked_by
+              : null;
+        const updatedLikes = updatedLikesRaw ? resolveLikeIds(updatedLikesRaw) : null;
+        const updatedCount = resolvePostLikesCount(updatedPost);
+        updatePost(postId, {
+          ...(updatedLikes ? { likes: updatedLikes, likedBy: updatedLikes } : {}),
+          likeCount: updatedCount,
+          likesCount: updatedCount,
+        });
+      }
     } catch {
-      updatePost(postId, { likes: baseLikes, likeCount: baseLikes.length });
+      updatePost(postId, {
+        likes: baseLikes,
+        likedBy: baseLikes,
+        likeCount: baseLikes.length,
+        likesCount: baseLikes.length,
+      });
     } finally {
       setOptimisticLiked(null);
       setLikePending(false);
@@ -296,11 +369,7 @@ export default function Post({ post, onOpen, badge }) {
   };
 
   const collegeTagName = resolveCollegeTag();
-  const commentsCount = Number(
-    post.commentCount ||
-      post.commentsCount ||
-      (Array.isArray(post.comments) ? post.comments.length : 0)
-  );
+  const commentsCount = resolvePostCommentsCount(post);
   const isOwner = String(authorId) === String(currentUser?.id);
   const badgeLabel = typeof badge === "string" ? badge : badge?.text;
   const badgeTone = typeof badge === "object" && badge?.tone ? badge.tone : "";

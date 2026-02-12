@@ -4,6 +4,7 @@ import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
 import {
   getChatMessages,
+  getGroupChatMessages,
   getPendingRequests,
   getUserById,
   sendChatMessage,
@@ -20,6 +21,8 @@ import PostModal from "../components/profile/PostModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+const isGroupChatId = (chatId) => String(chatId || "").startsWith("group:");
 
 const isAnonymousUser = (userData) =>
   Boolean(
@@ -47,10 +50,27 @@ const getMessageTimestamp = (msg) => {
   return Number.isNaN(time) ? null : time;
 };
 
-const isMessageRecent = (msg) => {
-  const time = getMessageTimestamp(msg);
-  if (time === null) return false;
-  return Date.now() - time <= DAY_MS;
+const getMessageExpiryTimestamp = (msg) => {
+  const explicit = msg?.expiresAt || msg?.expires_at;
+  if (explicit) {
+    const expires = new Date(explicit).getTime();
+    if (!Number.isNaN(expires)) return expires;
+  }
+  const created = getMessageTimestamp(msg);
+  if (created === null) return null;
+  return created + DAY_MS;
+};
+
+const isMessageExpired = (msg, now = Date.now()) => {
+  const expires = getMessageExpiryTimestamp(msg);
+  if (expires === null) return false;
+  return expires <= now;
+};
+
+const filterMessagesForChat = (chatId, messages, now = Date.now()) => {
+  if (!Array.isArray(messages)) return [];
+  if (!isGroupChatId(chatId)) return messages;
+  return messages.filter((msg) => !isMessageExpired(msg, now));
 };
 
 const formatTime = (dateString) => {
@@ -95,6 +115,14 @@ export default function Chat() {
     getUserFromCache,
     posts,
     loadPosts,
+    chatMeta,
+    updateChatMeta,
+    setChatMetaEntry,
+    markChatRead,
+    pushChatToast,
+    activeChatId,
+    setActiveChatId,
+    setChatViewActive,
     isUserBlocked,
     addBlockedUser,
     friendIds,
@@ -107,17 +135,14 @@ export default function Chat() {
   const [activeTab, setActiveTab] = useState("contacts");
   const [contacts, setContacts] = useState([]);
   const [requests, setRequests] = useState([]);
-  const [activeChatId, setActiveChatId] = useState(null);
   const [messagesByChat, setMessagesByChat] = useState({});
-  const [chatMeta, setChatMeta] = useState({});
   const [messageText, setMessageText] = useState("");
-  const [showChatPanel, setShowChatPanel] = useState(false);
-  const [toasts, setToasts] = useState([]);
   const [presenceMap, setPresenceMap] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
+  const [nowTick, setNowTick] = useState(() => Date.now());
   const messagesEndRef = useRef(null);
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
@@ -132,6 +157,10 @@ export default function Chat() {
     if (friendMapLoaded) return friendIdSetFromContext || new Set();
     return new Set((currentUser?.friends || []).map((id) => String(id)));
   }, [friendMapLoaded, friendIdSetFromContext, currentUser?.friends]);
+  const friendIdsKey = useMemo(
+    () => (resolvedFriendIds || []).map((id) => String(id)).sort().join("|"),
+    [resolvedFriendIds]
+  );
 
   const handleReportMessage = (msg) => {
     setReportTarget(msg);
@@ -163,7 +192,6 @@ export default function Chat() {
       await blockUser(userId, { context: "chat_header" });
       addBlockedUser(userId);
       setActiveChatId(null);
-      setShowChatPanel(false);
       alert("User blocked.");
     } catch (error) {
       alert(error.message || "Failed to block user");
@@ -183,7 +211,7 @@ export default function Chat() {
   useEffect(() => {
     if (!isMobile) return;
     const originalOverflow = document.body.style.overflow;
-    if (showChatPanel) {
+    if (activeChatId) {
       document.body.style.overflow = "hidden";
     } else {
       document.body.style.overflow = originalOverflow || "";
@@ -191,7 +219,7 @@ export default function Chat() {
     return () => {
       document.body.style.overflow = originalOverflow || "";
     };
-  }, [isMobile, showChatPanel]);
+  }, [isMobile, activeChatId]);
 
   const ensureIndex = useCallback((chatId) => {
     if (!messageIndexRef.current[chatId]) {
@@ -298,15 +326,16 @@ export default function Chat() {
       if (!Array.isArray(incomingMessages)) return;
 
       setMessagesByChat((prev) => {
+        const now = Date.now();
         const existing = prev[chatId] || [];
-        const recentExisting = existing.filter(isMessageRecent);
-        const recentIncoming = incomingMessages.filter(isMessageRecent);
+        const filteredExisting = filterMessagesForChat(chatId, existing, now);
+        const filteredIncoming = filterMessagesForChat(chatId, incomingMessages, now);
         const index = ensureIndex(chatId);
         index.clear();
-        recentExisting.forEach((msg) => index.add(messageKey(msg)));
-        const merged = [...recentExisting];
+        filteredExisting.forEach((msg) => index.add(messageKey(msg)));
+        const merged = [...filteredExisting];
 
-        recentIncoming.forEach((msg) => {
+        filteredIncoming.forEach((msg) => {
           const key = messageKey(msg);
           const recentDuplicate = merged.slice(-5).some((existingMsg) => {
             if (existingMsg.from !== msg.from || existingMsg.to !== msg.to) return false;
@@ -356,40 +385,6 @@ export default function Chat() {
     [currentUser, setMessagesByChat]
   );
 
-  const updateChatMeta = useCallback((chatId, message, { incrementUnread, unreadCount } = {}) => {
-    if (!chatId || !message) return;
-    if (!isMessageRecent(message)) return;
-    setChatMeta((prev) => {
-      const current = prev[chatId] || { unreadCount: 0 };
-      const resolvedUnread =
-        typeof unreadCount === "number"
-          ? unreadCount
-          : incrementUnread
-            ? (current.unreadCount || 0) + 1
-            : current.unreadCount || 0;
-      return {
-        ...prev,
-        [chatId]: {
-          ...current,
-          lastMessage: message,
-          lastMessageAt: message.createdAt,
-          unreadCount: resolvedUnread,
-        },
-      };
-    });
-  }, []);
-
-  const markChatRead = useCallback((chatId) => {
-    if (!chatId) return;
-    setChatMeta((prev) => ({
-      ...prev,
-      [chatId]: {
-        ...prev[chatId],
-        unreadCount: 0,
-      },
-    }));
-  }, []);
-
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
@@ -432,7 +427,11 @@ export default function Chat() {
     (messages = [], chatId) => {
       if (!currentUser?.id || !Array.isArray(messages)) return 0;
       if (chatId === activeChatRef.current) return 0;
-      return messages.filter((msg) => {
+      const now = Date.now();
+      const scopedMessages = isGroupChatId(chatId)
+        ? messages.filter((msg) => !isMessageExpired(msg, now))
+        : messages;
+      return scopedMessages.filter((msg) => {
         const senderId = msg.from || msg.senderId || msg.userId;
         if (String(senderId) === String(currentUser.id)) return false;
         return !(
@@ -448,16 +447,112 @@ export default function Chat() {
     [currentUser]
   );
 
+  const syncChatMetaFromMessages = useCallback(
+    (chatId, messages) => {
+      if (!isGroupChatId(chatId)) return;
+      const list = Array.isArray(messages) ? messages : [];
+      if (list.length === 0) {
+        setChatMetaEntry(chatId, (current) => ({
+          ...current,
+          lastMessage: null,
+          lastMessageAt: null,
+          unreadCount: 0,
+        }));
+        return;
+      }
+      const last = list[list.length - 1];
+      const lastAt = last?.createdAt || last?.created_at || last?.timestamp || null;
+      setChatMetaEntry(chatId, (current) => ({
+        ...current,
+        lastMessage: last,
+        lastMessageAt: lastAt || current?.lastMessageAt,
+        unreadCount: resolveUnreadCount(list, chatId),
+      }));
+    },
+    [resolveUnreadCount, setChatMetaEntry]
+  );
+
+  const pruneGroupMessagesInState = useCallback(
+    (chatId, messages) => {
+      if (!isGroupChatId(chatId)) return { messages, changed: false };
+      const filtered = filterMessagesForChat(chatId, messages);
+      const changed = filtered.length !== messages.length;
+      if (changed) {
+        const index = ensureIndex(chatId);
+        index.clear();
+        filtered.forEach((msg) => index.add(messageKey(msg)));
+      }
+      return { messages: filtered, changed };
+    },
+    [ensureIndex]
+  );
+
   const loadRequests = useCallback(async () => {
     try {
       const requestsData = await getPendingRequests();
+      const resolveRequestUsers = (req) => {
+        if (!req || typeof req !== "object") return { fromId: "", toId: "", user: null };
+        const fromRaw =
+          req.fromUserId ||
+          req.fromUser ||
+          req.from ||
+          req.requester ||
+          req.requestedBy ||
+          req.sender ||
+          req.user;
+        const toRaw =
+          req.toUserId ||
+          req.toUser ||
+          req.to ||
+          req.recipient ||
+          req.targetUserId ||
+          req.targetUser ||
+          req.userId ||
+          req.target;
+        const fromId = resolveFriendId(fromRaw);
+        const toId = resolveFriendId(toRaw);
+        const fromUser =
+          (fromRaw && typeof fromRaw === "object" ? fromRaw : null) ||
+          (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+          (req.fromUserId && typeof req.fromUserId === "object" ? req.fromUserId : null) ||
+          (req.requester && typeof req.requester === "object" ? req.requester : null) ||
+          (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+          null;
+        const toUser =
+          (toRaw && typeof toRaw === "object" ? toRaw : null) ||
+          (req.toUser && typeof req.toUser === "object" ? req.toUser : null) ||
+          (req.toUserId && typeof req.toUserId === "object" ? req.toUserId : null) ||
+          (req.recipient && typeof req.recipient === "object" ? req.recipient : null) ||
+          null;
+        return { fromId, toId, user: fromUser || toUser };
+      };
       const formattedRequests = await Promise.all(
         requestsData.map(async (req) => {
-          const userId = req.fromUserId?._id || req.fromUserId;
-          if (isUserBlocked(userId)) {
+          const { fromId, toId, user: embeddedUser } = resolveRequestUsers(req);
+          const isOutgoing =
+            currentUser?.id && fromId && String(fromId) === String(currentUser.id);
+          if (isOutgoing) {
             return null;
           }
-          let user = getUserFromCache(userId);
+          const userId = fromId || resolveFriendId(embeddedUser) || "";
+          if (userId && isUserBlocked(userId)) {
+            return null;
+          }
+          let user = embeddedUser && typeof embeddedUser === "object"
+            ? {
+                id: embeddedUser._id || embeddedUser.id || userId,
+                displayName:
+                  embeddedUser.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                  embeddedUser.displayName ||
+                  embeddedUser.username ||
+                  "User",
+                profilePicUrl: embeddedUser.profilePicUrl || ANONYMOUS_AVATAR,
+                friends: embeddedUser.friends || [],
+              }
+            : null;
+          if (!user && userId) {
+            user = getUserFromCache(userId);
+          }
           if (!user && userId) {
             const userData = await getUserById(userId);
               if (userData) {
@@ -476,7 +571,7 @@ export default function Chat() {
             ...req,
             user:
               user || {
-                id: userId,
+                id: userId || toId,
                 displayName: "User",
                 profilePicUrl: ANONYMOUS_AVATAR,
               },
@@ -488,7 +583,7 @@ export default function Chat() {
       console.error("Failed to load requests:", error);
       return [];
     }
-  }, [cacheUser, getUserFromCache, isUserBlocked]);
+  }, [cacheUser, getUserFromCache, isUserBlocked, currentUser]);
 
   const refreshLists = useCallback(async () => {
     const [contactsData, requestsData] = await Promise.all([
@@ -499,21 +594,29 @@ export default function Chat() {
     setRequests(requestsData);
   }, [loadContacts, loadRequests]);
 
+  const fetchChatMessages = useCallback(async (chatId) => {
+    if (!chatId) return [];
+    const isGroup = isGroupChatId(chatId);
+    const data = isGroup
+      ? await getGroupChatMessages(chatId, { last24h: true })
+      : await getChatMessages(chatId);
+    return data?.messages || [];
+  }, []);
+
   const preloadChatPreviews = useCallback(
     async (friends) => {
       await Promise.all(
         friends.map(async (friend) => {
           if (!friend?.id || loadedChatsRef.current.has(friend.id)) return;
           try {
-            const data = await getChatMessages(friend.id);
-            const msgs = data.messages || [];
-            const recentMsgs = msgs.filter(isMessageRecent);
-            mergeMessages(friend.id, recentMsgs);
+            const msgs = await fetchChatMessages(friend.id);
+            const scopedMsgs = filterMessagesForChat(friend.id, msgs);
+            mergeMessages(friend.id, scopedMsgs);
             loadedChatsRef.current.add(friend.id);
-            if (recentMsgs.length > 0) {
-              const last = recentMsgs[recentMsgs.length - 1];
+            if (scopedMsgs.length > 0) {
+              const last = scopedMsgs[scopedMsgs.length - 1];
               updateChatMeta(friend.id, last, {
-                unreadCount: resolveUnreadCount(recentMsgs, friend.id),
+                unreadCount: resolveUnreadCount(scopedMsgs, friend.id),
               });
             }
           } catch (error) {
@@ -522,29 +625,30 @@ export default function Chat() {
         })
       );
     },
-    [mergeMessages, updateChatMeta, resolveUnreadCount]
+    [fetchChatMessages, mergeMessages, updateChatMeta, resolveUnreadCount]
   );
 
   const loadMessages = useCallback(
     async (userId) => {
       if (!userId || loadedChatsRef.current.has(userId)) return;
       try {
-        const data = await getChatMessages(userId);
-        const msgs = data.messages || [];
-        const recentMsgs = msgs.filter(isMessageRecent);
-        mergeMessages(userId, recentMsgs);
+        const msgs = await fetchChatMessages(userId);
+        const scopedMsgs = filterMessagesForChat(userId, msgs);
+        mergeMessages(userId, scopedMsgs);
         loadedChatsRef.current.add(userId);
-        if (recentMsgs.length > 0) {
-          const last = recentMsgs[recentMsgs.length - 1];
+        if (scopedMsgs.length > 0) {
+          const last = scopedMsgs[scopedMsgs.length - 1];
           updateChatMeta(userId, last, {
-            unreadCount: resolveUnreadCount(recentMsgs, userId),
+            unreadCount: resolveUnreadCount(scopedMsgs, userId),
           });
+        } else if (isGroupChatId(userId)) {
+          syncChatMetaFromMessages(userId, []);
         }
       } catch (error) {
         console.error("Failed to load messages:", error);
       }
     },
-    [mergeMessages, updateChatMeta, resolveUnreadCount]
+    [fetchChatMessages, mergeMessages, updateChatMeta, resolveUnreadCount, syncChatMetaFromMessages]
   );
 
   const handleSendMessage = async (e) => {
@@ -605,30 +709,38 @@ export default function Chat() {
     }
   };
 
-  const handleOpenChat = (chatId) => {
-    setActiveChatId(chatId);
-    setShowChatPanel(true);
-    if (String(chatId).startsWith("group:")) {
-      setActiveTab("groups");
-    } else {
-      setActiveTab("contacts");
-    }
-    markChatRead(chatId);
-    loadMessages(chatId);
-    markMessagesSeen(chatId);
-  };
+  const handleOpenChat = useCallback(
+    (chatId) => {
+      setActiveChatId(chatId);
+      if (String(chatId).startsWith("group:")) {
+        setActiveTab("groups");
+      } else {
+        setActiveTab("contacts");
+      }
+      markChatRead(chatId);
+      loadMessages(chatId);
+      markMessagesSeen(chatId);
+    },
+    [setActiveChatId, markChatRead, loadMessages, markMessagesSeen]
+  );
 
   const handleCloseChat = () => {
-    setShowChatPanel(false);
     setActiveChatId(null);
   };
 
-  const showToast = useCallback((toast) => {
-    setToasts((prev) => [...prev, toast]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== toast.id));
-    }, 3000);
-  }, []);
+  const showToast = useCallback(
+    (toast) => {
+      pushChatToast(toast);
+    },
+    [pushChatToast]
+  );
+
+  useEffect(() => {
+    setChatViewActive(true);
+    return () => setChatViewActive(false);
+  }, [setChatViewActive]);
+
+  // activeChatId is stored in global context now.
 
   useEffect(() => {
     let cancelled = false;
@@ -651,7 +763,21 @@ export default function Chat() {
     return () => {
       cancelled = true;
     };
-  }, [loadContacts, loadRequests, updatePresence]);
+  }, [friendIdsKey, loadContacts, loadRequests, updatePresence]);
+
+  useEffect(() => {
+    if (activeTab !== "requests") return;
+    let cancelled = false;
+    const refresh = async () => {
+      const requestsData = await loadRequests();
+      if (cancelled) return;
+      setRequests(requestsData);
+    };
+    refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, loadRequests]);
 
   useEffect(() => {
     if (contacts.length > 0) {
@@ -774,23 +900,9 @@ export default function Chat() {
       const target = String(msg?.to || "");
       const isGroupMessage = target.startsWith("group:");
       const chatId = isGroupMessage ? target : msg.from === currentUser.id ? msg.to : msg.from;
-      const senderId = msg.from === currentUser.id ? msg.to : msg.from;
-      const sender =
-        allContacts.find((contact) => contact.id === chatId) ||
-        contacts.find((contact) => contact.id === senderId);
-      const senderName = resolveContactName(sender) || "New message";
       mergeMessages(chatId, [msg]);
-      updateChatMeta(chatId, msg, {
-        incrementUnread: chatId !== activeChatRef.current,
-      });
 
       if (chatId !== activeChatRef.current) {
-        showToast({
-          id: `${chatId}-${msg.createdAt}`,
-          chatId,
-          title: `New message from ${senderName}`,
-          message: truncateMessage(resolveMessagePreview(msg)),
-        });
         playNotificationSound();
         if (navigator.vibrate) navigator.vibrate(40);
       } else {
@@ -805,26 +917,128 @@ export default function Chat() {
 
     return () => socket.off("chat-message", handleMessage);
   }, [
-    allContacts,
-    contacts,
     currentUser?.id,
     markChatRead,
     markMessagesSeen,
     mergeMessages,
     playNotificationSound,
-    resolveContactName,
     scrollToBottom,
-    showToast,
-    updateChatMeta,
   ]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+
+    const handleMessageExpired = (payload = {}) => {
+      const message = payload?.message || payload;
+      const rawChatId =
+        payload.chatId ||
+        payload.groupId ||
+        payload.roomId ||
+        message?.chatId ||
+        message?.chat_id ||
+        message?.to ||
+        "";
+      const chatId = String(rawChatId || "");
+      if (!isGroupChatId(chatId)) return;
+      const expiredId = message?._id || message?.id || payload.messageId;
+      let nextMeta = null;
+
+      setMessagesByChat((prev) => {
+        const existing = prev[chatId] || [];
+        if (existing.length === 0) return prev;
+        const now = Date.now();
+        const filtered = existing.filter((msg) => {
+          const msgId = msg._id || msg.id;
+          if (expiredId && msgId && String(expiredId) === String(msgId)) {
+            return false;
+          }
+          return !isMessageExpired(msg, now);
+        });
+        if (filtered.length === existing.length) return prev;
+        const index = ensureIndex(chatId);
+        index.clear();
+        filtered.forEach((msg) => index.add(messageKey(msg)));
+        nextMeta = { chatId, messages: filtered };
+        return { ...prev, [chatId]: filtered };
+      });
+
+      if (nextMeta) {
+        syncChatMetaFromMessages(nextMeta.chatId, nextMeta.messages);
+      }
+    };
+
+    socket.off("message-expired", handleMessageExpired);
+    socket.on("message-expired", handleMessageExpired);
+
+    return () => socket.off("message-expired", handleMessageExpired);
+  }, [ensureIndex, syncChatMetaFromMessages]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket) return;
+    const handleFriendRequest = () => {
+      loadRequests().then((data) => setRequests(data));
+    };
+    const handleFriendAccepted = () => {
+      refreshLists();
+    };
+    socket.off("friend-requested", handleFriendRequest);
+    socket.off("friend-request-received", handleFriendRequest);
+    socket.off("friend-accepted", handleFriendAccepted);
+    socket.off("friend-removed", handleFriendAccepted);
+    socket.on("friend-requested", handleFriendRequest);
+    socket.on("friend-request-received", handleFriendRequest);
+    socket.on("friend-accepted", handleFriendAccepted);
+    socket.on("friend-removed", handleFriendAccepted);
+    return () => {
+      socket.off("friend-requested", handleFriendRequest);
+      socket.off("friend-request-received", handleFriendRequest);
+      socket.off("friend-accepted", handleFriendAccepted);
+      socket.off("friend-removed", handleFriendAccepted);
+    };
+  }, [loadRequests, refreshLists]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const pendingMeta = [];
+      setMessagesByChat((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        Object.entries(prev).forEach(([chatId, messages]) => {
+          if (!isGroupChatId(chatId)) return;
+          const { messages: filtered, changed: hasChanged } = pruneGroupMessagesInState(
+            chatId,
+            messages
+          );
+          if (!hasChanged) return;
+          changed = true;
+          next[chatId] = filtered;
+          pendingMeta.push({ chatId, messages: filtered });
+        });
+        return changed ? next : prev;
+      });
+
+      if (pendingMeta.length > 0) {
+        pendingMeta.forEach(({ chatId, messages }) => {
+          syncChatMetaFromMessages(chatId, messages);
+        });
+      }
+      setNowTick(Date.now());
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, [pruneGroupMessagesInState, syncChatMetaFromMessages]);
 
   const visibleMessages = useMemo(() => {
     const activeMessages = messagesByChat[activeChatId] || [];
     return activeMessages.filter((msg) => {
       const senderId = msg.from || msg.senderId || msg.userId;
-      return isMessageRecent(msg) && !isUserBlocked(senderId);
+      const isVisible =
+        !isGroupChatId(activeChatId) || !isMessageExpired(msg, nowTick);
+      return isVisible && !isUserBlocked(senderId);
     });
-  }, [messagesByChat, activeChatId, isUserBlocked]);
+  }, [messagesByChat, activeChatId, isUserBlocked, nowTick]);
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
   const canChatActive = activeChatUser?.isGroup
     ? true
@@ -841,9 +1055,13 @@ export default function Chat() {
       if (aUnread !== bUnread) return aUnread ? -1 : 1;
       const aTime = new Date(chatMeta[a.id]?.lastMessageAt || 0).getTime();
       const bTime = new Date(chatMeta[b.id]?.lastMessageAt || 0).getTime();
-      return bTime - aTime;
+      if (aTime !== bTime) return bTime - aTime;
+      const aOnline = getPresence(a.id, a).isOnline;
+      const bOnline = getPresence(b.id, b).isOnline;
+      if (aOnline !== bOnline) return aOnline ? -1 : 1;
+      return 0;
     });
-  }, [contacts, chatMeta]);
+  }, [contacts, chatMeta, getPresence]);
 
   const groupsSorted = useMemo(() => {
     return [...groupList].sort((a, b) => {
@@ -873,7 +1091,7 @@ export default function Chat() {
         <div
           id="chat-sidebar"
           className={`w-full sm:w-1/3 border-r border-white/10 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col ${
-            isMobile && showChatPanel ? "hidden" : "flex"
+            isMobile && activeChatId ? "hidden" : "flex"
           }`}
         >
           <div className="flex space-x-2 border-b border-white/10 p-4">
@@ -1097,7 +1315,7 @@ export default function Chat() {
         </div>
 
         <AnimatePresence>
-          {(showChatPanel || !isMobile) && activeChatId && (
+          {activeChatId && (
             <Motion.div
               initial={{ x: "100%" }}
               animate={{ x: 0 }}
@@ -1283,30 +1501,6 @@ export default function Chat() {
           </div>
         )}
       </div>
-
-      <AnimatePresence>
-        {toasts.length > 0 && (
-          <div className="fixed top-20 right-4 left-4 sm:left-auto z-50 space-y-3">
-            {toasts.map((toast) => (
-              <Motion.div
-                key={toast.id}
-                initial={{ opacity: 0, x: 20 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 20 }}
-                className="toast-card rounded-2xl px-4 py-3 text-sm text-[#faf0e6] shadow-lg cursor-pointer"
-                onClick={() => {
-                  if (toast.chatId) handleOpenChat(toast.chatId);
-                }}
-              >
-                <p className="text-xs uppercase tracking-[0.2em] text-[#b9b4c7]">
-                  {toast.title}
-                </p>
-                <p className="mt-1">{toast.message}</p>
-              </Motion.div>
-            ))}
-          </div>
-        )}
-      </AnimatePresence>
 
       <Motion.button
         type="button"

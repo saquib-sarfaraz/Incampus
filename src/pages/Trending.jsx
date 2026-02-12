@@ -746,15 +746,6 @@ export default function Trending() {
   const sharePostIsPrivate = sharePost
     ? resolvePostPrivacy(sharePost) === "friends"
     : false;
-  const sharePostAuthorName =
-    sharePost?.author?.displayName ||
-    sharePost?.author?.fullName ||
-    sharePost?.author?.username ||
-    sharePost?.authorName ||
-    "";
-  const sharePostAuthorId =
-    sharePost?.author?._id || sharePost?.authorId || sharePost?.author;
-
   const shareChatPostId = shareChatPost?._id || shareChatPost?.id;
   const shareChatPostUrl = shareChatPostId
     ? `${window.location.origin}/feed?post=${shareChatPostId}`

@@ -16,6 +16,10 @@ import {
 } from "../services/api";
 import { getSocket } from "../services/socket";
 import AppContext from "./appContextBase";
+import ChatToastContainer from "../components/chat/ChatToastContainer";
+
+const CHAT_TOAST_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const normalizeStoriesList = (list) => {
   if (!Array.isArray(list)) return [];
@@ -132,6 +136,7 @@ const resolvePendingRequestUsers = (request) => {
   if (!request) return { fromId: "", toId: "" };
   const fromRaw =
     request.fromUserId ||
+    request.fromUser ||
     request.from ||
     request.sender ||
     request.requester ||
@@ -140,9 +145,11 @@ const resolvePendingRequestUsers = (request) => {
     request.user;
   const toRaw =
     request.toUserId ||
+    request.toUser ||
     request.to ||
     request.recipient ||
     request.targetUserId ||
+    request.targetUser ||
     request.userId ||
     request.target;
   return {
@@ -239,6 +246,10 @@ export const AppProvider = ({ children }) => {
   const [friendMapLoading, setFriendMapLoading] = useState(false);
   const [friendMapLoaded, setFriendMapLoaded] = useState(false);
   const [usersCache, setUsersCache] = useState({});
+  const [chatMeta, setChatMeta] = useState({});
+  const [chatToasts, setChatToasts] = useState([]);
+  const [activeChatId, setActiveChatId] = useState(null);
+  const [chatViewActive, setChatViewActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const postsRequestRef = useRef(false);
   const storiesRequestRef = useRef(false);
@@ -246,6 +257,9 @@ export const AppProvider = ({ children }) => {
   const blockedUsersRequestRef = useRef(false);
   const postsLoadedRef = useRef(false);
   const friendMapRequestRef = useRef(false);
+  const friendStatusRequestRef = useRef(new Map());
+  const activeChatIdRef = useRef(null);
+  const chatViewActiveRef = useRef(false);
   const [feedScope, setFeedScope] = useState(() => {
     if (typeof window === "undefined") return "universal";
     return localStorage.getItem("feedScope") || "universal";
@@ -424,8 +438,12 @@ export const AppProvider = ({ children }) => {
       if (!userId) return "none";
       const id = String(userId);
       if (blockedUsers.some((blockedId) => String(blockedId) === id)) return "blocked";
-      if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
-        return friendMap[id] || "none";
+      const hasFriendMap = friendMapLoaded || Object.keys(friendMap || {}).length > 0;
+      if (hasFriendMap) {
+        if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
+          return friendMap[id] || "none";
+        }
+        return "none";
       }
       const fallbackFriends = currentUser?.friends || [];
       if (fallbackFriends.some((friendId) => String(friendId) === id)) {
@@ -433,7 +451,7 @@ export const AppProvider = ({ children }) => {
       }
       return "none";
     },
-    [blockedUsers, friendMap, currentUser?.friends]
+    [blockedUsers, friendMap, friendMapLoaded, currentUser?.friends]
   );
 
   const friendIds = useMemo(() => {
@@ -524,15 +542,23 @@ export const AppProvider = ({ children }) => {
       if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
         return friendMap[id] || "none";
       }
+      const pendingRequest = friendStatusRequestRef.current.get(id);
+      if (pendingRequest) return pendingRequest;
       if (!authToken || !currentUser?.id) return "none";
-      try {
-        const data = await fetchFriendStatus(id);
-        const status = resolveFriendStatus(data, currentUser?.id, id);
-        setFriendStatus(id, status, { force: true });
-        return status;
-      } catch {
-        return "none";
-      }
+      const request = (async () => {
+        try {
+          const data = await fetchFriendStatus(id);
+          const status = resolveFriendStatus(data, currentUser?.id, id);
+          setFriendStatus(id, status, { force: true });
+          return status;
+        } catch {
+          return "none";
+        } finally {
+          friendStatusRequestRef.current.delete(id);
+        }
+      })();
+      friendStatusRequestRef.current.set(id, request);
+      return request;
     },
     [authToken, currentUser?.id, friendMap, getFriendStatus, setFriendStatus]
   );
@@ -744,6 +770,173 @@ export const AppProvider = ({ children }) => {
     [updateCachedUser]
   );
 
+  const resolveMessagePreview = useCallback((msg) => {
+    if (!msg) return "";
+    if (msg.messageType === "shared_post" || msg.type === "shared_post") {
+      return msg.postPreviewText || msg.postTitle || "Shared a post";
+    }
+    return msg.text || "";
+  }, []);
+
+  const truncateMessage = useCallback((text = "", max = 60) => {
+    if (!text) return "";
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }, []);
+
+  const resolveChatIdFromMessage = useCallback(
+    (message) => {
+      if (!message) return "";
+      const rawTarget =
+        message.chatId ||
+        message.chat_id ||
+        message.toChatId ||
+        message.to ||
+        message.receiverId ||
+        message.recipientId ||
+        "";
+      const target = String(rawTarget || "");
+      if (target.startsWith("group:")) return target;
+      const fromId = resolveEntityId(
+        message.from || message.senderId || message.userId || message.sender
+      );
+      if (currentUser?.id && fromId && String(fromId) === String(currentUser.id)) {
+        return target || fromId;
+      }
+      return fromId || target;
+    },
+    [currentUser?.id]
+  );
+
+  const updateChatMeta = useCallback(
+    (chatId, message, { incrementUnread, unreadCount } = {}) => {
+      if (!chatId || !message) return;
+      const createdAt =
+        message.createdAt ||
+        message.created_at ||
+        message.timestamp ||
+        new Date().toISOString();
+      setChatMeta((prev) => {
+        const current = prev[chatId] || { unreadCount: 0 };
+        const resolvedUnread =
+          typeof unreadCount === "number"
+            ? unreadCount
+            : incrementUnread
+              ? (current.unreadCount || 0) + 1
+              : current.unreadCount || 0;
+        const currentTime = new Date(current.lastMessageAt || 0).getTime();
+        const nextTime = new Date(createdAt || 0).getTime();
+        const shouldUpdateMessage = Number.isNaN(currentTime) || nextTime >= currentTime;
+        return {
+          ...prev,
+          [chatId]: {
+            ...current,
+            ...(shouldUpdateMessage
+              ? { lastMessage: message, lastMessageAt: createdAt }
+              : {}),
+            unreadCount: resolvedUnread,
+          },
+        };
+      });
+    },
+    []
+  );
+
+  const setChatMetaEntry = useCallback((chatId, updater) => {
+    if (!chatId) return;
+    setChatMeta((prev) => {
+      const current = prev[chatId] || { unreadCount: 0 };
+      const nextValue =
+        typeof updater === "function" ? updater(current) : { ...current, ...updater };
+      if (!nextValue) {
+        const copy = { ...prev };
+        delete copy[chatId];
+        return copy;
+      }
+      return {
+        ...prev,
+        [chatId]: {
+          unreadCount: 0,
+          ...nextValue,
+        },
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setChatMeta((prev) => {
+        let changed = false;
+        const next = { ...prev };
+        Object.entries(prev).forEach(([chatId, meta]) => {
+          if (!String(chatId).startsWith("group:")) return;
+          const lastAt = meta?.lastMessageAt;
+          if (!lastAt) return;
+          const lastTime = new Date(lastAt).getTime();
+          if (Number.isNaN(lastTime)) return;
+          if (now - lastTime < DAY_MS) return;
+          changed = true;
+          next[chatId] = {
+            ...meta,
+            lastMessage: null,
+            lastMessageAt: null,
+            unreadCount: 0,
+          };
+        });
+        return changed ? next : prev;
+      });
+    }, 60000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const markChatRead = useCallback((chatId) => {
+    if (!chatId) return;
+    setChatMeta((prev) => ({
+      ...prev,
+      [chatId]: {
+        ...prev[chatId],
+        unreadCount: 0,
+      },
+    }));
+  }, []);
+
+  const pushChatToast = useCallback((toast) => {
+    if (!toast || !toast.id) return;
+    setChatToasts((prev) => [...prev, toast]);
+    setTimeout(() => {
+      setChatToasts((prev) => prev.filter((item) => item.id !== toast.id));
+    }, 3000);
+  }, []);
+
+  const dismissChatToast = useCallback((toastId) => {
+    if (!toastId) return;
+    setChatToasts((prev) => prev.filter((item) => item.id !== toastId));
+  }, []);
+
+  const requestChatOpen = useCallback(
+    (chatId) => {
+      if (!chatId) return;
+      setActiveChatId(chatId);
+    },
+    [setActiveChatId]
+  );
+
+  useEffect(() => {
+    activeChatIdRef.current = activeChatId;
+  }, [activeChatId]);
+
+  useEffect(() => {
+    chatViewActiveRef.current = chatViewActive;
+  }, [chatViewActive]);
+
+  const chatUnreadTotal = useMemo(() => {
+    return Object.values(chatMeta).reduce(
+      (sum, meta) => sum + (meta?.unreadCount || 0),
+      0
+    );
+  }, [chatMeta]);
+
   // Socket listeners setup (after friendship + profile helpers)
   useEffect(() => {
     if (!authToken || !currentUser) return;
@@ -752,8 +945,83 @@ export const AppProvider = ({ children }) => {
     if (!socket) return;
 
     // Chat message listener
-    const handleChatMessage = () => {
-      // Handled in Chat component
+    const handleChatMessage = (payload = {}) => {
+      const message = payload?.message || payload;
+      if (!message) return;
+      const chatId = resolveChatIdFromMessage(message);
+      if (!chatId) return;
+
+      const senderId = resolveEntityId(
+        message.from || message.senderId || message.userId || message.sender
+      );
+      const isFromSelf =
+        senderId && currentUser?.id && String(senderId) === String(currentUser.id);
+
+      const isActiveChat =
+        chatViewActiveRef.current && activeChatIdRef.current === chatId;
+
+      updateChatMeta(chatId, message, {
+        incrementUnread: !isActiveChat && !isFromSelf,
+      });
+
+      if (!isFromSelf && !isActiveChat) {
+        const cachedUser = senderId ? getUserFromCache(senderId) : null;
+        const senderName =
+          message.senderName ||
+          message.fromName ||
+          message.authorName ||
+          cachedUser?.displayName ||
+          cachedUser?.username ||
+          "New message";
+        const senderAvatar =
+          message.senderAvatar ||
+          message.fromAvatar ||
+          cachedUser?.profilePicUrl ||
+          CHAT_TOAST_AVATAR;
+        const preview = truncateMessage(resolveMessagePreview(message));
+        pushChatToast({
+          id: `${chatId}-${message.createdAt || message.timestamp || Date.now()}`,
+          chatId,
+          title: senderName,
+          message: preview || "Sent you a message",
+          avatar: senderAvatar,
+        });
+      }
+    };
+
+    const handleMessageExpired = (payload = {}) => {
+      const message = payload?.message || payload;
+      const rawChatId =
+        payload.chatId ||
+        payload.groupId ||
+        payload.roomId ||
+        message?.chatId ||
+        message?.chat_id ||
+        message?.to ||
+        "";
+      const chatId = String(rawChatId || "");
+      if (!chatId.startsWith("group:")) return;
+      const expiredId = message?._id || message?.id || payload.messageId;
+      const expiredCreated =
+        message?.createdAt || message?.created_at || message?.timestamp || payload.createdAt;
+      setChatMetaEntry(chatId, (current) => {
+        if (!current) return current;
+        const last = current.lastMessage;
+        if (!last) {
+          return { ...current, lastMessage: null, lastMessageAt: null, unreadCount: 0 };
+        }
+        const lastId = last._id || last.id;
+        const lastCreated = last.createdAt || last.created_at || last.timestamp;
+        const idMatches =
+          expiredId && lastId && String(expiredId) === String(lastId);
+        const timeMatches =
+          !idMatches &&
+          expiredCreated &&
+          lastCreated &&
+          new Date(expiredCreated).getTime() === new Date(lastCreated).getTime();
+        if (!idMatches && !timeMatches) return current;
+        return { ...current, lastMessage: null, lastMessageAt: null, unreadCount: 0 };
+      });
     };
 
     // Notification listener
@@ -795,6 +1063,28 @@ export const AppProvider = ({ children }) => {
     const handlePostLiked = (payload = {}) => {
       const postId = payload.postId || payload.post?._id || payload.post?.id || payload.postId;
       if (!postId) return;
+      const likedByRaw =
+        payload.likedBy ||
+        payload.likes ||
+        payload.post?.likedBy ||
+        payload.post?.likes ||
+        payload.data?.likedBy ||
+        payload.data?.likes ||
+        null;
+      const likedBy = Array.isArray(likedByRaw)
+        ? likedByRaw.map((like) =>
+            String(
+              like?._id ||
+                like?.id ||
+                like?.userId ||
+                like?.user ||
+                like?.authorId ||
+                like?.author ||
+                like ||
+                ""
+            )
+          ).filter(Boolean)
+        : null;
       const nextCount =
         typeof payload.likeCount === "number"
           ? payload.likeCount
@@ -802,6 +1092,8 @@ export const AppProvider = ({ children }) => {
             ? payload.likesCount
             : typeof payload.count === "number"
               ? payload.count
+              : Array.isArray(likedBy)
+                ? likedBy.length
               : null;
       setPosts((prev) =>
         prev.map((post) => {
@@ -814,6 +1106,7 @@ export const AppProvider = ({ children }) => {
           const resolvedCount = nextCount ?? currentCount;
           return {
             ...post,
+            ...(likedBy ? { likes: likedBy, likedBy } : {}),
             likeCount: resolvedCount,
             likesCount: resolvedCount,
           };
@@ -863,6 +1156,7 @@ export const AppProvider = ({ children }) => {
     const handleFriendRequested = (payload = {}) => {
       const fromId = resolveEntityId(
         payload.fromUserId ||
+          payload.fromUser ||
           payload.from ||
           payload.requesterId ||
           payload.senderId ||
@@ -871,6 +1165,7 @@ export const AppProvider = ({ children }) => {
       );
       const toId = resolveEntityId(
         payload.toUserId ||
+          payload.toUser ||
           payload.to ||
           payload.targetUserId ||
           payload.recipientId ||
@@ -909,6 +1204,7 @@ export const AppProvider = ({ children }) => {
             : "";
       if (otherId) {
         setFriendStatus(otherId, "friends", { force: true });
+        refreshFriendMap();
       }
     };
 
@@ -959,26 +1255,45 @@ export const AppProvider = ({ children }) => {
     socket.on("notification", handleNotification);
     socket.on("comment-added", handleCommentAdded);
     socket.on("post-liked", handlePostLiked);
+    socket.on("post-like-updated", handlePostLiked);
     socket.on("story-viewed", handleStoryViewed);
     socket.on("friend-requested", handleFriendRequested);
+    socket.on("friend-request-received", handleFriendRequested);
     socket.on("friend-accepted", handleFriendAccepted);
     socket.on("friend-removed", handleFriendRemoved);
     socket.on("friend-blocked", handleFriendBlocked);
     socket.on("user-profile-updated", handleUserProfileUpdated);
+    socket.on("message-expired", handleMessageExpired);
 
     return () => {
       socket.off("chat-message", handleChatMessage);
       socket.off("notification", handleNotification);
       socket.off("comment-added", handleCommentAdded);
       socket.off("post-liked", handlePostLiked);
+      socket.off("post-like-updated", handlePostLiked);
       socket.off("story-viewed", handleStoryViewed);
       socket.off("friend-requested", handleFriendRequested);
+      socket.off("friend-request-received", handleFriendRequested);
       socket.off("friend-accepted", handleFriendAccepted);
       socket.off("friend-removed", handleFriendRemoved);
       socket.off("friend-blocked", handleFriendBlocked);
       socket.off("user-profile-updated", handleUserProfileUpdated);
+      socket.off("message-expired", handleMessageExpired);
     };
-  }, [authToken, currentUser, setFriendStatus, updateAuthorProfile]);
+  }, [
+    authToken,
+    currentUser,
+    setFriendStatus,
+    updateAuthorProfile,
+    resolveChatIdFromMessage,
+    updateChatMeta,
+    setChatMetaEntry,
+    getUserFromCache,
+    truncateMessage,
+    resolveMessagePreview,
+    pushChatToast,
+    refreshFriendMap,
+  ]);
 
   const updatePost = useCallback((postId, updates) => {
     setPosts((prev) =>
@@ -1040,6 +1355,11 @@ export const AppProvider = ({ children }) => {
     stories,
     notifications,
     usersCache,
+    chatMeta,
+    chatToasts,
+    chatUnreadTotal,
+    activeChatId,
+    chatViewActive,
     loading,
     loadPosts,
     loadStories,
@@ -1048,6 +1368,14 @@ export const AppProvider = ({ children }) => {
     updateCachedUser,
     updateAuthorProfile,
     getUserFromCache,
+    updateChatMeta,
+    setChatMetaEntry,
+    markChatRead,
+    setActiveChatId,
+    setChatViewActive,
+    requestChatOpen,
+    pushChatToast,
+    dismissChatToast,
     updatePost,
     addPost,
     removePost,
@@ -1081,5 +1409,10 @@ export const AppProvider = ({ children }) => {
     canViewPrivatePost,
   };
 
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      {children}
+      <ChatToastContainer />
+    </AppContext.Provider>
+  );
 };

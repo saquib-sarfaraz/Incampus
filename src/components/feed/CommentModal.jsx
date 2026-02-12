@@ -17,6 +17,57 @@ const toIdString = (value) => {
   return "";
 };
 
+const resolveCommentContent = (comment) => {
+  if (!comment || typeof comment !== "object") return "";
+  return (
+    comment.content ||
+    comment.text ||
+    comment.body ||
+    comment.message ||
+    comment.comment ||
+    ""
+  );
+};
+
+const resolveCommentUserId = (comment) =>
+  toIdString(
+    comment?.user?._id ||
+      comment?.userId ||
+      comment?.user ||
+      comment?.author?._id ||
+      comment?.authorId ||
+      comment?.author
+  );
+
+const resolveCommentUser = (comment, fallbackId) => {
+  const candidate = comment?.user || comment?.author;
+  if (candidate && typeof candidate === "object") {
+    return {
+      id: toIdString(candidate._id || candidate.id || fallbackId),
+      displayName:
+        candidate.displayName ||
+        candidate.fullName ||
+        candidate.name ||
+        candidate.username ||
+        "User",
+      profilePicUrl:
+        candidate.profilePicUrl ||
+        candidate.avatarUrl ||
+        candidate.avatar ||
+        ANONYMOUS_AVATAR,
+    };
+  }
+  return null;
+};
+
+const isAnonymousComment = (comment) =>
+  Boolean(
+    comment?.isAnonymous ||
+      comment?.anonymous ||
+      comment?.isAnon ||
+      comment?.is_anonymous
+  );
+
 export default function CommentModal({ post, isOpen, onClose }) {
   const { currentUser } = useAuth();
   const { updatePost, cacheUser, getUserFromCache, addBlockedUser, isUserBlocked } = useApp();
@@ -32,22 +83,31 @@ export default function CommentModal({ post, isOpen, onClose }) {
   const socket = getSocket();
 
   const loadComments = useCallback(async () => {
-    const postComments = post.comments || [];
+    const postComments = Array.isArray(post?.comments) ? post.comments : [];
     const commentsWithUsers = await Promise.all(
       postComments.map(async (comment) => {
-        const userId = toIdString(comment.user?._id || comment.userId || comment.user);
-        if (isUserBlocked(userId)) {
+        if (!comment || typeof comment !== "object") {
           return null;
         }
-        if (comment.isAnonymous) {
+        const content = resolveCommentContent(comment);
+        if (!content) return null;
+        const userId = resolveCommentUserId(comment);
+        if (userId && isUserBlocked(userId)) {
+          return null;
+        }
+        if (isAnonymousComment(comment)) {
           return {
             ...comment,
+            content,
             userId,
             user: { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR },
           };
         }
 
-        let user = getUserFromCache(userId);
+        let user = resolveCommentUser(comment, userId);
+        if (!user && userId) {
+          user = getUserFromCache(userId);
+        }
         if (!user && userId) {
           const userData = await getUserById(userId);
           if (userData) {
@@ -61,13 +121,22 @@ export default function CommentModal({ post, isOpen, onClose }) {
         }
         return {
           ...comment,
+          content,
           userId,
           user: user || { displayName: "User", profilePicUrl: ANONYMOUS_AVATAR },
         };
       })
     );
-    setComments(commentsWithUsers.filter(Boolean));
-  }, [post, getUserFromCache, cacheUser, isUserBlocked]);
+    const normalized = commentsWithUsers.filter(Boolean);
+    setComments(normalized);
+    if (postId) {
+      updatePost(postId, {
+        comments: normalized,
+        commentCount: normalized.length,
+        commentsCount: normalized.length,
+      });
+    }
+  }, [post, postId, updatePost, getUserFromCache, cacheUser, isUserBlocked]);
 
   useEffect(() => {
     if (isOpen && post) {
@@ -134,15 +203,17 @@ export default function CommentModal({ post, isOpen, onClose }) {
         null;
       if (savedComment) {
         const savedId = toIdString(savedComment._id || savedComment.id || tempId);
+        const savedContent = resolveCommentContent(savedComment) || content;
         const normalized = {
           ...savedComment,
           _id: savedId,
           id: savedId,
+          content: savedContent,
           userId: toIdString(
             savedComment.user?._id || savedComment.userId || savedComment.user || currentUser?.id
           ),
           user:
-            savedComment.isAnonymous
+            isAnonymousComment(savedComment)
               ? { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR }
               : savedComment.user || optimisticUser,
         };
@@ -308,7 +379,9 @@ export default function CommentModal({ post, isOpen, onClose }) {
                         <p className="font-semibold text-sm text-[#faf0e6]">
                           {comment.user?.displayName || "User"}
                         </p>
-                        <p className="text-sm text-[#b9b4c7]">{comment.content}</p>
+                        <p className="text-sm text-[#b9b4c7]">
+                          {comment.content || comment.text || comment.body || ""}
+                        </p>
                       </div>
                     </div>
                     <div
