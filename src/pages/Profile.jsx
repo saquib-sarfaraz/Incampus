@@ -63,6 +63,7 @@ export default function Profile() {
     setFeedScope,
     friendIds,
     friendMapLoaded,
+    friendMap,
     updateAuthorProfile,
   } = useApp();
   const [userPosts, setUserPosts] = useState([]);
@@ -103,9 +104,9 @@ export default function Profile() {
   const communityName = resolveCommunityName(currentUser) || currentUser?.fullName || "";
   const memberCount = Number(resolveMemberCount(currentUser) || 0);
   const resolvedFriendIds = useMemo(() => {
-    if (friendMapLoaded) return friendIds;
+    if (friendMapLoaded || Object.keys(friendMap || {}).length > 0) return friendIds;
     return currentUser?.friends || [];
-  }, [friendIds, friendMapLoaded, currentUser?.friends]);
+  }, [friendIds, friendMapLoaded, friendMap, currentUser?.friends]);
   const friendCount = resolvedFriendIds.length;
   const passwordStrength = useMemo(
     () => getPasswordStrength(newPassword),

@@ -10,11 +10,16 @@ import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import { fetchRankedFeedPage } from "../services/api";
 import {
-  getUniversalScore,
+  getLikeCount,
+  getCommentCount,
+  getShareCount,
+  getViewCount,
+  hoursSince,
   getTimestamp,
   shouldExcludeContent,
   isMutedByUser,
 } from "../utils/feedRanking";
+import { getSocket } from "../services/socket";
 
 const FEED_PAGE_LIMIT = 20;
 
@@ -140,6 +145,50 @@ const matchesCampus = (post, campusLower) => {
   return campusMatch || tagMatch;
 };
 
+const isAnonymousPost = (post) =>
+  Boolean(
+    post?.isAnonymous ||
+      post?.anonymous ||
+      post?.isAnon ||
+      post?.isAnonymousPost ||
+      post?.author?.isAnonymous
+  );
+
+const toCount = (value) => {
+  if (Array.isArray(value)) return value.length;
+  const parsed = Number(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const getStoryReshareCount = (post) => {
+  if (!post) return 0;
+  if (Array.isArray(post.storyReshares)) return post.storyReshares.length;
+  return toCount(
+    post.storyResharesCount ??
+      post.storyReshareCount ??
+      post.reshareCount ??
+      post.reshares ??
+      0
+  );
+};
+
+const getRecencyBoost = (post) => {
+  const hours = hoursSince(post);
+  if (hours <= 2) return 30;
+  if (hours <= 12) return 20;
+  if (hours <= 48) return 10;
+  return 0;
+};
+
+const getEngagementScore = (post) => {
+  const likes = getLikeCount(post);
+  const comments = getCommentCount(post);
+  const shares = getShareCount(post);
+  const reshares = getStoryReshareCount(post);
+  const views = getViewCount(post);
+  return likes * 2 + comments * 3 + shares * 4 + reshares * 3 + views * 0.2;
+};
+
 export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
     useApp();
@@ -175,6 +224,7 @@ export default function Feed() {
     }, refreshMs);
     return () => clearInterval(interval);
   }, [feedScope, loadPosts, loadStories]);
+
 
   const consumePrefetch = useCallback((page) => {
     const cached = prefetchRef.current;
@@ -249,6 +299,23 @@ export default function Feed() {
   }, [rankedLoading, rankedHasMore, rankedPage, loadRankedPage]);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !loadPosts) return;
+    const handleFeedUpdate = () => {
+      loadPosts();
+      if (loadStories) {
+        loadStories();
+      }
+      if (!shouldFilterByCollege) {
+        loadRankedPage(1, { replace: true });
+      }
+    };
+    socket.off("feed-update", handleFeedUpdate);
+    socket.on("feed-update", handleFeedUpdate);
+    return () => socket.off("feed-update", handleFeedUpdate);
+  }, [loadPosts, loadStories, shouldFilterByCollege, loadRankedPage]);
+
+  useEffect(() => {
     if (shouldFilterByCollege) return;
     setRankedPosts([]);
     setRankedPage(1);
@@ -300,6 +367,42 @@ export default function Feed() {
     [campusId, campusLabel]
   );
 
+  const isFriendPost = useCallback(
+    (post) => {
+      const authorId = getAuthorId(post);
+      if (!authorId) return false;
+      if (String(authorId) === String(currentUser?.id)) return true;
+      return isFriend(authorId);
+    },
+    [isFriend, currentUser?.id]
+  );
+
+  const mergeUniquePosts = useCallback((primary, secondary) => {
+    const base = Array.isArray(primary) ? primary : [];
+    const extras = Array.isArray(secondary) ? secondary : [];
+    const combined = [...base];
+    const indexById = new Map();
+    combined.forEach((post, index) => {
+      const id = resolvePostIdentity(post);
+      if (id) indexById.set(id, index);
+    });
+    extras.forEach((post) => {
+      const id = resolvePostIdentity(post);
+      if (!id) {
+        combined.push(post);
+        return;
+      }
+      if (indexById.has(id)) {
+        const idx = indexById.get(id);
+        combined[idx] = { ...combined[idx], ...post };
+      } else {
+        indexById.set(id, combined.length);
+        combined.push(post);
+      }
+    });
+    return combined;
+  }, []);
+
   const collegeFeedPosts = useMemo(() => {
     if (!shouldFilterByCollege) return [];
     if (!campusLabel && !campusId) {
@@ -311,13 +414,29 @@ export default function Feed() {
         if (String(authorId) === String(currentUser?.id)) return true;
         return matchesCollege(post);
       })
-      .sort((a, b) => getTimestamp(b) - getTimestamp(a));
-  }, [shouldFilterByCollege, scopedPosts, campusLabel, campusId, currentUser?.id, matchesCollege]);
+      .sort((a, b) => {
+        const aFriend = isFriendPost(a);
+        const bFriend = isFriendPost(b);
+        if (aFriend !== bFriend) return aFriend ? -1 : 1;
+        return getTimestamp(b) - getTimestamp(a);
+      });
+  }, [
+    shouldFilterByCollege,
+    scopedPosts,
+    campusLabel,
+    campusId,
+    currentUser?.id,
+    matchesCollege,
+    isFriendPost,
+  ]);
 
-  const universalFeedPosts = useMemo(() => {
-    if (shouldFilterByCollege) return [];
-    const base = rankedPosts.length > 0 ? rankedPosts : scopedPosts;
-    return base.filter((post) => {
+  const universalFeedMeta = useMemo(() => {
+    if (shouldFilterByCollege) {
+      return { posts: [], badgeMap: new Map(), trendingIds: new Set() };
+    }
+    const base =
+      rankedPosts.length > 0 ? mergeUniquePosts(rankedPosts, scopedPosts) : scopedPosts;
+    const filtered = base.filter((post) => {
       if (shouldExcludeContent(post)) return false;
       const authorId = getAuthorId(post);
       if (isUserBlocked(authorId)) return false;
@@ -325,26 +444,98 @@ export default function Feed() {
       const privacy = resolvePostPrivacy(post);
       return privacy === "public";
     });
+
+    const entries = filtered.map((post, index) => {
+      const id = resolvePostId(post, index);
+      const isFriendEntry = isFriendPost(post);
+      const isCollegeEntry = matchesCollege(post);
+      const baseScore = getEngagementScore(post);
+      return {
+        post,
+        id,
+        baseScore,
+        isFriend: isFriendEntry,
+        isCollege: isCollegeEntry,
+        timestamp: getTimestamp(post),
+      };
+    });
+
+    const globalCandidates = entries.filter(
+      (entry) => !entry.isFriend && !entry.isCollege
+    );
+    const sortedGlobal = [...globalCandidates].sort(
+      (a, b) => b.baseScore - a.baseScore
+    );
+    const take = Math.max(1, Math.ceil(sortedGlobal.length * 0.1));
+    const trendingIds = new Set(sortedGlobal.slice(0, take).map((entry) => entry.id));
+
+    const badgeMap = new Map();
+    const scored = entries.map((entry) => {
+      const post = entry.post;
+      const hasTrendingFlag = Boolean(
+        post?.isTrending ||
+          post?.trending ||
+          post?.trendingScore ||
+          post?.trending_score
+      );
+      const isTrendingGlobal = trendingIds.has(entry.id) || hasTrendingFlag;
+      let friendBoost = entry.isFriend ? 40 : 0;
+      if (entry.isFriend && isTrendingGlobal) {
+        friendBoost *= 2;
+      }
+      const collegeBoost = entry.isCollege ? 20 : 0;
+      const globalBoost =
+        !entry.isFriend && !entry.isCollege && isTrendingGlobal ? 10 : 0;
+      const recencyBoost = getRecencyBoost(post);
+      const finalScore =
+        entry.baseScore + friendBoost + collegeBoost + recencyBoost + globalBoost;
+
+      if (entry.isFriend && !isAnonymousPost(post)) {
+        badgeMap.set(entry.id, {
+          text: "👥 Friend",
+          tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+        });
+      } else if (entry.isCollege) {
+        badgeMap.set(entry.id, {
+          text: "🎓 Campus",
+          tone: "border-sky-400/30 bg-sky-400/10 text-sky-200",
+        });
+      } else if (isTrendingGlobal) {
+        badgeMap.set(entry.id, {
+          text: "🔥 Trending",
+          tone: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+        });
+      }
+
+      return {
+        ...entry,
+        isTrendingGlobal,
+        finalScore,
+      };
+    });
+
+    scored.sort((a, b) => {
+      if (a.finalScore !== b.finalScore) return b.finalScore - a.finalScore;
+      return b.timestamp - a.timestamp;
+    });
+
+    return {
+      posts: scored.map((entry) => entry.post),
+      badgeMap,
+      trendingIds,
+    };
   }, [
     shouldFilterByCollege,
     rankedPosts,
     scopedPosts,
+    mergeUniquePosts,
     isUserBlocked,
     currentUser?.id,
+    isFriendPost,
+    matchesCollege,
   ]);
 
-  const popularPostIds = useMemo(() => {
-    if (shouldFilterByCollege || universalFeedPosts.length === 0) return new Set();
-    const scored = universalFeedPosts.map((post, index) => ({
-      id: resolvePostId(post, index),
-      score: getUniversalScore(post),
-    }));
-    const sorted = [...scored].sort((a, b) => b.score - a.score);
-    const take = Math.max(1, Math.ceil(sorted.length * 0.1));
-    return new Set(sorted.slice(0, take).map((entry) => entry.id));
-  }, [shouldFilterByCollege, universalFeedPosts]);
-
-  const finalFeedPosts = shouldFilterByCollege ? collegeFeedPosts : universalFeedPosts;
+  const finalFeedPosts = shouldFilterByCollege ? collegeFeedPosts : universalFeedMeta.posts;
   const activePage = feedCursor.key === feedKey ? feedCursor.page : 0;
   const visibleCount = 8 + activePage * 6;
   const showSkeletons = shouldFilterByCollege
@@ -398,9 +589,9 @@ export default function Feed() {
             <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
               {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
             </p>
-            {!shouldFilterByCollege && popularPostIds.size > 0 && (
+            {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
               <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
-                🔥 Popular Now
+                🔥 Trending
               </span>
             )}
             {feedScope === "college" && !campusLabel && (
@@ -446,14 +637,27 @@ export default function Feed() {
             <div className="space-y-6">
               {displayedPosts.map((post, index) => {
                 const postId = resolvePostId(post, index);
-                const isPopular =
-                  !shouldFilterByCollege && popularPostIds.has(postId);
-                const badge = isPopular
-                  ? {
-                      text: "🔥 Popular Now",
-                      tone: "border-amber-400/30 bg-amber-400/10 text-amber-200",
-                    }
-                  : null;
+                let badge = null;
+                if (!shouldFilterByCollege) {
+                  badge = universalFeedMeta.badgeMap.get(postId) || null;
+                } else {
+                  const friendBadge =
+                    isFriendPost(post) && !isAnonymousPost(post)
+                      ? {
+                          text: "👥 Friend",
+                          tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+                        }
+                      : null;
+                  const campusBadge = friendBadge
+                    ? null
+                    : matchesCollege(post)
+                      ? {
+                          text: "🎓 Campus",
+                          tone: "border-sky-400/30 bg-sky-400/10 text-sky-200",
+                        }
+                      : null;
+                  badge = friendBadge || campusBadge;
+                }
                 return (
                   <Post
                     key={resolvePostKey(post, index)}

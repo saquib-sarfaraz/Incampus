@@ -441,7 +441,10 @@ export const fetchPosts = async (params = {}) => {
 };
 
 export const fetchRankedFeedPage = async (params = {}) => {
-  const data = await apiFetchWithFallback(["/posts/feed", "/posts"], { params });
+  const data = await apiFetchWithFallback(
+    ["/feed/universal", "/posts/feed", "/posts"],
+    { params }
+  );
   return normalizeList(data, ["posts", "items", "data"]);
 };
 
@@ -832,33 +835,49 @@ export const markChatSeen = async (payload) => {
 // Friend APIs
 export const sendFriendRequest = async (recipientId) => {
   const payload = { recipientId, targetUserId: recipientId };
-  return apiFetchWithFallback(["/friend/request", "/friends/send"], {
-    method: "POST",
-    body: payload,
-  });
+  return apiFetchWithFallback(
+    ["/friend-requests/send", "/friend/request", "/friends/send"],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
 };
 
 export const getPendingRequests = async (params = {}) => {
-  const data = await apiFetch("/friends/pending", {
-    params,
-  });
+  const data = await apiFetchWithFallback(
+    [
+      "/friends/pending",
+      "/friend-requests/pending",
+      "/friend-requests",
+      "/friends/requests/pending",
+      "/friends/requests",
+    ],
+    { params }
+  );
   return normalizeList(data, ["requests", "items", "data"]);
 };
 
 export const acceptFriendRequest = async (requesterId) => {
   const payload = { requesterId, senderId: requesterId };
-  return apiFetchWithFallback(["/friend/accept", "/friends/accept"], {
-    method: "POST",
-    body: payload,
-  });
+  return apiFetchWithFallback(
+    ["/friend-requests/accept", "/friend/accept", "/friends/accept"],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
 };
 
 export const rejectFriendRequest = async (requesterId) => {
   const payload = { requesterId, senderId: requesterId };
-  return apiFetchWithFallback(["/friend/reject", "/friends/reject"], {
-    method: "POST",
-    body: payload,
-  });
+  return apiFetchWithFallback(
+    ["/friend-requests/reject", "/friend/reject", "/friends/reject"],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
 };
 
 export const ignoreFriendRequest = async (requesterId) => {
@@ -867,10 +886,13 @@ export const ignoreFriendRequest = async (requesterId) => {
 
 export const cancelFriendRequest = async (recipientId) => {
   const payload = { recipientId, targetUserId: recipientId };
-  return apiFetchWithFallback(["/friend/cancel", "/friends/cancel"], {
-    method: "POST",
-    body: payload,
-  });
+  return apiFetchWithFallback(
+    ["/friend-requests/cancel", "/friend/cancel", "/friends/cancel"],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
 };
 
 export const getFriendsList = async (params = {}) => {

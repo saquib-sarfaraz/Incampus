@@ -58,7 +58,13 @@ export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { logout } = useAuth();
-  const { notifications, setNotifications, feedScope, setFeedScope } = useApp();
+  const {
+    notifications,
+    setNotifications,
+    feedScope,
+    setFeedScope,
+    chatUnreadTotal,
+  } = useApp();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showFeedSwitcher, setShowFeedSwitcher] = useState(false);
   const feedSwitcherRef = useRef(null);
@@ -194,7 +200,7 @@ export default function Header() {
 
             <Motion.button
               onClick={() => navigate("/chat")}
-              className={`hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
+              className={`relative hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/chat")
                   ? "bg-white/10 text-[#faf0e6]"
                   : "text-[#b9b4c7] hover:bg-white/5 hover:text-[#faf0e6]"
@@ -203,6 +209,9 @@ export default function Header() {
               whileTap={{ scale: 0.96 }}
             >
               <i className="fa-solid fa-message text-base"></i>
+              {chatUnreadTotal > 0 && (
+                <span className="absolute top-1 right-1 block h-2 w-2 rounded-full ring-2 ring-[#1a120b] bg-emerald-400 shadow-[0_0_10px_rgba(34,197,94,0.75)]"></span>
+              )}
             </Motion.button>
 
             <div className="relative">

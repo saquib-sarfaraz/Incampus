@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -111,7 +111,7 @@ export default function StoryBar() {
     setCustomCollegeTag("");
   };
 
-  const resolveStoryName = (story, cachedUser) => {
+  const resolveStoryName = useCallback((story, cachedUser) => {
     return (
       story.authorDisplayName ||
       story.author?.displayName ||
@@ -122,18 +122,18 @@ export default function StoryBar() {
       cachedUser?.username ||
       "User"
     );
-  };
+  }, []);
 
-  const resolveStoryAvatar = (story, cachedUser) => {
+  const resolveStoryAvatar = useCallback((story, cachedUser) => {
     return (
       story.authorProfilePic ||
       story.author?.profilePicUrl ||
       cachedUser?.profilePicUrl ||
       ANONYMOUS_AVATAR
     );
-  };
+  }, []);
 
-  const resolveStoryCampus = (story, cachedUser) => {
+  const resolveStoryCampus = useCallback((story, cachedUser) => {
     return (
       story.collegeTagName ||
       story.collegeTag ||
@@ -149,7 +149,7 @@ export default function StoryBar() {
       story.author?.university ||
       ""
     );
-  };
+  }, []);
 
   const campusLabel = currentUser?.university || currentUser?.college || "";
   const currentCollegeGroupId =
@@ -159,7 +159,7 @@ export default function StoryBar() {
     currentUser?.collegeGroup ||
     "";
 
-  const resolveStoryGroupId = (story) => {
+  const resolveStoryGroupId = useCallback((story) => {
     return (
       story.collegeTagId ||
       story.college_tag_id ||
@@ -173,30 +173,34 @@ export default function StoryBar() {
       story.collegeGroup ||
       ""
     );
-  };
+  }, []);
 
-  const campusLower = campusLabel ? campusLabel.toLowerCase() : "";
+  const currentUserId = currentUser?.id;
 
-  const getAuthorId = (story) => {
+  const getAuthorId = useCallback((story) => {
     return story.authorId || story.author?._id || story.author || "";
-  };
+  }, []);
 
-  const isOwner = (authorId) => {
-    if (!authorId || !currentUser?.id) return false;
-    return String(authorId) === String(currentUser.id);
-  };
+  const isOwner = useCallback(
+    (authorId) => {
+      if (!authorId || !currentUserId) return false;
+      return String(authorId) === String(currentUserId);
+    },
+    [currentUserId]
+  );
 
-  const matchesCollege = (story, cachedUser) => {
+  const matchesCollege = useCallback((story, cachedUser) => {
     if (!campusLabel && !currentCollegeGroupId) return false;
     const storyGroupId = resolveStoryGroupId(story);
     if (currentCollegeGroupId && storyGroupId) {
       return String(storyGroupId) === String(currentCollegeGroupId);
     }
-    if (!campusLower) return false;
+    const localCampus = campusLabel ? campusLabel.toLowerCase() : "";
+    if (!localCampus) return false;
     const storyCampus = resolveStoryCampus(story, cachedUser);
     if (!storyCampus) return false;
-    return String(storyCampus).toLowerCase() === campusLower;
-  };
+    return String(storyCampus).toLowerCase() === localCampus;
+  }, [campusLabel, currentCollegeGroupId, resolveStoryGroupId, resolveStoryCampus]);
 
   const filteredStories = useMemo(() => {
     if (!stories || stories.length === 0) return [];
@@ -219,11 +223,13 @@ export default function StoryBar() {
     getUserFromCache,
     currentCollegeGroupId,
     isUserBlocked,
-    currentUser?.id,
     isFriend,
+    getAuthorId,
+    isOwner,
+    matchesCollege,
   ]);
 
-  const getStoryTimestamp = (story) => {
+  const getStoryTimestamp = useCallback((story) => {
     const raw =
       story.createdAt ||
       story.created_at ||
@@ -233,7 +239,7 @@ export default function StoryBar() {
       0;
     const ts = new Date(raw).getTime();
     return Number.isNaN(ts) ? 0 : ts;
-  };
+  }, []);
 
   const groupedStories = useMemo(() => {
     const grouped = {};
@@ -266,7 +272,13 @@ export default function StoryBar() {
       group.stories.sort((a, b) => getStoryTimestamp(a) - getStoryTimestamp(b));
     });
     return groups;
-  }, [filteredStories, getUserFromCache]);
+  }, [
+    filteredStories,
+    getUserFromCache,
+    resolveStoryName,
+    resolveStoryAvatar,
+    getStoryTimestamp,
+  ]);
 
   const orderedGroups = useMemo(() => {
     const groups = [...groupedStories];
@@ -293,17 +305,16 @@ export default function StoryBar() {
   }, [
     groupedStories,
     getUserFromCache,
-    currentUser?.id,
     isFriend,
-    campusLabel,
-    currentCollegeGroupId,
-    campusLower,
+    isOwner,
+    matchesCollege,
+    getStoryTimestamp,
   ]);
 
   const currentUserGroupIndex = useMemo(() => {
     if (!currentUser?.id) return -1;
     return orderedGroups.findIndex((group) => isOwner(group.authorId));
-  }, [orderedGroups, currentUser?.id]);
+  }, [orderedGroups, isOwner]);
 
   const storyGroupsForBar = useMemo(() => {
     return orderedGroups

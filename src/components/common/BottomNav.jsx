@@ -1,9 +1,11 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
+import { useApp } from "../../context/useApp";
 
 export default function BottomNav({ hidden = false, onCreate, overlay = false }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { chatUnreadTotal } = useApp();
 
   const normalizePath = (path = "") => (path.length > 1 ? path.replace(/\/+$/, "") : path);
   const currentPath = normalizePath(location.pathname);
@@ -90,9 +92,12 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
           }`}
           whileTap={{ scale: 0.9 }}
         >
-          <i
-            className={`fa-solid ${navItems[2].icon} text-base`}
-          />
+          <span className="relative">
+            <i className={`fa-solid ${navItems[2].icon} text-base`} />
+            {chatUnreadTotal > 0 && (
+              <span className="absolute -top-1 -right-2 block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+            )}
+          </span>
           <span>{navItems[2].label}</span>
         </Motion.button>
 
