@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
+import { createPortal } from "react-dom";
 import { useAuth } from "../../context/authContext";
 import {
   deleteStory,
@@ -20,6 +21,9 @@ import {
 } from "../../utils/storyMedia";
 
 const FALLBACK_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
+const IMAGE_DURATION_MS = 5000;
+const VIDEO_FALLBACK_MS = 15000;
+const HOLD_TO_PAUSE_MS = 180;
 
 export default function StoryViewer({ stories, initialIndex, onClose }) {
   const { currentUser } = useAuth();
@@ -27,6 +31,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const [currentGroupIndex, setCurrentGroupIndex] = useState(initialIndex);
   const [currentStoryIndex, setCurrentStoryIndex] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
   const [views, setViews] = useState([]);
   const [viewsCount, setViewsCount] = useState(0);
   const [viewersOpen, setViewersOpen] = useState(false);
@@ -38,12 +43,21 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const touchStartRef = useRef(null);
   const viewedStoriesRef = useRef(new Set());
   const progressRef = useRef(0);
+  const durationRef = useRef(IMAGE_DURATION_MS);
+  const startTimeRef = useRef(0);
+  const pausedAtRef = useRef(null);
+  const pausedTotalRef = useRef(0);
+  const suppressTapRef = useRef(false);
   const mutedByStoryRef = useRef({});
   const videoRef = useRef(null);
+  const portalTarget = typeof document !== "undefined" ? document.body : null;
 
   const currentGroup = stories[currentGroupIndex];
   const currentStory = currentGroup?.stories[currentStoryIndex];
   const storyId = resolveStoryId(currentStory);
+  const mediaUrl = resolveStoryMediaUrl(currentStory);
+  const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
+  const isVideo = mediaType === "video";
 
   const handleNext = useCallback(() => {
     const group = stories[currentGroupIndex];
@@ -90,28 +104,72 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   }, [isMuted, storyId]);
 
   useEffect(() => {
+    if (!isVideo || !videoRef.current) return;
+    if (isPaused) {
+      videoRef.current.pause();
+      return;
+    }
+    videoRef.current.play().catch(() => {});
+  }, [isVideo, isPaused, storyId]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!currentStory) return;
-
-    const mediaUrl = resolveStoryMediaUrl(currentStory);
-    const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
-    const durationMs = mediaType === "video" ? 20000 : 15000;
-    const startTime = Date.now();
-
     progressRef.current = 0;
     setProgress(0);
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - startTime;
-      const nextProgress = Math.min(100, (elapsed / durationMs) * 100);
-      progressRef.current = nextProgress;
-      setProgress(nextProgress);
-      if (nextProgress >= 100) {
-        clearInterval(interval);
-        setTimeout(() => handleNext(), 0);
-      }
-    }, 100);
+    setIsPaused(false);
+    pausedAtRef.current = null;
+    pausedTotalRef.current = 0;
+    startTimeRef.current = performance.now();
+    const initialDuration = isVideo ? VIDEO_FALLBACK_MS : IMAGE_DURATION_MS;
+    durationRef.current = initialDuration;
+  }, [currentStory, isVideo]);
 
-    return () => clearInterval(interval);
-  }, [currentStory, handleNext]);
+  useEffect(() => {
+    if (!currentStory) return;
+    let rafId = 0;
+    const tick = (now) => {
+      if (isPaused) {
+        rafId = requestAnimationFrame(tick);
+        return;
+      }
+
+      if (isVideo && videoRef.current) {
+        const duration = durationRef.current || VIDEO_FALLBACK_MS;
+        const current = Math.max(0, videoRef.current.currentTime || 0) * 1000;
+        const nextProgress = duration > 0 ? Math.min(100, (current / duration) * 100) : 0;
+        progressRef.current = nextProgress;
+        setProgress(nextProgress);
+        if (nextProgress >= 100) {
+          handleNext();
+          return;
+        }
+      } else {
+        const duration = durationRef.current || IMAGE_DURATION_MS;
+        const elapsed = now - startTimeRef.current - pausedTotalRef.current;
+        const nextProgress = Math.min(100, (elapsed / duration) * 100);
+        progressRef.current = nextProgress;
+        setProgress(nextProgress);
+        if (nextProgress >= 100) {
+          handleNext();
+          return;
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [currentStory, isVideo, isPaused, handleNext]);
 
   useEffect(() => {
     const recordView = async () => {
@@ -252,9 +310,6 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   };
 
   const isOwnStory = String(currentGroup?.authorId) === String(currentUser?.id);
-  const mediaUrl = resolveStoryMediaUrl(currentStory);
-  const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
-  const isVideo = mediaType === "video";
   const debugStories = useMemo(() => {
     if (typeof window === "undefined") return false;
     if (!import.meta.env?.DEV) return false;
@@ -285,6 +340,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
 
   const handleTouchStart = (event) => {
     const touch = event.touches[0];
+    handleHoldStart();
     touchStartRef.current = {
       x: touch?.clientX ?? null,
       y: touch?.clientY ?? null,
@@ -302,6 +358,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
     const absX = Math.abs(deltaX);
     const absY = Math.abs(deltaY);
     touchStartRef.current = null;
+    handleHoldEnd();
 
     if (absX > 50 && absX > absY) {
       if (deltaX < 0) {
@@ -312,9 +369,50 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
       return;
     }
 
-    if (isOwnStory && absY > 60 && absY > absX && deltaY < 0) {
-      setViewersOpen(true);
+    if (absY > 60 && absY > absX) {
+      if (deltaY > 0) {
+        onClose();
+        return;
+      }
+      if (isOwnStory && deltaY < 0) {
+        setViewersOpen(true);
+      }
     }
+  };
+
+  const handleHoldStart = () => {
+    if (pausedAtRef.current) return;
+    suppressTapRef.current = false;
+    pausedAtRef.current = performance.now();
+    setIsPaused(true);
+  };
+
+  const handleHoldEnd = () => {
+    const start = pausedAtRef.current;
+    if (!start) {
+      setIsPaused(false);
+      return;
+    }
+    const duration = performance.now() - start;
+    if (duration >= HOLD_TO_PAUSE_MS) {
+      suppressTapRef.current = true;
+      setTimeout(() => {
+        suppressTapRef.current = false;
+      }, 200);
+    }
+    pausedTotalRef.current += duration;
+    pausedAtRef.current = null;
+    setIsPaused(false);
+  };
+
+  const handlePrevTap = () => {
+    if (suppressTapRef.current) return;
+    handlePrev();
+  };
+
+  const handleNextTap = () => {
+    if (suppressTapRef.current) return;
+    handleNext();
   };
 
   const handleToggleMute = () => {
@@ -327,93 +425,114 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
     });
   };
 
-  return (
-    <>
-      <AnimatePresence>
+  const handleVideoMetadata = () => {
+    if (!videoRef.current) return;
+    const duration = videoRef.current.duration;
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    const ms = duration * 1000;
+    durationRef.current = ms;
+  };
+
+  const overlay = (
+    <AnimatePresence>
+      <Motion.div
+        id="story-viewer-modal"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 z-[100] bg-black flex items-stretch justify-stretch"
+        onClick={onClose}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleHoldEnd}
+      >
         <Motion.div
-          id="story-viewer-modal"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-black/90 z-50 flex items-center justify-center p-4"
-          onClick={onClose}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
+          initial={{ opacity: 0.9, scale: 0.98 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0.9, scale: 0.98 }}
+          className="relative w-screen h-[100dvh] flex flex-col"
+          onClick={(e) => e.stopPropagation()}
         >
-          <Motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.9, opacity: 0 }}
-            className="relative w-full h-full max-w-md max-h-[80vh] flex flex-col items-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {showMenu && (
-              <div className="absolute inset-0 rounded-2xl bg-black/25 backdrop-blur-sm z-10 pointer-events-none" />
-            )}
-            <div className="absolute top-4 right-2 z-30 flex items-center gap-2">
-              <div className="relative" ref={menuRef}>
-                <Motion.button
-                  type="button"
-                  onClick={() => setShowMenu((prev) => !prev)}
-                  className="text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center hover:bg-white/20 transition-colors"
-                  whileTap={{ scale: 0.9 }}
-                  aria-label="Story actions"
-                >
-                  <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
-                </Motion.button>
-                {showMenu && (
-                  <div className="absolute right-0 mt-2 w-40 rounded-2xl glass-card z-30 overflow-hidden">
-                    {isOwnStory ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowMenu(false);
-                          handleDelete();
-                        }}
-                        className="w-full text-left px-4 py-2 text-sm text-rose-200 hover:bg-white/10"
-                      >
-                        <i className="fa-solid fa-trash-can mr-2"></i>
-                        Delete
-                      </button>
-                    ) : (
-                      <>
+          {showMenu && (
+            <div className="absolute inset-0 bg-black/30 backdrop-blur-sm z-10 pointer-events-none" />
+          )}
+
+          <div className="absolute inset-x-0 top-0 z-30 px-4 pt-[calc(env(safe-area-inset-top)+12px)]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center space-x-2 glass-surface rounded-full px-2 py-1">
+                <img
+                  src={currentGroup.authorProfilePic || FALLBACK_AVATAR}
+                  alt={currentGroup.authorDisplayName}
+                  className="w-8 h-8 rounded-full border border-[#b9b4c7] object-cover"
+                />
+                <span className="text-[#faf0e6] text-sm font-semibold">
+                  {currentGroup.authorDisplayName || "User"}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative" ref={menuRef}>
+                  <Motion.button
+                    type="button"
+                    onClick={() => setShowMenu((prev) => !prev)}
+                    className="text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center hover:bg-white/20 transition-colors"
+                    whileTap={{ scale: 0.9 }}
+                    aria-label="Story actions"
+                  >
+                    <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
+                  </Motion.button>
+                  {showMenu && (
+                    <div className="absolute right-0 mt-2 w-40 rounded-2xl glass-card z-30 overflow-hidden">
+                      {isOwnStory ? (
                         <button
                           type="button"
                           onClick={() => {
                             setShowMenu(false);
-                            handleReport();
-                          }}
-                          className="w-full text-left px-4 py-2 text-sm text-amber-200 hover:bg-white/10"
-                        >
-                          <i className="fa-solid fa-flag mr-2"></i>
-                          Report
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMenu(false);
-                            handleBlock();
+                            handleDelete();
                           }}
                           className="w-full text-left px-4 py-2 text-sm text-rose-200 hover:bg-white/10"
                         >
-                          <i className="fa-solid fa-ban mr-2"></i>
-                          Block
+                          <i className="fa-solid fa-trash-can mr-2"></i>
+                          Delete
                         </button>
-                      </>
-                    )}
-                  </div>
-                )}
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowMenu(false);
+                              handleReport();
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-amber-200 hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-flag mr-2"></i>
+                            Report
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowMenu(false);
+                              handleBlock();
+                            }}
+                            className="w-full text-left px-4 py-2 text-sm text-rose-200 hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-ban mr-2"></i>
+                            Block
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={onClose}
+                  className="text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center hover:bg-red-500 transition-colors"
+                >
+                  &times;
+                </button>
               </div>
-              <button
-                onClick={onClose}
-                className="text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center hover:bg-red-500 transition-colors"
-              >
-                &times;
-              </button>
             </div>
 
-            {/* Progress bars */}
-            <div className="w-full flex space-x-1 mb-2">
+            <div className="mt-3 flex space-x-1">
               {currentGroup.stories.map((_, index) => (
                 <div
                   key={index}
@@ -434,108 +553,106 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
                 </div>
               ))}
             </div>
+          </div>
 
-            {/* Story content */}
-            <div className="relative w-full h-full rounded-lg overflow-hidden">
-              {mediaUrl ? (
-                isVideo ? (
-                  <video
-                    ref={videoRef}
-                    key={storyId || mediaUrl}
-                    src={mediaUrl}
-                    className="w-full h-full object-contain"
-                    autoPlay
-                    muted={isMuted}
-                    playsInline
-                  />
-                ) : (
-                  <img
-                    src={mediaUrl}
-                    alt="Story"
-                    className="w-full h-full object-contain"
-                  />
-                )
+          <div
+            className="relative flex-1 w-full h-full overflow-hidden"
+            onPointerDown={(event) => {
+              if (event.pointerType !== "touch") handleHoldStart();
+            }}
+            onPointerUp={(event) => {
+              if (event.pointerType !== "touch") handleHoldEnd();
+            }}
+            onPointerLeave={(event) => {
+              if (event.pointerType !== "touch") handleHoldEnd();
+            }}
+            onPointerCancel={(event) => {
+              if (event.pointerType !== "touch") handleHoldEnd();
+            }}
+          >
+            {mediaUrl ? (
+              isVideo ? (
+                <video
+                  ref={videoRef}
+                  key={storyId || mediaUrl}
+                  src={mediaUrl}
+                  className="w-full h-full object-cover"
+                  autoPlay
+                  muted={isMuted}
+                  playsInline
+                  onLoadedMetadata={handleVideoMetadata}
+                  onDurationChange={handleVideoMetadata}
+                  onEnded={handleNext}
+                />
               ) : (
-                <div className="w-full h-full flex items-center justify-center bg-white/5 text-[#b9b4c7] text-sm">
-                  Story media unavailable
-                </div>
-              )}
-
-              <div className="absolute inset-0 z-10 pointer-events-none">
-                <button
-                  type="button"
-                  onClick={handlePrev}
-                  className="absolute inset-y-0 left-0 w-1/2 cursor-pointer pointer-events-auto"
-                  aria-label="Previous story"
-                />
-                <button
-                  type="button"
-                  onClick={handleNext}
-                  className="absolute inset-y-0 right-0 w-1/2 cursor-pointer pointer-events-auto"
-                  aria-label="Next story"
-                />
-              </div>
-
-              {isVideo && (
-                <button
-                  type="button"
-                  onClick={handleToggleMute}
-                  className="absolute bottom-3 right-3 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition-colors hover:bg-black/60"
-                  aria-label={isMuted ? "Unmute story" : "Mute story"}
-                >
-                  <i
-                    className={`fa-solid ${isMuted ? "fa-volume-xmark" : "fa-volume-high"} text-sm`}
-                  ></i>
-                </button>
-              )}
-
-              {debugStories && (
-                <div className="absolute bottom-2 left-2 right-2 max-h-40 overflow-auto rounded-xl border border-white/10 bg-black/70 p-2 text-[10px] text-white/80">
-                  <pre className="whitespace-pre-wrap">{debugPayload}</pre>
-                </div>
-              )}
-
-              {/* User info */}
-              <div className="absolute top-2 left-2 z-20 flex items-center space-x-2 glass-surface rounded-full px-2 py-1">
                 <img
-                  src={currentGroup.authorProfilePic || FALLBACK_AVATAR}
-                  alt={currentGroup.authorDisplayName}
-                  className="w-8 h-8 rounded-full border border-[#b9b4c7] object-cover"
+                  src={mediaUrl}
+                  alt="Story"
+                  className="w-full h-full object-cover"
                 />
-                <span className="text-[#faf0e6] text-sm font-semibold">
-                  {currentGroup.authorDisplayName || "User"}
-                </span>
+              )
+            ) : (
+              <div className="w-full h-full flex items-center justify-center bg-white/5 text-[#b9b4c7] text-sm">
+                Story media unavailable
               </div>
+            )}
 
-            </div>
-
-            {/* Navigation buttons */}
-            <button
-              onClick={handlePrev}
-              className="absolute left-2 top-1/2 -translate-y-1/2 text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center text-lg hover:bg-white/20 transition-colors"
-            >
-              &lt;
-            </button>
-            <button
-              onClick={handleNext}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-white bg-white/10 rounded-full h-8 w-8 flex items-center justify-center text-lg hover:bg-white/20 transition-colors"
-            >
-              &gt;
-            </button>
-
-            {isOwnStory && (
+            <div className="absolute inset-0 z-10 pointer-events-none">
               <button
                 type="button"
-                onClick={() => setViewersOpen(true)}
-                className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-[#faf0e6] backdrop-blur"
+                onClick={handlePrevTap}
+                className="absolute inset-y-0 left-0 w-1/2 cursor-pointer pointer-events-auto"
+                aria-label="Previous story"
+              />
+              <button
+                type="button"
+                onClick={handleNextTap}
+                className="absolute inset-y-0 right-0 w-1/2 cursor-pointer pointer-events-auto"
+                aria-label="Next story"
+              />
+            </div>
+
+            {debugStories && (
+              <div className="absolute bottom-2 left-2 right-2 max-h-40 overflow-auto rounded-xl border border-white/10 bg-black/70 p-2 text-[10px] text-white/80">
+                <pre className="whitespace-pre-wrap">{debugPayload}</pre>
+              </div>
+            )}
+          </div>
+
+          <div className="absolute inset-x-0 bottom-0 z-20 px-4 pb-[calc(env(safe-area-inset-bottom)+12px)] flex items-center justify-between">
+            <div className="flex-1 flex justify-center">
+              {isOwnStory && (
+                <button
+                  type="button"
+                  onClick={() => setViewersOpen(true)}
+                  className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-[#faf0e6] backdrop-blur"
+                >
+                  <i className="fa-regular fa-eye mr-2"></i>
+                  {viewsCount || views.length} Views
+                </button>
+              )}
+            </div>
+            {isVideo && (
+              <button
+                type="button"
+                onClick={handleToggleMute}
+                className="flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition-colors hover:bg-black/60"
+                aria-label={isMuted ? "Unmute story" : "Mute story"}
               >
-                <i className="fa-regular fa-eye mr-2"></i>
-                {viewsCount || views.length} Views
+                <i
+                  className={`fa-solid ${isMuted ? "fa-volume-xmark" : "fa-volume-high"} text-sm`}
+                ></i>
               </button>
             )}
-          </Motion.div>
+          </div>
         </Motion.div>
-      </AnimatePresence>
+      </Motion.div>
+    </AnimatePresence>
+  );
+
+  return (
+    <>
+      {portalTarget ? createPortal(overlay, portalTarget) : overlay}
 
       <StoryViewersPanel
         isOpen={viewersOpen}

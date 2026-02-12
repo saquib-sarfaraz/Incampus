@@ -22,6 +22,13 @@ import {
   resolveStoryPrivacyType,
 } from "../utils/storyMedia";
 import {
+  getTrendingScore as calculateTrendingScore,
+  getTimestamp,
+  resolveContentType,
+  shouldExcludeContent,
+  isMutedByUser,
+} from "../utils/feedRanking";
+import {
   resolveStudentType,
   formatStudentType,
   resolveCollegeName,
@@ -36,6 +43,20 @@ import {
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const TRENDING_WINDOW_OPTIONS = [
+  { id: "48h", label: "Last 48 Hours", hours: 48 },
+  { id: "7d", label: "Last 7 Days", hours: 168 },
+];
+const TRENDING_TABS = [
+  { id: "all", label: "🔥 All" },
+  { id: "thoughts", label: "📝 Thoughts" },
+  { id: "posts", label: "📸 Posts" },
+  { id: "stories", label: "🎬 Stories" },
+];
+const TRENDING_VIEWS = [
+  { id: "grid", label: "Grid" },
+  { id: "doom", label: "Doom Scroll" },
+];
 
 const getLikeCount = (post) => {
   if (Array.isArray(post.likes)) return post.likes.length;
@@ -47,9 +68,16 @@ const getCommentCount = (post) => {
   return Number(post.commentsCount || post.commentCount || 0);
 };
 
-const getPostViewCount = (post) => {
-  if (Array.isArray(post.views)) return post.views.length;
-  return Number(post.views || post.viewCount || post.viewsCount || post.impressions || 0);
+const getSaveCount = (post) => {
+  if (Array.isArray(post.saves)) return post.saves.length;
+  return Number(
+    post.savesCount ||
+      post.saveCount ||
+      post.bookmarksCount ||
+      post.bookmarkCount ||
+      post.bookmarks ||
+      0
+  );
 };
 
 const getShareCount = (post) => {
@@ -74,34 +102,6 @@ const getStoryViewCount = (story) => {
   );
 };
 
-const getRecencyBoost = (dateString) => {
-  if (!dateString) return 0;
-  const createdAt = new Date(dateString).getTime();
-  if (Number.isNaN(createdAt)) return 0;
-  const hours = (Date.now() - createdAt) / 36e5;
-  const boostWindow = Math.max(0, 24 - hours);
-  return (boostWindow / 24) * 10;
-};
-
-const getTrendingScore = (post) => {
-  const likes = getLikeCount(post);
-  const comments = getCommentCount(post);
-  const shares = getShareCount(post);
-  const views = getPostViewCount(post);
-  return (
-    likes * 3 +
-    comments * 5 +
-    shares * 6 +
-    views * 2 +
-    getRecencyBoost(post.createdAt)
-  );
-};
-
-const getStoryScore = (story) => {
-  const views = getStoryViewCount(story);
-  return views * 2 + getRecencyBoost(story.createdAt);
-};
-
 const resolvePostPrivacy = (post) => {
   const raw = String(
     post.visibility ||
@@ -112,9 +112,13 @@ const resolvePostPrivacy = (post) => {
       ""
   ).toLowerCase();
   if (raw.includes("friend") || raw.includes("private")) return "friends";
+  if (raw.includes("college") || raw.includes("campus")) return "college";
   if (raw.includes("universal") || raw.includes("public")) return "public";
   if (post.friendsOnly === true || post.isPrivate === true || post.private === true) {
     return "friends";
+  }
+  if (post.collegeOnly === true || post.campusOnly === true) {
+    return "college";
   }
   return "public";
 };
@@ -256,6 +260,9 @@ export default function Trending() {
   const {
     posts,
     stories,
+    loading,
+    loadPosts,
+    loadStories,
     updatePost,
     getUserFromCache,
     isUserBlocked,
@@ -273,6 +280,10 @@ export default function Trending() {
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
+  const [trendingTab, setTrendingTab] = useState("all");
+  const [trendingWindow, setTrendingWindow] = useState("48h");
+  const [trendingView, setTrendingView] = useState("doom");
+  const [trendingVisibleCount, setTrendingVisibleCount] = useState(12);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -282,6 +293,7 @@ export default function Trending() {
   const [shareChatPost, setShareChatPost] = useState(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
+  const trendingLoadMoreRef = useRef(null);
   const searchAbortRef = useRef(null);
   const searchRequestRef = useRef(0);
 
@@ -547,37 +559,48 @@ export default function Trending() {
     });
   }, [searchUsersResults, ensureFriendStatus, currentUser?.id]);
 
+  useEffect(() => {
+    if (!loadPosts && !loadStories) return;
+    if (loadPosts) loadPosts();
+    if (loadStories) loadStories();
+    const interval = setInterval(() => {
+      if (loadPosts) loadPosts();
+      if (loadStories) loadStories();
+    }, 120000);
+    return () => clearInterval(interval);
+  }, [loadPosts, loadStories]);
+
   const postsArray = useMemo(() => {
     const list = Array.isArray(posts) ? posts : [];
     return list.filter((post) => {
+      if (!post) return false;
+      if (shouldExcludeContent(post)) return false;
       const authorId = post.author?._id || post.authorId || post.author;
       if (isUserBlocked(authorId)) return false;
+      if (isMutedByUser(post, currentUser?.id)) return false;
       const privacy = resolvePostPrivacy(post);
-      if (
-        privacy === "friends" &&
-        String(authorId) !== String(currentUser?.id) &&
-        getFriendStatus(authorId) !== "friends"
-      ) {
-        return false;
-      }
+      if (privacy !== "public") return false;
       return true;
     });
-  }, [posts, isUserBlocked, currentUser?.id, getFriendStatus]);
+  }, [posts, isUserBlocked, currentUser?.id]);
   const storiesArray = useMemo(() => {
     const list = Array.isArray(stories) ? stories : [];
     return list.filter((story) => {
+      if (!story) return false;
       if (!isStoryRecent(story)) return false;
+      if (shouldExcludeContent(story)) return false;
       const authorId = story.authorId || story.author?._id || story.author;
       if (isUserBlocked(authorId)) return false;
+      if (isMutedByUser(story, currentUser?.id)) return false;
       return resolveStoryPrivacyType(story) === "universal";
     });
-  }, [stories, isUserBlocked]);
+  }, [stories, isUserBlocked, currentUser?.id]);
 
   const scoredPosts = useMemo(() => {
     return postsArray.map((post) => ({
-      type: "post",
+      type: resolveContentType(post),
       item: post,
-      score: getTrendingScore(post),
+      score: calculateTrendingScore(post),
     }));
   }, [postsArray]);
 
@@ -585,48 +608,56 @@ export default function Trending() {
     return storiesArray.map((story) => ({
       type: "story",
       item: story,
-      score: getStoryScore(story),
+      score: calculateTrendingScore(story, { isStory: true }),
     }));
   }, [storiesArray]);
 
-  const topTrendingGrid = useMemo(() => {
-    return [...scoredPosts, ...scoredStories]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 8);
+  const trendingItems = useMemo(() => {
+    return [...scoredPosts, ...scoredStories].sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return getTimestamp(b.item) - getTimestamp(a.item);
+    });
   }, [scoredPosts, scoredStories]);
 
-  const mostLikedPosts = useMemo(() => {
-    return [...postsArray].sort((a, b) => getLikeCount(b) - getLikeCount(a)).slice(0, 8);
-  }, [postsArray]);
+  const filteredTrendingItems = useMemo(() => {
+    if (trendingTab === "thoughts") {
+      return trendingItems.filter((entry) => entry.type === "thought_text");
+    }
+    if (trendingTab === "posts") {
+      return trendingItems.filter((entry) => entry.type === "post");
+    }
+    if (trendingTab === "stories") {
+      return trendingItems.filter((entry) => entry.type === "story");
+    }
+    return trendingItems;
+  }, [trendingItems, trendingTab]);
 
-  const mostCommentedPosts = useMemo(() => {
-    return [...postsArray].sort((a, b) => getCommentCount(b) - getCommentCount(a)).slice(0, 8);
-  }, [postsArray]);
+  const maxTrendingScore = filteredTrendingItems[0]?.score || 0;
+  const hasMoreTrending = trendingVisibleCount < filteredTrendingItems.length;
+  const displayedTrendingItems = filteredTrendingItems.slice(0, trendingVisibleCount);
+  const showTrendingSkeletons = loading && filteredTrendingItems.length === 0;
+  const isTrendingEmpty = !loading && filteredTrendingItems.length === 0;
 
-  const mostViewedStories = useMemo(() => {
-    return [...storiesArray]
-      .sort((a, b) => getStoryViewCount(b) - getStoryViewCount(a))
-      .slice(0, 6);
-  }, [storiesArray]);
+  useEffect(() => {
+    setTrendingVisibleCount(12);
+  }, [trendingTab, trendingWindow]);
 
-  const trendingStories = useMemo(() => {
-    return [...storiesArray]
-      .sort((a, b) => getStoryScore(b) - getStoryScore(a))
-      .slice(0, 4);
-  }, [storiesArray]);
-
-  const fastestGrowingPosts = useMemo(() => {
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    return postsArray
-      .filter((post) => {
-        const createdAt = new Date(post.createdAt || 0).getTime();
-        return createdAt >= cutoff;
-      })
-      .sort((a, b) => getTrendingScore(b) - getTrendingScore(a))
-      .slice(0, 6);
-  }, [postsArray]);
-
-  const featuredStory = mostViewedStories[0];
+  useEffect(() => {
+    if (!trendingLoadMoreRef.current) return;
+    if (!hasMoreTrending) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        setTrendingVisibleCount((prev) =>
+          Math.min(prev + 8, filteredTrendingItems.length)
+        );
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(trendingLoadMoreRef.current);
+    return () => observer.disconnect();
+  }, [hasMoreTrending, filteredTrendingItems.length]);
 
   const groupedStories = useMemo(() => {
     const grouped = {};
@@ -743,6 +774,281 @@ export default function Trending() {
     "";
   const shareChatPostAuthorId =
     shareChatPost?.author?._id || shareChatPost?.authorId || shareChatPost?.author;
+
+  const resolveTrendingBadge = useCallback(
+    (score) => {
+      if (!maxTrendingScore || !score) return null;
+      const ratio = score / maxTrendingScore;
+      if (ratio >= 0.88) {
+        return {
+          text: "🔥 Trending",
+          tone: "border-amber-300/40 bg-amber-400/20 text-amber-100",
+        };
+      }
+      if (ratio >= 0.7) {
+        return {
+          text: "📈 Rising",
+          tone: "border-emerald-300/40 bg-emerald-400/20 text-emerald-100",
+        };
+      }
+      if (ratio >= 0.55) {
+        return {
+          text: "⚡ Hot Now",
+          tone: "border-sky-300/40 bg-sky-400/20 text-sky-100",
+        };
+      }
+      return null;
+    },
+    [maxTrendingScore]
+  );
+
+  const renderTrendingCard = (entry, index) => {
+    if (!entry) return null;
+    const isStory = entry.type === "story";
+    const item = entry.item;
+    const contentType = entry.type;
+    const mediaUrl = isStory ? resolveStoryMediaUrl(item) : resolvePostMediaUrl(item);
+    const storyType = isStory ? resolveStoryMediaType(item, mediaUrl) : "image";
+    const isVideo = isStory ? storyType === "video" : isVideoUrl(mediaUrl);
+    const isThought = contentType === "thought_text";
+    const label = isStory ? "Story" : isThought ? "Thought" : isVideo ? "Video" : "Post";
+    const likes = isStory ? 0 : getLikeCount(item);
+    const comments = isStory ? 0 : getCommentCount(item);
+    const shares = isStory ? 0 : getShareCount(item);
+    const saves = isStory ? 0 : getSaveCount(item);
+    const views = isStory ? getStoryViewCount(item) : 0;
+    const isAnonymous = Boolean(
+      item.isAnonymous || item.anonymous || item.is_anonymous || item.author?.isAnonymous
+    );
+    const authorId = item.author?._id || item.authorId || item.author;
+    const cachedUser = authorId ? getUserFromCache(authorId) : null;
+    const authorName = isStory
+      ? item.authorDisplayName ||
+        item.author?.displayName ||
+        item.author?.fullName ||
+        cachedUser?.displayName ||
+        "User"
+      : isAnonymous
+        ? "Anonymous Student"
+        : item.author?.displayName ||
+          item.author?.fullName ||
+          item.authorName ||
+          cachedUser?.displayName ||
+          "User";
+    const avatar = isAnonymous
+      ? ANONYMOUS_AVATAR
+      : (isStory ? item.authorProfilePic : item.author?.profilePicUrl) ||
+        cachedUser?.profilePicUrl ||
+        item.author?.profilePicUrl ||
+        ANONYMOUS_AVATAR;
+    const snippet = isStory ? item.caption || "Story preview" : item.content || "Campus update";
+    const badge = resolveTrendingBadge(entry.score);
+
+    return (
+      <Motion.div
+        key={`${entry.type}-${item._id || item.id || index}`}
+        className={`relative aspect-square overflow-hidden rounded-2xl glass-card border border-white/10 ${
+          index === 0 ? "glow-border" : ""
+        }`}
+        role="button"
+        tabIndex={0}
+        onClick={() => {
+          if (isStory) handleOpenStory(item);
+          else setSelectedPost(item);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (isStory) handleOpenStory(item);
+            else setSelectedPost(item);
+          }
+        }}
+        whileHover={{ scale: 1.03 }}
+        whileTap={{ scale: 0.97 }}
+      >
+        {mediaUrl ? (
+          isVideo ? (
+            <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline />
+          ) : (
+            <img src={mediaUrl} alt="Trending" className="h-full w-full object-cover" />
+          )
+        ) : (
+          <div className="h-full w-full bg-white/5 p-4 flex items-end">
+            <p className="text-sm text-[#faf0e6] line-clamp-3">{snippet}</p>
+          </div>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
+        <div className="absolute top-3 left-3 flex items-center gap-2 max-w-[75%]">
+          <img
+            src={avatar}
+            alt={authorName}
+            className="h-7 w-7 rounded-full border border-white/30 object-cover"
+          />
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold text-[#faf0e6] truncate">
+              {authorName}
+            </p>
+            <p className="text-[9px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+              {label}
+            </p>
+          </div>
+        </div>
+        {badge && (
+          <div
+            className={`absolute top-3 right-3 rounded-full border px-2 py-0.5 text-[10px] ${badge.tone}`}
+          >
+            {badge.text}
+          </div>
+        )}
+        <div className="absolute bottom-3 left-3 flex items-center gap-3 text-[11px] text-[#faf0e6]">
+          {isStory ? (
+            <span>
+              <i className="fa-regular fa-eye mr-1"></i>
+              {views}
+            </span>
+          ) : (
+            <>
+              <span>
+                <i className="fa-solid fa-heart mr-1 text-red-300"></i>
+                {likes}
+              </span>
+              <span>
+                <i className="fa-regular fa-comment mr-1"></i>
+                {comments}
+              </span>
+              <span>
+                <i className="fa-solid fa-share mr-1"></i>
+                {shares}
+              </span>
+              <span>
+                <i className="fa-regular fa-bookmark mr-1"></i>
+                {saves}
+              </span>
+            </>
+          )}
+        </div>
+        {!isStory && (
+          <div className="absolute bottom-3 right-3 flex items-center gap-2 text-[11px] text-[#faf0e6]">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                handleToggleLike(item);
+              }}
+              className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
+            >
+              <i className="fa-solid fa-heart"></i>
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setCommentPost(item);
+              }}
+              className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
+            >
+              <i className="fa-regular fa-comment"></i>
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setSharePost(item);
+              }}
+              className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
+            >
+              <i className="fa-solid fa-share-nodes"></i>
+            </button>
+          </div>
+        )}
+      </Motion.div>
+    );
+  };
+
+  const renderDoomItem = (entry, index) => {
+    if (!entry) return null;
+    if (entry.type === "story") {
+      const item = entry.item;
+      const mediaUrl = resolveStoryMediaUrl(item);
+      const storyType = resolveStoryMediaType(item, mediaUrl);
+      const isVideo = storyType === "video";
+      const authorId = item.authorId || item.author?._id || item.author;
+      const cachedUser = authorId ? getUserFromCache(authorId) : null;
+      const authorName =
+        item.authorDisplayName ||
+        item.author?.displayName ||
+        item.author?.fullName ||
+        cachedUser?.displayName ||
+        "User";
+      const avatar =
+        item.authorProfilePic ||
+        cachedUser?.profilePicUrl ||
+        item.author?.profilePicUrl ||
+        ANONYMOUS_AVATAR;
+      const badge = resolveTrendingBadge(entry.score);
+      const views = getStoryViewCount(item);
+
+      return (
+        <Motion.button
+          key={`doom-story-${item._id || item.id || index}`}
+          type="button"
+          onClick={() => handleOpenStory(item)}
+          className="relative w-full overflow-hidden rounded-3xl glass-card border border-white/10 text-left"
+          whileHover={{ scale: 1.01 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          <div className="relative aspect-[16/9] w-full overflow-hidden">
+            {mediaUrl ? (
+              isVideo ? (
+                <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline />
+              ) : (
+                <img src={mediaUrl} alt="Story" className="h-full w-full object-cover" />
+              )
+            ) : (
+              <div className="h-full w-full bg-white/5 flex items-center justify-center text-[#faf0e6]">
+                Story preview
+              </div>
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
+            <div className="absolute top-4 left-4 flex items-center gap-2">
+              <img
+                src={avatar}
+                alt={authorName}
+                className="h-9 w-9 rounded-full border border-white/30 object-cover"
+              />
+              <div>
+                <p className="text-sm font-semibold text-[#faf0e6]">{authorName}</p>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                  Story
+                </p>
+              </div>
+            </div>
+            {badge && (
+              <div
+                className={`absolute top-4 right-4 rounded-full border px-2 py-0.5 text-[10px] ${badge.tone}`}
+              >
+                {badge.text}
+              </div>
+            )}
+            <div className="absolute bottom-4 left-4 text-xs text-[#faf0e6]">
+              <i className="fa-regular fa-eye mr-1"></i>
+              {views} views
+            </div>
+          </div>
+        </Motion.button>
+      );
+    }
+
+    const badge = resolveTrendingBadge(entry.score);
+    return (
+      <Post
+        key={`doom-post-${entry.item?._id || entry.item?.id || index}`}
+        post={entry.item}
+        badge={badge}
+        onOpen={() => setSelectedPost(entry.item)}
+      />
+    );
+  };
 
   const renderUserCard = (user, { variant = "default" } = {}) => {
     if (!user) return null;
@@ -1141,357 +1447,103 @@ export default function Trending() {
           )}
         </div>
 
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Top Trending Grid</h2>
-            <span className="text-xs text-[#b9b4c7]">Live ranking</span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-            {topTrendingGrid.map((entry, index) => {
-              const isStory = entry.type === "story";
-              const item = entry.item;
-              const mediaUrl = isStory ? resolveStoryMediaUrl(item) : item.mediaUrl;
-              const storyType = isStory ? resolveStoryMediaType(item, mediaUrl) : "image";
-              const isVideo = isStory ? storyType === "video" : isVideoUrl(mediaUrl);
-              const label = isStory ? "Story" : isVideo ? "Video" : mediaUrl ? "Image" : "Text";
-              const likes = isStory ? 0 : getLikeCount(item);
-              const comments = isStory ? 0 : getCommentCount(item);
-              const shares = isStory ? 0 : getShareCount(item);
-              const views = isStory ? getStoryViewCount(item) : getPostViewCount(item);
-              const authorId = item.author?._id || item.authorId || item.author;
-              const cachedUser = authorId ? getUserFromCache(authorId) : null;
-              const authorName = isStory
-                ? item.authorDisplayName ||
-                  item.author?.displayName ||
-                  item.author?.fullName ||
-                  cachedUser?.displayName ||
-                  "User"
-                : item.isAnonymous
-                  ? "Anonymous Student"
-                  : item.author?.displayName ||
-                    item.author?.fullName ||
-                    item.authorName ||
-                    cachedUser?.displayName ||
-                    "User";
-              const avatar = item.isAnonymous
-                ? ANONYMOUS_AVATAR
-                : (isStory ? item.authorProfilePic : item.author?.profilePicUrl) ||
-                  cachedUser?.profilePicUrl ||
-                  item.author?.profilePicUrl ||
-                  ANONYMOUS_AVATAR;
-              const snippet = isStory
-                ? item.caption || "Story preview"
-                : item.content || "Campus update";
-
-              return (
-                <Motion.div
-                  key={`${entry.type}-${item._id || item.id || index}`}
-                  className={`relative aspect-square overflow-hidden rounded-2xl glass-card border border-white/10 ${
-                    index === 0 ? "glow-border" : ""
-                  }`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => {
-                    if (isStory) handleOpenStory(item);
-                    else setSelectedPost(item);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      if (isStory) handleOpenStory(item);
-                      else setSelectedPost(item);
-                    }
-                  }}
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  {mediaUrl ? (
-                    isVideo ? (
-                      <video
-                        src={mediaUrl}
-                        className="h-full w-full object-cover"
-                        muted
-                        playsInline
-                      />
-                    ) : (
-                      <img src={mediaUrl} alt="Trending" className="h-full w-full object-cover" />
-                    )
-                  ) : (
-                    <div className="h-full w-full bg-white/5 p-4 flex items-end">
-                      <p className="text-sm text-[#faf0e6] line-clamp-3">{snippet}</p>
-                    </div>
-                  )}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
-                  <div className="absolute top-3 left-3 flex items-center gap-2 max-w-[75%]">
-                    <img
-                      src={avatar}
-                      alt={authorName}
-                      className="h-7 w-7 rounded-full border border-white/30 object-cover"
-                    />
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-semibold text-[#faf0e6] truncate">
-                        {authorName}
-                      </p>
-                      <p className="text-[9px] uppercase tracking-[0.2em] text-[#b9b4c7]">
-                        {label}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="absolute bottom-3 left-3 flex items-center gap-3 text-[11px] text-[#faf0e6]">
-                    <span>
-                      <i className="fa-solid fa-heart mr-1 text-red-300"></i>
-                      {likes}
-                    </span>
-                    <span>
-                      <i className="fa-regular fa-comment mr-1"></i>
-                      {comments}
-                    </span>
-                    <span>
-                      <i className="fa-solid fa-share mr-1"></i>
-                      {shares}
-                    </span>
-                    <span>
-                      <i className="fa-regular fa-eye mr-1"></i>
-                      {views}
-                    </span>
-                  </div>
-                  {!isStory && (
-                    <div className="absolute bottom-3 right-3 flex items-center gap-2 text-[11px] text-[#faf0e6]">
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          handleToggleLike(item);
-                        }}
-                        className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
-                      >
-                        <i className="fa-solid fa-heart"></i>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setCommentPost(item);
-                        }}
-                        className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
-                      >
-                        <i className="fa-regular fa-comment"></i>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setSharePost(item);
-                        }}
-                        className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
-                      >
-                        <i className="fa-solid fa-share-nodes"></i>
-                      </button>
-                    </div>
-                  )}
-                </Motion.div>
-              );
-            })}
-          </div>
-        </section>
-
-        {featuredStory && (
-          <section className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-[#faf0e6]">Highlighted Trend Story</h2>
-              <span className="text-xs text-[#b9b4c7]">Most viewed</span>
-            </div>
-            <Motion.button
-              type="button"
-              onClick={() => handleOpenStory(featuredStory)}
-              className="relative overflow-hidden rounded-3xl glass-card border border-white/10 glow-border text-left"
-              whileHover={{ scale: 1.01 }}
-            >
-              <div className="relative aspect-[16/9] w-full overflow-hidden">
-                {resolveStoryMediaUrl(featuredStory) ? (
-                  resolveStoryMediaType(
-                    featuredStory,
-                    resolveStoryMediaUrl(featuredStory)
-                  ) === "video" ? (
-                    <video
-                      src={resolveStoryMediaUrl(featuredStory)}
-                      className="h-full w-full object-cover"
-                      muted
-                      playsInline
-                    />
-                  ) : (
-                    <img
-                      src={resolveStoryMediaUrl(featuredStory)}
-                      alt="Story preview"
-                      className="h-full w-full object-cover"
-                    />
-                  )
-                ) : (
-                  <div className="h-full w-full bg-white/5 flex items-center justify-center text-[#faf0e6]">
-                    Story preview
-                  </div>
-                )}
-                <div className="absolute inset-0 bg-gradient-to-r from-black/70 via-black/30 to-transparent"></div>
-                <div className="absolute bottom-4 left-4">
-                  <p className="text-sm font-semibold text-[#faf0e6]">
-                    {featuredStory.authorDisplayName ||
-                      featuredStory.author?.displayName ||
-                      "Campus Story"}
-                  </p>
-                  <p className="text-xs text-[#b9b4c7]">
-                    {getStoryViewCount(featuredStory)} views
-                  </p>
-                </div>
+        <section className="space-y-5">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
+                  🔥 Trending
+                </p>
               </div>
-            </Motion.button>
-          </section>
-        )}
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Trending Stories</h2>
-            <span className="text-xs text-[#b9b4c7]">Top 4</span>
+              <div className="flex flex-wrap gap-2">
+                {TRENDING_WINDOW_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setTrendingWindow(option.id)}
+                    className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                      trendingWindow === option.id
+                        ? "bg-white/15 text-[#faf0e6]"
+                        : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {TRENDING_TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setTrendingTab(tab.id)}
+                  className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                    trendingTab === tab.id
+                      ? "bg-white/15 text-[#faf0e6]"
+                      : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {TRENDING_VIEWS.map((view) => (
+                <button
+                  key={view.id}
+                  type="button"
+                  onClick={() => setTrendingView(view.id)}
+                  className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                    trendingView === view.id
+                      ? "bg-white/15 text-[#faf0e6]"
+                      : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                  }`}
+                >
+                  {view.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {trendingStories.map((story) => (
-              <Motion.button
-                key={story._id || story.id}
-                type="button"
-                onClick={() => handleOpenStory(story)}
-                className="relative overflow-hidden rounded-2xl glass-card border border-white/10"
-                whileHover={{ scale: 1.03 }}
-              >
-                <div className="relative aspect-square w-full">
-                  {resolveStoryMediaUrl(story) ? (
-                    resolveStoryMediaType(story, resolveStoryMediaUrl(story)) === "video" ? (
-                      <video
-                        src={resolveStoryMediaUrl(story)}
-                        className="h-full w-full object-cover"
-                        muted
-                        playsInline
-                      />
-                    ) : (
-                      <img
-                        src={resolveStoryMediaUrl(story)}
-                        alt="Story"
-                        className="h-full w-full object-cover"
-                      />
-                    )
-                  ) : (
-                    <div className="h-full w-full bg-white/5"></div>
+
+          {showTrendingSkeletons ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+              {[...Array(8)].map((_, index) => (
+                <div
+                  key={`trend-skeleton-${index}`}
+                  className="aspect-square rounded-2xl border border-white/10 bg-white/5 animate-pulse"
+                ></div>
+              ))}
+            </div>
+          ) : isTrendingEmpty ? (
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-6 text-center text-sm text-[#b9b4c7]">
+              No trending content yet. Check back soon.
+            </div>
+          ) : (
+            <>
+              {trendingView === "grid" ? (
+                <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {displayedTrendingItems.map((entry, index) =>
+                    renderTrendingCard(entry, index)
                   )}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent"></div>
-                  <div className="absolute bottom-3 left-3">
-                    <p className="text-xs font-semibold text-[#faf0e6]">
-                      {story.authorDisplayName || story.author?.displayName || "Campus Story"}
-                    </p>
-                    <p className="text-[11px] text-[#b9b4c7]">
-                      <i className="fa-regular fa-eye mr-1"></i>
-                      {getStoryViewCount(story)}
-                    </p>
-                  </div>
                 </div>
-              </Motion.button>
-            ))}
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Most Liked Posts</h2>
-            <span className="text-xs text-[#b9b4c7]">Ranked by likes</span>
-          </div>
-          <div className="space-y-6">
-            {mostLikedPosts.map((post) => (
-              <Post
-                key={post._id || post.id}
-                post={post}
-                onOpen={() => setSelectedPost(post)}
-              />
-            ))}
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Most Commented Posts</h2>
-            <span className="text-xs text-[#b9b4c7]">Ranked by comments</span>
-          </div>
-          <div className="space-y-6">
-            {mostCommentedPosts.map((post) => (
-              <Post
-                key={post._id || post.id}
-                post={post}
-                onOpen={() => setSelectedPost(post)}
-              />
-            ))}
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Most Viewed Stories</h2>
-            <span className="text-xs text-[#b9b4c7]">Story spotlight</span>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {mostViewedStories.map((story) => (
-              <Motion.button
-                key={story._id || story.id}
-                type="button"
-                onClick={() => handleOpenStory(story)}
-                className="relative overflow-hidden rounded-2xl glass-card border border-white/10 text-left"
-                whileHover={{ scale: 1.03 }}
-                whileTap={{ scale: 0.97 }}
-              >
-                <div className="relative aspect-[4/3] w-full">
-                  {resolveStoryMediaUrl(story) ? (
-                    resolveStoryMediaType(story, resolveStoryMediaUrl(story)) === "video" ? (
-                      <video
-                        src={resolveStoryMediaUrl(story)}
-                        className="h-full w-full object-cover"
-                        muted
-                        playsInline
-                      />
-                    ) : (
-                      <img
-                        src={resolveStoryMediaUrl(story)}
-                        alt="Story"
-                        className="h-full w-full object-cover"
-                      />
-                    )
-                  ) : (
-                    <div className="h-full w-full bg-white/5"></div>
+              ) : (
+                <div className="space-y-6">
+                  {displayedTrendingItems.map((entry, index) =>
+                    renderDoomItem(entry, index)
                   )}
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent"></div>
-                  <div className="absolute bottom-3 left-3">
-                    <p className="text-sm font-semibold text-[#faf0e6]">
-                      {story.authorDisplayName || story.author?.displayName || "Campus Story"}
-                    </p>
-                    <p className="text-xs text-[#b9b4c7]">
-                      <i className="fa-regular fa-eye mr-1"></i>
-                      {getStoryViewCount(story)} views
-                    </p>
-                  </div>
                 </div>
-              </Motion.button>
-            ))}
-          </div>
-        </section>
-
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-[#faf0e6]">Fastest Growing Posts</h2>
-            <span className="text-xs text-[#b9b4c7]">Last 24h spike</span>
-          </div>
-          <div className="space-y-6">
-            {fastestGrowingPosts.map((post) => (
-              <Post
-                key={post._id || post.id}
-                post={post}
-                onOpen={() => setSelectedPost(post)}
-              />
-            ))}
-          </div>
+              )}
+              {hasMoreTrending && (
+                <div
+                  ref={trendingLoadMoreRef}
+                  className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
+                >
+                  Loading more...
+                </div>
+              )}
+            </>
+          )}
         </section>
       </main>
 

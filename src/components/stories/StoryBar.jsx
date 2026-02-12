@@ -2,7 +2,11 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { createStoryWithProgress, getUserById } from "../../services/api";
+import {
+  createStoryWithProgress,
+  getUserById,
+  recordPostStoryReshare,
+} from "../../services/api";
 import StoryViewer from "./StoryViewer";
 import {
   resolveStoryId,
@@ -391,7 +395,7 @@ export default function StoryBar() {
 
     try {
       const meta = buildStoryMeta();
-      await createStoryWithProgress(
+      const createdStory = await createStoryWithProgress(
         pendingFile,
         meta,
         (percent, info) => {
@@ -414,6 +418,27 @@ export default function StoryBar() {
           uploadAbortRef.current = controller?.abort || null;
         }
       );
+
+      const resharePostId =
+        meta?.resharedPostId ||
+        meta?.resharePostId ||
+        meta?.sourcePostId ||
+        meta?.postId ||
+        meta?.post_id ||
+        createdStory?.resharedPostId ||
+        createdStory?.postId ||
+        createdStory?.post?._id ||
+        createdStory?.post?.id ||
+        "";
+
+      if (resharePostId) {
+        try {
+          await recordPostStoryReshare(resharePostId);
+        } catch {
+          // Ignore reshare tracking errors.
+        }
+      }
+
       setUploadProgress(100);
       setUploadStage("success");
       await loadStories();

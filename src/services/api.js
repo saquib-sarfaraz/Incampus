@@ -440,12 +440,27 @@ export const fetchPosts = async (params = {}) => {
   return normalizeList(data, ["posts", "items", "data"]);
 };
 
+export const fetchRankedFeedPage = async (params = {}) => {
+  const data = await apiFetchWithFallback(["/posts/feed", "/posts"], { params });
+  return normalizeList(data, ["posts", "items", "data"]);
+};
+
 export const createPost = async (postData, imageFile) => {
   const payload = {
     content: postData.content || "",
     isAnonymous: postData.isAnonymous || false,
     authorId: postData.authorId || "",
   };
+  const resolvedContentType = postData.contentType || postData.postType;
+  if (resolvedContentType) {
+    payload.contentType = resolvedContentType;
+  }
+  if (postData.visibility) {
+    payload.visibility = postData.visibility;
+  }
+  if (postData.collegeTags && Array.isArray(postData.collegeTags)) {
+    payload.collegeTags = postData.collegeTags;
+  }
 
   if (postData.authorCollegeId) {
     payload.authorCollegeId = postData.authorCollegeId;
@@ -471,6 +486,19 @@ export const createPost = async (postData, imageFile) => {
   formData.append("content", payload.content);
   formData.append("isAnonymous", payload.isAnonymous);
   formData.append("authorId", payload.authorId);
+  if (payload.contentType) {
+    formData.append("contentType", payload.contentType);
+  }
+  if (payload.visibility) {
+    formData.append("visibility", payload.visibility);
+  }
+  if (payload.collegeTags) {
+    payload.collegeTags.forEach((tag) => {
+      if (tag !== undefined && tag !== null && tag !== "") {
+        formData.append("collegeTags", String(tag));
+      }
+    });
+  }
   if (payload.authorCollegeId) {
     formData.append("authorCollegeId", payload.authorCollegeId);
     formData.append("collegeGroupId", payload.authorCollegeId);
@@ -531,6 +559,30 @@ export const sharePost = async (postId) => {
   return apiFetch(`/posts/${postId}/share`, {
     method: "POST",
   });
+};
+
+export const recordPostView = async (postId) => {
+  if (!postId) return null;
+  try {
+    return await apiFetch(`/posts/${postId}/view`, { method: "POST" });
+  } catch (error) {
+    if (error?.status && error.status !== 404) {
+      throw error;
+    }
+  }
+  return null;
+};
+
+export const recordPostStoryReshare = async (postId) => {
+  if (!postId) return null;
+  try {
+    return await apiFetch(`/posts/${postId}/story-reshare`, { method: "POST" });
+  } catch (error) {
+    if (error?.status && error.status !== 404) {
+      throw error;
+    }
+  }
+  return null;
 };
 
 // Story APIs

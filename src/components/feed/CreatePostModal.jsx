@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -6,17 +6,21 @@ import { createPost } from "../../services/api";
 import { compressImageFile } from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const THOUGHT_MIN_LENGTH = 3;
+const THOUGHT_MAX_LENGTH = 2000;
 
 export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const { currentUser } = useAuth();
   const { loadPosts } = useApp();
+  const [postMode, setPostMode] = useState("post");
+  const [visibility, setVisibility] = useState("universal");
   const [text, setText] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [mediaFile, setMediaFile] = useState(null);
   const [mediaPreview, setMediaPreview] = useState(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [collegeInput, setCollegeInput] = useState("");
-  const [collegeTagId, setCollegeTagId] = useState("");
+  const [selectedColleges, setSelectedColleges] = useState([]);
   const [colleges, setColleges] = useState([]);
   const [collegeLoading, setCollegeLoading] = useState(false);
   const [collegeError, setCollegeError] = useState("");
@@ -25,6 +29,26 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const isThought = postMode === "thought";
+  const defaultCollege = useMemo(() => {
+    if (!currentUser) return null;
+    const name =
+      currentUser.collegeTagName ||
+      currentUser.collegeTag ||
+      currentUser.university ||
+      currentUser.college ||
+      currentUser.school ||
+      "";
+    const id =
+      currentUser.collegeTagId ||
+      currentUser.college_tag_id ||
+      currentUser.collegeTag?._id ||
+      currentUser.collegeId ||
+      currentUser.college_id ||
+      "";
+    if (!name) return null;
+    return { name: String(name).trim(), id: id ? String(id) : "" };
+  }, [currentUser]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -50,12 +74,27 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, [mediaPreview]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (!collegeInput && currentUser?.university) {
-      setCollegeInput(currentUser.university);
-      setCollegeTagId("");
+    if (!isThought) return;
+    if (mediaFile || mediaPreview) {
+      setMediaFile(null);
+      if (mediaPreview) {
+        URL.revokeObjectURL(mediaPreview);
+      }
+      setMediaPreview(null);
+      setImageLoading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
     }
-  }, [isOpen, currentUser?.university, collegeInput]);
+  }, [isThought, mediaFile, mediaPreview]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    if (selectedColleges.length > 0) return;
+    if (defaultCollege) {
+      setSelectedColleges([defaultCollege]);
+    }
+  }, [isOpen, selectedColleges.length, defaultCollege]);
 
   useEffect(() => {
     const handleOutside = (event) => {
@@ -182,6 +221,8 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, [isOpen]);
 
   const resetForm = () => {
+    setPostMode("post");
+    setVisibility("universal");
     setText("");
     setIsAnonymous(false);
     setMediaFile(null);
@@ -191,7 +232,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     setMediaPreview(null);
     setImageLoading(false);
     setCollegeInput("");
-    setCollegeTagId("");
+    setSelectedColleges([]);
     setShowCollegeDropdown(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -204,6 +245,13 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   };
 
   const handleMediaSelect = async (e) => {
+    if (isThought) {
+      setToast({
+        title: "Thought mode",
+        message: "Media uploads are disabled for Thought posts.",
+      });
+      return;
+    }
     const file = e.target.files[0];
     if (!file) return;
     const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -231,19 +279,58 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   };
 
   const handleSubmit = async () => {
-    if (!text.trim() && !mediaFile) return;
+    const trimmedText = text.trim();
+    if (isThought) {
+      if (trimmedText.length < THOUGHT_MIN_LENGTH) {
+        setToast({
+          title: "Add more detail",
+          message: `Thought posts need at least ${THOUGHT_MIN_LENGTH} characters.`,
+        });
+        return;
+      }
+      if (trimmedText.length > THOUGHT_MAX_LENGTH) {
+        setToast({
+          title: "Thought too long",
+          message: `Keep thoughts under ${THOUGHT_MAX_LENGTH} characters.`,
+        });
+        return;
+      }
+    } else if (!trimmedText && !mediaFile) {
+      return;
+    }
     if (!currentUser) return;
-    const collegeTagName = collegeInput.trim();
+    const trimmedCollegeInput = collegeInput.trim();
+    const fallbackColleges =
+      trimmedCollegeInput && !isCollegeSelected({ name: trimmedCollegeInput })
+        ? [...selectedColleges, { name: trimmedCollegeInput, id: "" }]
+        : selectedColleges;
+    const finalColleges = fallbackColleges.length > 0 ? fallbackColleges : [];
+    if (visibility === "college" && finalColleges.length === 0) {
+      setToast({
+        title: "Add a college tag",
+        message: "College-only posts need at least one college tag.",
+      });
+      return;
+    }
+    const primaryCollege = finalColleges[0];
+    const collegeTagName = primaryCollege?.name || "";
+    const collegeTagId = primaryCollege?.id || "";
+    const collegeTags = finalColleges
+      .map((tag) => tag.id || tag.name)
+      .filter(Boolean);
 
     setLoading(true);
     try {
       await createPost(
         {
-          content: text,
+          content: trimmedText,
           isAnonymous,
+          contentType: isThought ? "thought" : "post",
+          visibility,
           authorId: currentUser.id,
           collegeTagName,
           collegeTagId,
+          collegeTags,
           authorCollegeId:
             currentUser.collegeGroupId ||
             currentUser.college_group_id ||
@@ -251,7 +338,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
             currentUser.collegeGroup ||
             "",
         },
-        mediaFile
+        isThought ? null : mediaFile
       );
       await loadPosts();
       setToast({ title: "Posted", message: "Your post is live on InCampus." });
@@ -268,26 +355,71 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   };
 
   const userAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
+  const isCollegeSelected = useCallback(
+    (college) => {
+      if (!college) return false;
+      const id = String(college.id || "");
+      const name = String(college.name || "").toLowerCase();
+      return selectedColleges.some((tag) => {
+        if (id && String(tag.id || "") === id) return true;
+        return name && String(tag.name || "").toLowerCase() === name;
+      });
+    },
+    [selectedColleges]
+  );
+
   const filteredColleges = useMemo(() => {
-    if (!collegeInput) return colleges;
+    if (!collegeInput) return colleges.filter((college) => !isCollegeSelected(college));
     const query = collegeInput.toLowerCase();
-    return colleges.filter((college) =>
-      String(college.name || "").toLowerCase().includes(query)
-    );
-  }, [colleges, collegeInput]);
+    return colleges.filter((college) => {
+      const name = String(college.name || "").toLowerCase();
+      return name.includes(query) && !isCollegeSelected(college);
+    });
+  }, [colleges, collegeInput, isCollegeSelected]);
 
   const topMatches = useMemo(() => filteredColleges.slice(0, 5), [filteredColleges]);
 
+  const addCollegeTag = (college) => {
+    if (!college?.name) return;
+    setSelectedColleges((prev) => {
+      const id = String(college.id || "");
+      const name = String(college.name || "").toLowerCase();
+      const exists = prev.some((tag) => {
+        if (id && String(tag.id || "") === id) return true;
+        return name && String(tag.name || "").toLowerCase() === name;
+      });
+      if (exists) return prev;
+      return [...prev, { name: college.name, id: college.id || "" }];
+    });
+    setCollegeInput("");
+    setShowCollegeDropdown(false);
+  };
+
+  const removeCollegeTag = (college) => {
+    setSelectedColleges((prev) => {
+      const next = prev.filter((tag) => {
+        if (college.id && String(tag.id || "") === String(college.id)) return false;
+        if (!college.id && tag.name === college.name) return false;
+        return true;
+      });
+      if (next.length === 0 && defaultCollege) {
+        return [defaultCollege];
+      }
+      return next;
+    });
+  };
+
   const handleCollegeChange = (value) => {
     setCollegeInput(value);
-    setCollegeTagId("");
     setShowCollegeDropdown(true);
   };
 
-  const handleCollegeSelect = (college) => {
-    setCollegeInput(college.name);
-    setCollegeTagId(college.id || "");
-    setShowCollegeDropdown(false);
+  const handleCollegeKeyDown = (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const trimmed = collegeInput.trim();
+    if (!trimmed) return;
+    addCollegeTag({ name: trimmed, id: "" });
   };
 
   return (
@@ -337,20 +469,82 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                 }}
                 className="mt-5 space-y-5"
               >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPostMode("post")}
+                      className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                        postMode === "post"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      Post
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPostMode("thought")}
+                      className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                        postMode === "thought"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      Thought
+                    </button>
+                  </div>
+                  {isThought && (
+                    <span className="text-[11px] text-[#b9b4c7]">
+                      {text.trim().length}/{THOUGHT_MAX_LENGTH}
+                    </span>
+                  )}
+                </div>
                 <textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
-                  placeholder={"What's happening on campus?\nShare updates, notes, or moments..."}
+                  placeholder={
+                    isThought
+                      ? "Share a thought with your campus..."
+                      : "What's happening on campus?\nShare updates, notes, or moments..."
+                  }
                   rows={4}
+                  maxLength={isThought ? THOUGHT_MAX_LENGTH : undefined}
                   className="w-full rounded-2xl glass-input p-4 text-sm placeholder-[#b9b4c7] resize-none"
                 />
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                    Visibility
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { id: "universal", label: "🌍 Universal" },
+                      { id: "college", label: "🏫 College Only" },
+                      { id: "private", label: "🔒 Friends Only" },
+                    ].map((option) => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setVisibility(option.id)}
+                        className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                          visibility === option.id
+                            ? "bg-white/15 text-[#faf0e6]"
+                            : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                        }`}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
                 <div className="space-y-2 relative" ref={collegeRef}>
                   <label
                     htmlFor="post-college-tag"
                     className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]"
                   >
-                    College Tag (Optional)
+                    College Tags
                   </label>
                   <input
                     id="post-college-tag"
@@ -358,14 +552,25 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                     value={collegeInput}
                     onChange={(e) => handleCollegeChange(e.target.value)}
                     onFocus={() => setShowCollegeDropdown(true)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") setShowCollegeDropdown(false);
-                    }}
+                    onKeyDown={handleCollegeKeyDown}
                     placeholder="Tag College (Optional)"
                     className="w-full rounded-2xl glass-input px-4 py-2.5 text-sm"
                   />
+                  <div className="flex flex-wrap gap-2">
+                    {selectedColleges.map((college) => (
+                      <button
+                        key={`${college.name}-${college.id || "manual"}`}
+                        type="button"
+                        onClick={() => removeCollegeTag(college)}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1 text-[11px] text-[#faf0e6]"
+                      >
+                        <span className="truncate">{college.name}</span>
+                        <i className="fa-solid fa-xmark text-[10px]"></i>
+                      </button>
+                    ))}
+                  </div>
                   <p className="text-[11px] text-[#b9b4c7]">
-                    Can't find your college? Type to create.
+                    Search and add multiple colleges. Press Enter to add a custom tag.
                   </p>
                   {showCollegeDropdown && (
                     <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
@@ -386,7 +591,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                             <button
                               key={`${college.name}-${college.id || "manual"}`}
                               type="button"
-                              onClick={() => handleCollegeSelect(college)}
+                              onClick={() => addCollegeTag(college)}
                               className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
                             >
                               {college.name}
@@ -395,26 +600,28 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                         </div>
                       ) : (
                         <div className="p-3 text-sm text-[#b9b4c7]">
-                          No matches. Press Enter to use "{collegeInput}".
+                          No matches. Press Enter to add "{collegeInput}".
                         </div>
                       )}
                     </div>
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[#faf0e6]">
-                    <i className="fa-solid fa-image"></i>
-                    <span>Add Media</span>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      className="hidden"
-                      onChange={handleMediaSelect}
-                    />
-                  </label>
-                </div>
+                {!isThought && (
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[#faf0e6]">
+                      <i className="fa-solid fa-image"></i>
+                      <span>Add Media</span>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={handleMediaSelect}
+                      />
+                    </label>
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                   <div>
@@ -455,12 +662,31 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                           </p>
                           <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
                             <span>Just now</span>
-                            {collegeInput.trim() && (
+                            {isThought && (
+                              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                                Thought
+                              </span>
+                            )}
+                            <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                              {visibility === "college"
+                                ? "College Only"
+                                : visibility === "private"
+                                  ? "Friends Only"
+                                  : "Universal"}
+                            </span>
+                            {selectedColleges.length > 0 && (
                               <>
                                 <span className="text-[#b9b4c7]">|</span>
-                                <span className="inline-flex items-center gap-1 max-w-[220px] truncate">
-                                  <i className="fa-solid fa-school text-[10px]"></i>
-                                  <span className="truncate">{collegeInput.trim()}</span>
+                                <span className="inline-flex items-center gap-2 flex-wrap max-w-[320px]">
+                                  {selectedColleges.map((college) => (
+                                    <span
+                                      key={`${college.name}-${college.id || "manual"}`}
+                                      className="inline-flex items-center gap-1"
+                                    >
+                                      <i className="fa-solid fa-school text-[10px]"></i>
+                                      <span className="truncate">{college.name}</span>
+                                    </span>
+                                  ))}
                                 </span>
                               </>
                             )}
@@ -508,7 +734,13 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
                 <div className="sticky bottom-4 flex flex-col gap-3 sm:flex-row sm:justify-end bg-black/30 backdrop-blur rounded-2xl p-3">
                   <Motion.button
                     type="submit"
-                    disabled={loading || (!text.trim() && !mediaFile)}
+                    disabled={
+                      loading ||
+                      (visibility === "college" && selectedColleges.length === 0) ||
+                      (isThought
+                        ? text.trim().length < THOUGHT_MIN_LENGTH
+                        : !text.trim() && !mediaFile)
+                    }
                     className="liquid-button rounded-2xl px-5 py-3 text-sm font-semibold text-[#faf0e6] disabled:opacity-50 disabled:cursor-not-allowed"
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
