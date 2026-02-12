@@ -244,6 +244,7 @@ export const AppProvider = ({ children }) => {
   const storiesRequestRef = useRef(false);
   const notificationsRequestRef = useRef(false);
   const blockedUsersRequestRef = useRef(false);
+  const postsLoadedRef = useRef(false);
   const friendMapRequestRef = useRef(false);
   const [feedScope, setFeedScope] = useState(() => {
     if (typeof window === "undefined") return "universal";
@@ -254,15 +255,21 @@ export const AppProvider = ({ children }) => {
   const loadPosts = useCallback(async () => {
     if (!authToken || postsRequestRef.current) return;
     postsRequestRef.current = true;
+    const showLoading = !postsLoadedRef.current;
     try {
-      setLoading(true);
+      if (showLoading) {
+        setLoading(true);
+      }
       const postsData = await fetchPosts();
       setPosts(postsData);
+      postsLoadedRef.current = true;
     } catch (error) {
       console.error("Failed to load posts:", error);
     } finally {
       postsRequestRef.current = false;
-      setLoading(false);
+      if (showLoading) {
+        setLoading(false);
+      }
     }
   }, [authToken]);
 
