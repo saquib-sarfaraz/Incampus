@@ -147,6 +147,7 @@ export default function Trending() {
   const [shareChatPost, setShareChatPost] = useState(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
+  const showSearchSkeleton = searchLoading && searchResults.length === 0;
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
@@ -440,10 +441,13 @@ export default function Trending() {
               animate={{ opacity: 1, y: 0 }}
               className="absolute left-0 right-0 mt-3 rounded-2xl glass-card max-h-96 overflow-y-auto z-30"
             >
-              {searchLoading ? (
+              {showSearchSkeleton ? (
                 <div className="p-4 text-center text-[#b9b4c7]">Searching...</div>
               ) : (
                 <div className="p-3 space-y-4">
+                  {searchLoading && (
+                    <div className="px-2 text-[11px] text-[#b9b4c7]">Updating...</div>
+                  )}
                   <div>
                     <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em] px-2 py-2 border-b border-white/10">
                       Students
