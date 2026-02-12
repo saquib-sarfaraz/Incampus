@@ -4,6 +4,8 @@ import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
 import {
   updateUser,
+  updateProfileInfo,
+  changePassword,
   uploadProfilePic,
   deleteProfilePic,
   deletePost,
@@ -15,13 +17,54 @@ import BottomNav from "../components/common/BottomNav";
 import PostModal from "../components/profile/PostModal";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import UserProfileModal from "../components/profile/UserProfileModal";
-import { joinSocket, leaveSocket } from "../services/socket";
+import { joinSocket, leaveSocket, getSocket } from "../services/socket";
+import {
+  resolveUserType,
+  formatUserType,
+  resolveStudentType,
+  formatStudentType,
+  resolveCommunityType,
+  formatCommunityType,
+  resolveCollegeName,
+  resolveCommunityName,
+  resolveCommunityDescription,
+  resolveMemberCount,
+} from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
+const getPasswordStrength = (value = "") => {
+  const hasLetter = /[A-Za-z]/.test(value);
+  const hasNumber = /[0-9]/.test(value);
+  const hasSpecial = /[^A-Za-z0-9]/.test(value);
+  const lengthScore = value.length >= 12 ? 2 : value.length >= 8 ? 1 : 0;
+  const varietyScore = [hasLetter, hasNumber, hasSpecial].filter(Boolean).length;
+  const score = Math.min(4, lengthScore + varietyScore);
+  const label =
+    score >= 4 ? "Strong" : score >= 3 ? "Good" : score >= 2 ? "Fair" : "Weak";
+  const color =
+    score >= 4
+      ? "bg-emerald-400"
+      : score >= 3
+        ? "bg-green-400"
+        : score >= 2
+          ? "bg-amber-400"
+          : "bg-red-400";
+  return { score, label, color, hasLetter, hasNumber, hasSpecial };
+};
+
 export default function Profile() {
   const { currentUser, setCurrentUser, logout } = useAuth();
-  const { posts, loadPosts, cacheUser, getUserFromCache, setFeedScope } = useApp();
+  const {
+    posts,
+    loadPosts,
+    cacheUser,
+    getUserFromCache,
+    setFeedScope,
+    friendIds,
+    friendMapLoaded,
+    updateAuthorProfile,
+  } = useApp();
   const [userPosts, setUserPosts] = useState([]);
   const [selectedPost, setSelectedPost] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
@@ -38,6 +81,10 @@ export default function Profile() {
   const [colleges, setColleges] = useState([]);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [settingsSuccess, setSettingsSuccess] = useState("");
+  const [passwordSuccess, setPasswordSuccess] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [privacyPublic, setPrivacyPublic] = useState(true);
   const [friendsList, setFriendsList] = useState([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
@@ -46,6 +93,47 @@ export default function Profile() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const [bioSuccess, setBioSuccess] = useState("");
+  const userType = useMemo(() => resolveUserType(currentUser), [currentUser]);
+  const isCommunity = userType === "community";
+  const userTypeBadge = formatUserType(userType);
+  const studentTypeLabel = formatStudentType(resolveStudentType(currentUser));
+  const communityTypeLabel = formatCommunityType(resolveCommunityType(currentUser));
+  const collegeLabel = resolveCollegeName(currentUser) || (isCommunity ? "" : "Verified Campus");
+  const communityName = resolveCommunityName(currentUser) || currentUser?.fullName || "";
+  const memberCount = Number(resolveMemberCount(currentUser) || 0);
+  const resolvedFriendIds = useMemo(() => {
+    if (friendMapLoaded) return friendIds;
+    return currentUser?.friends || [];
+  }, [friendIds, friendMapLoaded, currentUser?.friends]);
+  const friendCount = resolvedFriendIds.length;
+  const passwordStrength = useMemo(
+    () => getPasswordStrength(newPassword),
+    [newPassword]
+  );
+  const passwordsMatch = newPassword.length > 0 && newPassword === confirmPassword;
+  const settingsBaseName = isCommunity
+    ? resolveCommunityName(currentUser) || currentUser?.fullName || ""
+    : currentUser?.fullName || currentUser?.displayName || "";
+  const settingsBaseBio = isCommunity
+    ? resolveCommunityDescription(currentUser) || ""
+    : currentUser?.bio || "";
+  const settingsChanged =
+    settingsName.trim() !== String(settingsBaseName || "").trim() ||
+    settingsBio.trim() !== String(settingsBaseBio || "").trim() ||
+    privacyPublic !== (currentUser?.privacyPublic ?? true);
+  const canSaveSettings =
+    settingsChanged &&
+    settingsName.trim().length > 1 &&
+    !loading;
+  const canUpdatePassword =
+    !loading &&
+    currentPassword.length > 0 &&
+    newPassword.length >= 8 &&
+    passwordStrength.hasLetter &&
+    passwordStrength.hasNumber &&
+    confirmPassword.length > 0 &&
+    passwordsMatch;
 
   useEffect(() => {
     if (currentUser && posts) {
@@ -59,16 +147,36 @@ export default function Profile() {
 
   useEffect(() => {
     if (!currentUser) return;
-    setBio(currentUser.bio || "");
-    setSettingsName(currentUser.fullName || "");
-    setSettingsBio(currentUser.bio || "");
+    const resolvedIsCommunity = resolveUserType(currentUser) === "community";
+    const resolvedName = resolvedIsCommunity
+      ? resolveCommunityName(currentUser) || currentUser.fullName || ""
+      : currentUser.fullName || "";
+    const resolvedBio = resolvedIsCommunity
+      ? resolveCommunityDescription(currentUser) || ""
+      : currentUser.bio || "";
+    setBio(resolvedBio);
+    setSettingsName(resolvedName);
+    setSettingsBio(resolvedBio);
     setPrivacyPublic(currentUser.privacyPublic ?? true);
     const currentCollege = currentUser.university || currentUser.college || "";
     setEducationCollege(currentCollege);
     setCollegeInput(currentCollege);
     setEducationYear(String(currentUser.graduationYear || currentUser.year || ""));
-    setEducationType(currentUser.studentType || currentUser.student_type || "student");
+    const rawType = currentUser.studentType || currentUser.student_type || "undergraduate";
+    setEducationType(rawType === "student" ? "undergraduate" : rawType);
   }, [currentUser]);
+
+  useEffect(() => {
+    if (passwordError) {
+      setPasswordError("");
+    }
+  }, [currentPassword, newPassword, confirmPassword]);
+
+  useEffect(() => {
+    if (bioSuccess) {
+      setBioSuccess("");
+    }
+  }, [bio]);
 
   const normalizeCollege = (item) => {
     if (!item) return "";
@@ -158,10 +266,43 @@ export default function Profile() {
   const handleSaveBio = async () => {
     if (!currentUser) return;
     setLoading(true);
+    setSettingsSuccess("");
+    setBioSuccess("");
     try {
-      await updateUser({ bio });
-      setCurrentUser({ ...currentUser, bio });
-      setSettingsBio(bio);
+      const resolvedBio = bio.trim();
+      if (isCommunity) {
+        await updateUser({ communityDescription: resolvedBio });
+        setCurrentUser({ ...currentUser, communityDescription: resolvedBio });
+        setSettingsBio(resolvedBio);
+        updateAuthorProfile(currentUser.id, {
+          communityDescription: resolvedBio,
+          displayName: resolveCommunityName(currentUser) || currentUser.displayName,
+        });
+      } else {
+        await updateProfileInfo({ bio: resolvedBio });
+        setCurrentUser({ ...currentUser, bio: resolvedBio });
+        setSettingsBio(resolvedBio);
+        updateAuthorProfile(currentUser.id, {
+          fullName: currentUser.fullName,
+          displayName: currentUser.displayName || currentUser.fullName,
+          bio: resolvedBio,
+        });
+      }
+      const socket = getSocket();
+      socket?.emit("user-profile-updated", {
+        userId: currentUser.id,
+        fullName: currentUser.fullName,
+        displayName: currentUser.displayName || currentUser.fullName,
+        bio: resolvedBio,
+        communityDescription: isCommunity ? resolvedBio : undefined,
+      });
+      const successLabel = isCommunity ? "Description updated." : "Bio updated.";
+      setBioSuccess(successLabel);
+      setSettingsSuccess(successLabel);
+      setTimeout(() => {
+        setBioSuccess("");
+        setSettingsSuccess("");
+      }, 2500);
     } catch (error) {
       alert(error.message || "Failed to update bio");
     } finally {
@@ -171,21 +312,64 @@ export default function Profile() {
 
   const handleSaveSettings = async () => {
     if (!currentUser) return;
+    if (!settingsChanged) return;
     setLoading(true);
+    setSettingsSuccess("");
     try {
-      await updateUser({
-        fullName: settingsName,
-        bio: settingsBio,
-        privacyPublic,
+      const resolvedName = settingsName.trim();
+      const resolvedBio = settingsBio.trim();
+      if (isCommunity) {
+        await updateUser({
+          communityName: resolvedName,
+          communityDescription: resolvedBio,
+          privacyPublic,
+        });
+        setCurrentUser({
+          ...currentUser,
+          communityName: resolvedName,
+          displayName: resolvedName,
+          communityDescription: resolvedBio,
+          privacyPublic,
+        });
+        setSettingsName(resolvedName);
+        setSettingsBio(resolvedBio);
+        updateAuthorProfile(currentUser.id, {
+          communityName: resolvedName,
+          displayName: resolvedName,
+          communityDescription: resolvedBio,
+        });
+      } else {
+        await updateProfileInfo({
+          fullName: resolvedName,
+          bio: resolvedBio,
+          privacyPublic,
+        });
+        setCurrentUser({
+          ...currentUser,
+          fullName: resolvedName,
+          displayName: resolvedName,
+          bio: resolvedBio,
+          privacyPublic,
+        });
+        setSettingsName(resolvedName);
+        setSettingsBio(resolvedBio);
+        updateAuthorProfile(currentUser.id, {
+          fullName: resolvedName,
+          displayName: resolvedName,
+          bio: resolvedBio,
+        });
+      }
+      const socket = getSocket();
+      socket?.emit("user-profile-updated", {
+        userId: currentUser.id,
+        fullName: isCommunity ? undefined : resolvedName,
+        displayName: resolvedName,
+        bio: isCommunity ? undefined : resolvedBio,
+        communityName: isCommunity ? resolvedName : undefined,
+        communityDescription: isCommunity ? resolvedBio : undefined,
       });
-      setCurrentUser({
-        ...currentUser,
-        fullName: settingsName,
-        displayName: settingsName,
-        bio: settingsBio,
-        privacyPublic,
-      });
-      alert("Settings updated!");
+      setSettingsSuccess("Settings updated!");
+      setTimeout(() => setSettingsSuccess(""), 2500);
     } catch (error) {
       alert(error.message || "Failed to update settings");
     } finally {
@@ -200,6 +384,7 @@ export default function Profile() {
   };
 
   const handleSaveEducation = async () => {
+    if (isCommunity) return;
     if (!educationCollege.trim() || !educationYear || !educationType) {
       alert("Please complete your education details.");
       return;
@@ -207,6 +392,7 @@ export default function Profile() {
     setLoading(true);
     try {
       const oldCollege = currentUser?.university || currentUser?.college || "";
+      const isAlumniLevel = educationType === "alumni";
       const payload = {
         university: educationCollege.trim(),
         college: educationCollege.trim(),
@@ -215,6 +401,9 @@ export default function Profile() {
         student_type: educationType,
         studentType: educationType,
       };
+      if (isAlumniLevel) {
+        payload.passoutYear = educationYear;
+      }
       const result = await updateUser(payload);
       const updated = result.user || result || {};
       const newCollege = updated.university || updated.college || educationCollege.trim();
@@ -226,6 +415,7 @@ export default function Profile() {
         year: updated.year || educationYear,
         studentType: updated.studentType || updated.student_type || educationType,
         student_type: updated.student_type || educationType,
+        passoutYear: updated.passoutYear || updated.passout_year || currentUser?.passoutYear || "",
         collegeGroupId:
           updated.collegeGroupId ||
           updated.college_group_id ||
@@ -250,22 +440,37 @@ export default function Profile() {
   };
 
   const handlePasswordChange = async () => {
+    setPasswordError("");
+    setPasswordSuccess("");
+    if (!currentPassword) {
+      setPasswordError("Please enter your current password.");
+      return;
+    }
     if (!newPassword) {
-      alert("Please enter a new password.");
+      setPasswordError("Please enter a new password.");
+      return;
+    }
+    if (!passwordStrength.hasLetter || !passwordStrength.hasNumber || newPassword.length < 8) {
+      setPasswordError("Password must be at least 8 characters and include letters and numbers.");
       return;
     }
     if (newPassword !== confirmPassword) {
-      alert("Passwords do not match.");
+      setPasswordError("Passwords do not match.");
       return;
     }
     setLoading(true);
     try {
-      await updateUser({ password: newPassword });
+      await changePassword({ currentPassword, newPassword });
+      setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      alert("Password updated!");
+      setPasswordSuccess("Password updated. Please log in again.");
+      setTimeout(() => setPasswordSuccess(""), 2500);
+      setTimeout(() => {
+        logout();
+      }, 1200);
     } catch (error) {
-      alert(error.message || "Failed to update password");
+      setPasswordError(error.message || "Failed to update password");
     } finally {
       setLoading(false);
     }
@@ -312,14 +517,14 @@ export default function Profile() {
   };
 
   const loadFriends = useCallback(async () => {
-    if (!currentUser?.friends?.length) {
+    if (!resolvedFriendIds?.length) {
       setFriendsList([]);
       return;
     }
     setFriendsLoading(true);
     try {
       const friendsData = await Promise.all(
-        currentUser.friends.map(async (friendId) => {
+        resolvedFriendIds.map(async (friendId) => {
           let user = getUserFromCache(friendId);
           if (!user) {
             const userData = await getUserById(friendId);
@@ -354,13 +559,19 @@ export default function Profile() {
     } finally {
       setFriendsLoading(false);
     }
-  }, [currentUser?.friends, cacheUser, getUserFromCache]);
+  }, [resolvedFriendIds, cacheUser, getUserFromCache]);
 
   useEffect(() => {
-    if (activeTab === "friends") {
+    if (activeTab === "friends" && !isCommunity) {
       loadFriends();
     }
-  }, [activeTab, loadFriends]);
+  }, [activeTab, loadFriends, isCommunity]);
+
+  useEffect(() => {
+    if (isCommunity && activeTab === "friends") {
+      setActiveTab("overview");
+    }
+  }, [isCommunity, activeTab]);
 
   return (
     <div className="min-h-screen pb-24 sm:pb-0">
@@ -381,13 +592,30 @@ export default function Profile() {
               />
             </div>
             <h2 className="text-2xl font-semibold text-[#faf0e6] mb-1">
-              {currentUser?.displayName || currentUser?.fullName || "User"}
+              {isCommunity
+                ? communityName || "Community"
+                : currentUser?.displayName || currentUser?.fullName || "User"}
             </h2>
             <p className="text-sm text-[#b9b4c7] mb-2">
               @{currentUser?.username || "unknown"}
             </p>
+            <div className="flex flex-wrap items-center justify-center gap-2 mb-2">
+              <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                {userTypeBadge}
+              </span>
+              {!isCommunity && (
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                  {studentTypeLabel}
+                </span>
+              )}
+              {isCommunity && communityTypeLabel && (
+                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                  {communityTypeLabel}
+                </span>
+              )}
+            </div>
             <p className="text-xs text-[#b9b4c7]">
-              {currentUser?.university || currentUser?.college || "Verified Campus"}
+              {collegeLabel || (isCommunity ? "Community" : "Verified Campus")}
             </p>
 
             <div className="mt-5 flex justify-center space-x-6 text-sm text-[#b9b4c7]">
@@ -395,12 +623,19 @@ export default function Profile() {
                 <p className="font-semibold text-[#faf0e6] text-lg">{userPosts.length}</p>
                 <p>Posts</p>
               </div>
-              <div className="flex flex-col items-center">
-                <p className="font-semibold text-[#faf0e6] text-lg">
-                  {currentUser?.friends?.length || 0}
-                </p>
-                <p>Friends</p>
-              </div>
+              {isCommunity ? (
+                <div className="flex flex-col items-center">
+                  <p className="font-semibold text-[#faf0e6] text-lg">{memberCount}</p>
+                  <p>Members</p>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center">
+                  <p className="font-semibold text-[#faf0e6] text-lg">
+                    {friendCount}
+                  </p>
+                  <p>Friends</p>
+                </div>
+              )}
             </div>
           </div>
         </Motion.div>
@@ -408,7 +643,7 @@ export default function Profile() {
         <div className="flex gap-2 mb-6">
           {[
             { key: "overview", label: "Overview" },
-            { key: "friends", label: "Friends" },
+            ...(isCommunity ? [] : [{ key: "friends", label: "Friends" }]),
             { key: "settings", label: "Settings" },
           ].map((tab) => (
             <button
@@ -430,17 +665,30 @@ export default function Profile() {
           <div className="space-y-6">
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-[#faf0e6]">Bio</h3>
-                <span className="text-xs text-[#b9b4c7]">Visible to friends</span>
+                <h3 className="text-lg font-semibold text-[#faf0e6]">
+                  {isCommunity ? "Description" : "Bio"}
+                </h3>
+                {!isCommunity && (
+                  <span className="text-xs text-[#b9b4c7]">Visible to friends</span>
+                )}
               </div>
               <textarea
                 value={bio}
                 onChange={(e) => setBio(e.target.value)}
-                placeholder="Share a short bio about yourself..."
+                placeholder={
+                  isCommunity
+                    ? "Describe what your community is about..."
+                    : "Share a short bio about yourself..."
+                }
                 rows="3"
                 className="w-full rounded-2xl glass-input p-3 text-sm resize-none"
               />
-              <div className="mt-3 flex justify-end">
+              <div className="mt-3 flex items-center justify-between">
+                {bioSuccess ? (
+                  <p className="text-xs text-emerald-200">{bioSuccess}</p>
+                ) : (
+                  <span />
+                )}
                 <Motion.button
                   onClick={handleSaveBio}
                   disabled={loading}
@@ -448,7 +696,7 @@ export default function Profile() {
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
-                  Save Bio
+                  {isCommunity ? "Save Description" : "Save Bio"}
                 </Motion.button>
               </div>
             </div>
@@ -512,7 +760,7 @@ export default function Profile() {
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-[#faf0e6]">Friends</h3>
               <span className="text-xs text-[#b9b4c7]">
-                {currentUser?.friends?.length || 0} total
+                {friendCount} total
               </span>
             </div>
             {friendsLoading ? (
@@ -560,23 +808,29 @@ export default function Profile() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                    Full Name
+                    {isCommunity ? "Community Name" : "Full Name"}
                   </label>
                   <input
                     type="text"
                     value={settingsName}
-                    onChange={(e) => setSettingsName(e.target.value)}
+                    onChange={(e) => {
+                      setSettingsName(e.target.value);
+                      if (settingsSuccess) setSettingsSuccess("");
+                    }}
                     className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
                   />
                 </div>
               </div>
               <div className="mt-4 space-y-1.5">
                 <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                  Bio
+                  {isCommunity ? "Description" : "Bio"}
                 </label>
                 <textarea
                   value={settingsBio}
-                  onChange={(e) => setSettingsBio(e.target.value)}
+                  onChange={(e) => {
+                    setSettingsBio(e.target.value);
+                    if (settingsSuccess) setSettingsSuccess("");
+                  }}
                   rows="3"
                   className="w-full rounded-2xl glass-input p-3 text-sm resize-none"
                 />
@@ -590,143 +844,153 @@ export default function Profile() {
                   <input
                     type="checkbox"
                     checked={privacyPublic}
-                    onChange={(e) => setPrivacyPublic(e.target.checked)}
+                    onChange={(e) => {
+                      setPrivacyPublic(e.target.checked);
+                      if (settingsSuccess) setSettingsSuccess("");
+                    }}
                     className="sr-only peer"
                   />
                   <div className="w-10 h-6 bg-white/10 rounded-full peer peer-checked:bg-[#5c5470] transition-colors"></div>
                   <div className="dot absolute left-1 top-1 bg-[#faf0e6] w-4 h-4 rounded-full transition-transform peer-checked:translate-x-full"></div>
                 </label>
               </div>
-              <div className="mt-5 flex justify-end">
+              <div className="mt-5 flex flex-col sm:flex-row sm:items-center sm:justify-end gap-3 sticky bottom-4 bg-[#1a120b]/80 backdrop-blur-xl rounded-2xl px-3 py-3 sm:bg-transparent sm:backdrop-blur-none sm:px-0 sm:py-0">
+                {settingsSuccess && (
+                  <p className="text-xs text-emerald-200">{settingsSuccess}</p>
+                )}
                 <Motion.button
                   onClick={handleSaveSettings}
-                  disabled={loading}
+                  disabled={!canSaveSettings}
                   className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
-                  Save Settings
+                  Save Changes
                 </Motion.button>
               </div>
             </div>
 
-            <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
-              <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">
-                Education
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-1.5 relative" ref={collegeRef}>
-                  <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                    College / University
-                  </label>
-                  <input
-                    type="text"
-                    value={collegeInput}
-                    onChange={(e) => {
-                      setCollegeInput(e.target.value);
-                      setEducationCollege(e.target.value);
-                      setShowCollegeDropdown(true);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        setShowCollegeDropdown(false);
-                      }
-                    }}
-                    onFocus={() => setShowCollegeDropdown(true)}
-                    placeholder="Search your college..."
-                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
-                  />
-                  <p className="text-[11px] text-[#b9b4c7]">
-                    Can't find your college? Type to create your campus network.
-                  </p>
-                  {showCollegeDropdown && (
-                    <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
-                      {collegeInput.trim().length < 2 ? (
-                        <div className="p-3 text-sm text-[#b9b4c7]">
-                          Type at least 2 characters to search.
-                        </div>
-                      ) : collegeLoading ? (
-                        <div className="p-3 space-y-2">
-                          {[1, 2, 3, 4, 5].map((i) => (
-                            <div
-                              key={i}
-                              className="h-8 rounded-xl bg-white/10 animate-pulse"
-                            ></div>
-                          ))}
-                        </div>
-                      ) : collegeError ? (
-                        <div className="p-3 text-sm text-[#b9b4c7]">{collegeError}</div>
-                      ) : topMatches.length > 0 ? (
-                        <div className="p-2">
-                          {topMatches.map((college) => (
-                            <button
-                              key={college}
-                              type="button"
-                              onClick={() => {
-                                setCollegeInput(college);
-                                setEducationCollege(college);
-                                setShowCollegeDropdown(false);
-                              }}
-                              className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
-                            >
-                              {college}
-                            </button>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="p-3 text-sm text-[#b9b4c7]">
-                          No matches. Press Enter to use "{collegeInput}".
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+            {!isCommunity && (
+              <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
+                <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">
+                  Education
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5 relative" ref={collegeRef}>
+                    <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                      College / University
+                    </label>
+                    <input
+                      type="text"
+                      value={collegeInput}
+                      onChange={(e) => {
+                        setCollegeInput(e.target.value);
+                        setEducationCollege(e.target.value);
+                        setShowCollegeDropdown(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          setShowCollegeDropdown(false);
+                        }
+                      }}
+                      onFocus={() => setShowCollegeDropdown(true)}
+                      placeholder="Search your college..."
+                      className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                    />
+                    <p className="text-[11px] text-[#b9b4c7]">
+                      Can't find your college? Type to create your campus network.
+                    </p>
+                    {showCollegeDropdown && (
+                      <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
+                        {collegeInput.trim().length < 2 ? (
+                          <div className="p-3 text-sm text-[#b9b4c7]">
+                            Type at least 2 characters to search.
+                          </div>
+                        ) : collegeLoading ? (
+                          <div className="p-3 space-y-2">
+                            {[1, 2, 3, 4, 5].map((i) => (
+                              <div
+                                key={i}
+                                className="h-8 rounded-xl bg-white/10 animate-pulse"
+                              ></div>
+                            ))}
+                          </div>
+                        ) : collegeError ? (
+                          <div className="p-3 text-sm text-[#b9b4c7]">{collegeError}</div>
+                        ) : topMatches.length > 0 ? (
+                          <div className="p-2">
+                            {topMatches.map((college) => (
+                              <button
+                                key={college}
+                                type="button"
+                                onClick={() => {
+                                  setCollegeInput(college);
+                                  setEducationCollege(college);
+                                  setShowCollegeDropdown(false);
+                                }}
+                                className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
+                              >
+                                {college}
+                              </button>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="p-3 text-sm text-[#b9b4c7]">
+                            No matches. Press Enter to use "{collegeInput}".
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                    Graduation Year
-                  </label>
-                  <select
-                    value={educationYear}
-                    onChange={(e) => setEducationYear(e.target.value)}
-                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
-                  >
-                    <option value="">Select year</option>
-                    {yearOptions.map((year) => (
-                      <option key={year} value={year}>
-                        {year}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                      Graduation Year
+                    </label>
+                    <select
+                      value={educationYear}
+                      onChange={(e) => setEducationYear(e.target.value)}
+                      className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                    >
+                      <option value="">Select year</option>
+                      {yearOptions.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                <div className="space-y-1.5">
+                  <div className="space-y-1.5">
                   <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                    Student Type
+                    Student Level
                   </label>
                   <select
                     value={educationType}
                     onChange={(e) => setEducationType(e.target.value)}
                     className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
                   >
-                    <option value="student">Current Student</option>
+                    <option value="undergraduate">Undergraduate</option>
+                    <option value="postgraduate">Postgraduate</option>
+                    <option value="graduate">Graduate</option>
                     <option value="alumni">Alumni</option>
                   </select>
                 </div>
-              </div>
+                </div>
 
-              <div className="mt-5 flex justify-end">
-                <Motion.button
-                  onClick={handleSaveEducation}
-                  disabled={loading}
-                  className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                >
-                  Update Education
-                </Motion.button>
+                <div className="mt-5 flex justify-end">
+                  <Motion.button
+                    onClick={handleSaveEducation}
+                    disabled={loading}
+                    className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    Update Education
+                  </Motion.button>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
               <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">
@@ -758,33 +1022,69 @@ export default function Profile() {
               <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">
                 Change Password
               </h3>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="New password"
-                  className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
-                />
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  placeholder="Confirm password"
-                  className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
-                />
-              </div>
-              <div className="mt-4 flex justify-end">
-                <Motion.button
-                  onClick={handlePasswordChange}
-                  disabled={loading}
-                  className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                >
-                  Update Password
-                </Motion.button>
-              </div>
+              <form onSubmit={handlePasswordChange}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <input
+                    type="password"
+                    value={currentPassword}
+                    onChange={(e) => setCurrentPassword(e.target.value)}
+                    placeholder="Current password"
+                    autoComplete="current-password"
+                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                  />
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="New password"
+                    autoComplete="new-password"
+                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                  />
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="Confirm password"
+                    autoComplete="new-password"
+                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                  />
+                </div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] text-[#b9b4c7]">
+                    <span>Password strength</span>
+                    <span className="text-[#faf0e6]">{passwordStrength.label}</span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-white/10 overflow-hidden">
+                    <div
+                      className={`h-full ${passwordStrength.color}`}
+                      style={{ width: `${(passwordStrength.score / 4) * 100}%` }}
+                    ></div>
+                  </div>
+                  <p className="text-[11px] text-[#b9b4c7]">
+                    Minimum 8 characters with letters and numbers.
+                  </p>
+                  {!passwordsMatch && confirmPassword.length > 0 && (
+                    <p className="text-[11px] text-amber-200">Passwords do not match.</p>
+                  )}
+                  {passwordError && (
+                    <p className="text-[11px] text-red-300">{passwordError}</p>
+                  )}
+                  {passwordSuccess && (
+                    <p className="text-[11px] text-emerald-200">{passwordSuccess}</p>
+                  )}
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <Motion.button
+                    type="submit"
+                    disabled={!canUpdatePassword}
+                    className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                  >
+                    Update Password
+                  </Motion.button>
+                </div>
+              </form>
             </div>
 
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">

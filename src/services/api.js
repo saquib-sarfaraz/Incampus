@@ -154,6 +154,24 @@ const apiFetch = async (path, options = {}) => {
   }
 };
 
+const apiFetchWithFallback = async (paths, options = {}) => {
+  const queue = Array.isArray(paths) ? paths : [paths];
+  let lastError = null;
+  for (const path of queue) {
+    if (!path) continue;
+    try {
+      return await apiFetch(path, options);
+    } catch (error) {
+      lastError = error;
+      if (error?.status && error.status !== 404) {
+        throw error;
+      }
+    }
+  }
+  if (lastError) throw lastError;
+  throw new Error("Request failed.");
+};
+
 const normalizeList = (data, keys = []) => {
   if (Array.isArray(data)) return data;
   for (const key of keys) {
@@ -183,9 +201,20 @@ export const register = async (userData) => {
       university: userData.university,
       college: userData.university,
       course: userData.course,
-      graduationYear: userData.graduationYear || userData.year,
-      year: userData.graduationYear || userData.year,
+      graduationYear: userData.graduationYear || userData.year || userData.passoutYear,
+      year: userData.graduationYear || userData.year || userData.passoutYear,
+      passoutYear: userData.passoutYear,
+      industry: userData.industry,
       student_type: userData.studentType || userData.student_type,
+      studentType: userData.studentType || userData.student_type,
+      userType: userData.userType || userData.user_type,
+      user_type: userData.user_type,
+      studentEmail: userData.studentEmail || userData.student_email,
+      communityName: userData.communityName || userData.community_name,
+      communityType: userData.communityType || userData.community_type,
+      communityDescription: userData.communityDescription || userData.community_description,
+      communityEmail: userData.communityEmail || userData.community_email,
+      communityCollege: userData.communityCollege,
       username: userData.username,
       recaptchaToken: userData.recaptchaToken,
     },
@@ -253,6 +282,40 @@ export const updateUser = async (updates) => {
     method: "PUT",
     body: updates,
   });
+};
+
+export const updateProfileInfo = async (updates) => {
+  try {
+    return await apiFetch("/users/me", {
+      method: "PATCH",
+      body: updates,
+    });
+  } catch (error) {
+    if (error?.status === 404 || error?.status === 405) {
+      return updateUser(updates);
+    }
+    throw error;
+  }
+};
+
+export const changePassword = async ({ currentPassword, newPassword }) => {
+  if (!currentPassword || !newPassword) {
+    throw new Error("Current and new password are required.");
+  }
+  try {
+    return await apiFetch("/users/me/password", {
+      method: "PATCH",
+      body: { currentPassword, newPassword },
+    });
+  } catch (error) {
+    if (error?.status === 404 || error?.status === 405) {
+      return apiFetch("/users/me/password", {
+        method: "PUT",
+        body: { currentPassword, newPassword },
+      });
+    }
+    throw error;
+  }
 };
 
 export const uploadProfilePic = async (file) => {
@@ -700,9 +763,10 @@ export const markChatSeen = async (payload) => {
 
 // Friend APIs
 export const sendFriendRequest = async (recipientId) => {
-  return apiFetch("/friends/send", {
+  const payload = { recipientId, targetUserId: recipientId };
+  return apiFetchWithFallback(["/friend/request", "/friends/send"], {
     method: "POST",
-    body: { recipientId },
+    body: payload,
   });
 };
 
@@ -714,16 +778,18 @@ export const getPendingRequests = async (params = {}) => {
 };
 
 export const acceptFriendRequest = async (requesterId) => {
-  return apiFetch("/friends/accept", {
+  const payload = { requesterId, senderId: requesterId };
+  return apiFetchWithFallback(["/friend/accept", "/friends/accept"], {
     method: "POST",
-    body: { requesterId },
+    body: payload,
   });
 };
 
 export const rejectFriendRequest = async (requesterId) => {
-  return apiFetch("/friends/reject", {
+  const payload = { requesterId, senderId: requesterId };
+  return apiFetchWithFallback(["/friend/reject", "/friends/reject"], {
     method: "POST",
-    body: { requesterId },
+    body: payload,
   });
 };
 
@@ -732,9 +798,10 @@ export const ignoreFriendRequest = async (requesterId) => {
 };
 
 export const cancelFriendRequest = async (recipientId) => {
-  return apiFetch("/friends/cancel", {
+  const payload = { recipientId, targetUserId: recipientId };
+  return apiFetchWithFallback(["/friend/cancel", "/friends/cancel"], {
     method: "POST",
-    body: { recipientId },
+    body: payload,
   });
 };
 
@@ -746,6 +813,24 @@ export const getFriendsList = async (params = {}) => {
 export const getMutualFriends = async (params = {}) => {
   const data = await apiFetch("/friends/mutual", { params });
   return normalizeList(data, ["friends", "items", "data"]);
+};
+
+export const removeFriend = async (friendId) => {
+  if (!friendId) throw new Error("Missing friend id.");
+  const payload = { friendId, userId: friendId, targetUserId: friendId };
+  return apiFetchWithFallback(
+    ["/friend/remove", "/friends/remove", "/friends/unfriend", "/friends/delete"],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+};
+
+export const getFriendStatus = async (targetUserId) => {
+  if (!targetUserId) throw new Error("Missing target user id.");
+  const encodedId = encodeURIComponent(targetUserId);
+  return apiFetchWithFallback([`/friend/status/${encodedId}`, `/friends/status/${encodedId}`]);
 };
 
 // Notification APIs

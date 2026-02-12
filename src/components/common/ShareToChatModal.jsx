@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
+import { useApp } from "../../context/useApp";
 import { getUserById } from "../../services/api";
 import { getSocket } from "../../services/socket";
 
@@ -8,9 +9,15 @@ const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
 export default function ShareToChatModal({ isOpen, onClose, postUrl, postTitle }) {
   const { currentUser } = useAuth();
+  const { friendIds, friendMapLoaded } = useApp();
   const [search, setSearch] = useState("");
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
+
+  const resolvedFriendIds = useMemo(() => {
+    if (friendMapLoaded) return friendIds;
+    return currentUser?.friends || [];
+  }, [friendIds, friendMapLoaded, currentUser?.friends]);
 
   const groups = useMemo(() => {
     const college = currentUser?.university || currentUser?.college || "";
@@ -38,7 +45,7 @@ export default function ShareToChatModal({ isOpen, onClose, postUrl, postTitle }
   useEffect(() => {
     if (!isOpen) return;
     const loadContacts = async () => {
-      const friends = currentUser?.friends || [];
+      const friends = resolvedFriendIds || [];
       if (friends.length === 0) {
         setContacts([]);
         return;
@@ -67,7 +74,7 @@ export default function ShareToChatModal({ isOpen, onClose, postUrl, postTitle }
       }
     };
     loadContacts();
-  }, [isOpen, currentUser?.friends]);
+  }, [isOpen, resolvedFriendIds]);
 
   const filteredTargets = useMemo(() => {
     const list = [...groups, ...contacts];

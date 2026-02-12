@@ -17,31 +17,63 @@ export const AuthProvider = ({ children }) => {
     ].filter(Boolean);
   }, []);
 
-  const normalizeUser = useCallback((user) => ({
-    id: user?._id || user?.id,
-    username: user?.username,
-    fullName: user?.fullName,
-    displayName: user?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-    profilePicUrl: user?.profilePicUrl,
-    friends: user?.friends || [],
-    bio: user?.bio || "",
-    university: user?.university || user?.college || user?.school || "",
-    privacyPublic: user?.privacyPublic ?? true,
-    graduationYear: user?.graduationYear || user?.year || "",
-    studentType: user?.studentType || user?.student_type || "student",
-    collegeGroupId:
-      user?.collegeGroupId ||
-      user?.college_group_id ||
-      user?.groupId ||
-      user?.collegeGroup ||
-      null,
-    course: user?.course,
-    year: user?.year,
-    student_type: user?.student_type,
-    groups: user?.groups,
-    groupIds: user?.groupIds,
-    groupMemberships: user?.groupMemberships,
-  }), []);
+  const normalizeUser = useCallback((user) => {
+    const rawStudentType = user?.studentType || user?.student_type || "student";
+    const rawUserType =
+      user?.userType ||
+      user?.user_type ||
+      user?.accountType ||
+      (rawStudentType === "alumni" ? "alumni" : null) ||
+      (user?.communityName || user?.communityType ? "community" : null) ||
+      "student";
+    const isCommunity = String(rawUserType).toLowerCase() === "community";
+    const displayNameBase = isCommunity
+      ? user?.communityName || user?.community_name || user?.fullName
+      : user?.fullName;
+
+    return {
+      id: user?._id || user?.id,
+      username: user?.username,
+      fullName: user?.fullName,
+      displayName:
+        displayNameBase?.replace?.(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+        displayNameBase ||
+        "User",
+      profilePicUrl: user?.profilePicUrl,
+      friends: user?.friends || [],
+      bio: user?.bio || "",
+      university: user?.university || user?.college || user?.school || "",
+      privacyPublic: user?.privacyPublic ?? true,
+      graduationYear: user?.graduationYear || user?.year || "",
+      studentType: rawStudentType,
+      student_type: user?.student_type,
+      userType: rawUserType,
+      user_type: user?.user_type,
+      course: user?.course,
+      year: user?.year,
+      passoutYear: user?.passoutYear || user?.passout_year || "",
+      industry: user?.industry || "",
+      communityName: user?.communityName || user?.community_name || "",
+      communityType: user?.communityType || user?.community_type || "",
+      communityDescription: user?.communityDescription || user?.community_description || "",
+      communityEmail: user?.communityEmail || user?.community_email || "",
+      memberCount:
+        user?.memberCount ||
+        user?.membersCount ||
+        user?.member_count ||
+        user?.followersCount ||
+        0,
+      collegeGroupId:
+        user?.collegeGroupId ||
+        user?.college_group_id ||
+        user?.groupId ||
+        user?.collegeGroup ||
+        null,
+      groups: user?.groups,
+      groupIds: user?.groupIds,
+      groupMemberships: user?.groupMemberships,
+    };
+  }, []);
 
   const applyUser = useCallback((user) => {
     if (!user) return null;
