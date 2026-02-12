@@ -33,10 +33,13 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const [viewsLoading, setViewsLoading] = useState(false);
   const [showReport, setShowReport] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
   const menuRef = useRef(null);
   const touchStartRef = useRef(null);
   const viewedStoriesRef = useRef(new Set());
   const progressRef = useRef(0);
+  const mutedByStoryRef = useRef({});
+  const videoRef = useRef(null);
 
   const currentGroup = stories[currentGroupIndex];
   const currentStory = currentGroup?.stories[currentStoryIndex];
@@ -67,6 +70,24 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
       }
     }
   }, [currentGroupIndex, currentStoryIndex, stories]);
+
+  useEffect(() => {
+    if (!storyId) {
+      setIsMuted(true);
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(mutedByStoryRef.current, storyId)) {
+      setIsMuted(Boolean(mutedByStoryRef.current[storyId]));
+    } else {
+      setIsMuted(true);
+    }
+  }, [storyId]);
+
+  useEffect(() => {
+    if (!videoRef.current) return;
+    videoRef.current.muted = isMuted;
+    videoRef.current.volume = isMuted ? 0 : 1;
+  }, [isMuted, storyId]);
 
   useEffect(() => {
     if (!currentStory) return;
@@ -263,15 +284,47 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   if (!currentGroup || !currentStory) return null;
 
   const handleTouchStart = (event) => {
-    touchStartRef.current = event.touches[0]?.clientY || null;
+    const touch = event.touches[0];
+    touchStartRef.current = {
+      x: touch?.clientX ?? null,
+      y: touch?.clientY ?? null,
+    };
   };
 
   const handleTouchEnd = (event) => {
-    if (!touchStartRef.current || !isOwnStory) return;
-    const endY = event.changedTouches[0]?.clientY || 0;
-    const delta = touchStartRef.current - endY;
-    if (delta > 60) setViewersOpen(true);
+    const start = touchStartRef.current;
+    if (!start || start.x === null || start.y === null) return;
+    const touch = event.changedTouches[0];
+    const endX = touch?.clientX ?? 0;
+    const endY = touch?.clientY ?? 0;
+    const deltaX = endX - start.x;
+    const deltaY = endY - start.y;
+    const absX = Math.abs(deltaX);
+    const absY = Math.abs(deltaY);
     touchStartRef.current = null;
+
+    if (absX > 50 && absX > absY) {
+      if (deltaX < 0) {
+        handleNext();
+      } else {
+        handlePrev();
+      }
+      return;
+    }
+
+    if (isOwnStory && absY > 60 && absY > absX && deltaY < 0) {
+      setViewersOpen(true);
+    }
+  };
+
+  const handleToggleMute = () => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      if (storyId) {
+        mutedByStoryRef.current[storyId] = next;
+      }
+      return next;
+    });
   };
 
   return (
@@ -387,10 +440,12 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
               {mediaUrl ? (
                 isVideo ? (
                   <video
+                    ref={videoRef}
+                    key={storyId || mediaUrl}
                     src={mediaUrl}
                     className="w-full h-full object-contain"
-                    controls
                     autoPlay
+                    muted={isMuted}
                     playsInline
                   />
                 ) : (
@@ -406,6 +461,34 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
                 </div>
               )}
 
+              <div className="absolute inset-0 z-10 pointer-events-none">
+                <button
+                  type="button"
+                  onClick={handlePrev}
+                  className="absolute inset-y-0 left-0 w-1/2 cursor-pointer pointer-events-auto"
+                  aria-label="Previous story"
+                />
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  className="absolute inset-y-0 right-0 w-1/2 cursor-pointer pointer-events-auto"
+                  aria-label="Next story"
+                />
+              </div>
+
+              {isVideo && (
+                <button
+                  type="button"
+                  onClick={handleToggleMute}
+                  className="absolute bottom-3 right-3 z-20 flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white backdrop-blur-md transition-colors hover:bg-black/60"
+                  aria-label={isMuted ? "Unmute story" : "Mute story"}
+                >
+                  <i
+                    className={`fa-solid ${isMuted ? "fa-volume-xmark" : "fa-volume-high"} text-sm`}
+                  ></i>
+                </button>
+              )}
+
               {debugStories && (
                 <div className="absolute bottom-2 left-2 right-2 max-h-40 overflow-auto rounded-xl border border-white/10 bg-black/70 p-2 text-[10px] text-white/80">
                   <pre className="whitespace-pre-wrap">{debugPayload}</pre>
@@ -413,7 +496,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
               )}
 
               {/* User info */}
-              <div className="absolute top-2 left-2 flex items-center space-x-2 glass-surface rounded-full px-2 py-1">
+              <div className="absolute top-2 left-2 z-20 flex items-center space-x-2 glass-surface rounded-full px-2 py-1">
                 <img
                   src={currentGroup.authorProfilePic || FALLBACK_AVATAR}
                   alt={currentGroup.authorDisplayName}

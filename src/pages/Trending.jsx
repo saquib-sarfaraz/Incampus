@@ -19,6 +19,7 @@ import {
   resolveStoryMediaType,
   resolveStoryMediaUrl,
   isStoryRecent,
+  resolveStoryPrivacyType,
 } from "../utils/storyMedia";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
@@ -198,7 +199,8 @@ export default function Trending() {
     return list.filter((story) => {
       if (!isStoryRecent(story)) return false;
       const authorId = story.authorId || story.author?._id || story.author;
-      return !isUserBlocked(authorId);
+      if (isUserBlocked(authorId)) return false;
+      return resolveStoryPrivacyType(story) === "universal";
     });
   }, [stories, isUserBlocked]);
 
