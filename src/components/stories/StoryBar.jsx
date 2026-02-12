@@ -2,10 +2,13 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { createStoryWithProgress, fetchStoryViews, getUserById } from "../../services/api";
-import { getSocket } from "../../services/socket";
+import { createStoryWithProgress, getUserById } from "../../services/api";
 import StoryViewer from "./StoryViewer";
-import { resolveStoryId, isStoryRecent, isStoryViewRecent } from "../../utils/storyMedia";
+import {
+  resolveStoryId,
+  isStoryRecent,
+  resolveStoryPrivacyType,
+} from "../../utils/storyMedia";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -14,7 +17,6 @@ export default function StoryBar() {
   const { stories, loadStories, cacheUser, getUserFromCache, feedScope, isUserBlocked } =
     useApp();
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
-  const [viewCounts, setViewCounts] = useState({});
   const [uploadPreview, setUploadPreview] = useState(null);
   const [pendingFile, setPendingFile] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -23,47 +25,13 @@ export default function StoryBar() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState("");
   const [uploadError, setUploadError] = useState("");
+  const [privacyType, setPrivacyType] = useState("universal");
+  const [collegeTagMode, setCollegeTagMode] = useState("none");
+  const [customCollegeTag, setCustomCollegeTag] = useState("");
   const fileInputRef = useRef(null);
-  const viewCacheRef = useRef({});
   const uploadAbortRef = useRef(null);
   const uploadStartRef = useRef(0);
   const lastProgressRef = useRef({ loaded: 0, time: 0 });
-
-  useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-
-    const handleStoryViewed = (payload = {}) => {
-      const storyId =
-        payload.storyId ||
-        payload.story?._id ||
-        payload.story?.id ||
-        payload.story?.storyId ||
-        payload.story_id ||
-        payload.id;
-      if (!storyId) return;
-
-      const nextCount =
-        typeof payload.viewCount === "number"
-          ? payload.viewCount
-          : typeof payload.viewsCount === "number"
-            ? payload.viewsCount
-            : typeof payload.count === "number"
-              ? payload.count
-              : null;
-
-      setViewCounts((prev) => {
-        const currentCount = Number(prev[storyId] || 0);
-        const resolved =
-          nextCount ?? (payload.isNew === false ? currentCount : currentCount + 1);
-        viewCacheRef.current[storyId] = resolved;
-        return { ...prev, [storyId]: resolved };
-      });
-    };
-
-    socket.on("story-viewed", handleStoryViewed);
-    return () => socket.off("story-viewed", handleStoryViewed);
-  }, []);
 
   useEffect(() => {
     const fetchMissingAuthors = async () => {
@@ -90,41 +58,6 @@ export default function StoryBar() {
 
     fetchMissingAuthors();
   }, [stories, getUserFromCache, cacheUser]);
-
-  useEffect(() => {
-    if (!currentUser) return;
-    const ownStoryIds = stories
-      .filter(isStoryRecent)
-      .filter((story) => {
-        const authorId = story.authorId || story.author?._id || story.author;
-        return authorId && String(authorId) === String(currentUser.id);
-      })
-      .map((story) => resolveStoryId(story))
-      .filter(Boolean);
-
-    if (ownStoryIds.length === 0) return;
-
-    const loadCounts = async () => {
-      await Promise.all(
-        ownStoryIds.map(async (storyId) => {
-          if (Object.prototype.hasOwnProperty.call(viewCacheRef.current, storyId)) return;
-          try {
-            const response = await fetchStoryViews(storyId);
-            const list = Array.isArray(response) ? response : [];
-            const recentViews = list.filter(isStoryViewRecent);
-            const resolvedCount =
-              typeof response?.count === "number" ? response.count : recentViews.length;
-            viewCacheRef.current[storyId] = resolvedCount;
-            setViewCounts((prev) => ({ ...prev, [storyId]: resolvedCount }));
-          } catch {
-            viewCacheRef.current[storyId] = 0;
-          }
-        })
-      );
-    };
-
-    loadCounts();
-  }, [stories, currentUser]);
 
   useEffect(() => {
     return () => {
@@ -162,6 +95,9 @@ export default function StoryBar() {
     setUploadProgress(0);
     setUploadSpeed("");
     setUploadError("");
+    setPrivacyType(feedScope === "college" ? "friends" : "universal");
+    setCollegeTagMode(campusLabel && feedScope === "college" ? "mine" : "none");
+    setCustomCollegeTag("");
   };
 
   const resolveStoryName = (story, cachedUser) => {
@@ -188,6 +124,10 @@ export default function StoryBar() {
 
   const resolveStoryCampus = (story, cachedUser) => {
     return (
+      story.collegeTagName ||
+      story.collegeTag ||
+      story.userCollege ||
+      story.user_college ||
       story.college ||
       story.university ||
       story.school ||
@@ -210,6 +150,8 @@ export default function StoryBar() {
 
   const resolveStoryGroupId = (story) => {
     return (
+      story.collegeTagId ||
+      story.college_tag_id ||
       story.collegeGroupId ||
       story.college_group_id ||
       story.collegeId ||
@@ -222,26 +164,52 @@ export default function StoryBar() {
     );
   };
 
+  const friendIds = useMemo(
+    () => new Set((currentUser?.friends || []).map((id) => String(id))),
+    [currentUser?.friends]
+  );
+
+  const campusLower = campusLabel ? campusLabel.toLowerCase() : "";
+
+  const getAuthorId = (story) => {
+    return story.authorId || story.author?._id || story.author || "";
+  };
+
+  const isOwner = (authorId) => {
+    if (!authorId || !currentUser?.id) return false;
+    return String(authorId) === String(currentUser.id);
+  };
+
+  const isFriend = (authorId) => {
+    if (!authorId) return false;
+    return friendIds.has(String(authorId));
+  };
+
+  const matchesCollege = (story, cachedUser) => {
+    if (!campusLabel && !currentCollegeGroupId) return false;
+    const storyGroupId = resolveStoryGroupId(story);
+    if (currentCollegeGroupId && storyGroupId) {
+      return String(storyGroupId) === String(currentCollegeGroupId);
+    }
+    if (!campusLower) return false;
+    const storyCampus = resolveStoryCampus(story, cachedUser);
+    if (!storyCampus) return false;
+    return String(storyCampus).toLowerCase() === campusLower;
+  };
+
   const filteredStories = useMemo(() => {
     if (!stories || stories.length === 0) return [];
-    const safeStories = stories.filter((story) => {
+    return stories.filter((story) => {
       if (!isStoryRecent(story)) return false;
-      const authorId = story.authorId || story.author?._id || story.author;
-      return !isUserBlocked(authorId);
-    });
-    if (feedScope !== "college") return safeStories;
-    const campusLower = campusLabel.toLowerCase();
-    return safeStories.filter((story) => {
-      const storyGroupId = resolveStoryGroupId(story);
-      if (currentCollegeGroupId && storyGroupId) {
-        return String(storyGroupId) === String(currentCollegeGroupId);
-      }
-      if (!campusLabel) return false;
-      const authorId = story.authorId || story.author?._id || story.author;
+      const authorId = getAuthorId(story);
+      if (isUserBlocked(authorId)) return false;
+      const privacy = resolveStoryPrivacyType(story);
+      if (isOwner(authorId)) return true;
+      if (privacy === "friends" && !isFriend(authorId)) return false;
+      if (feedScope !== "college") return true;
+      if (!campusLabel && !currentCollegeGroupId) return true;
       const cachedUser = authorId ? getUserFromCache(authorId) : null;
-      const storyCampus = resolveStoryCampus(story, cachedUser);
-      if (!storyCampus) return false;
-      return String(storyCampus).toLowerCase() === campusLower;
+      return matchesCollege(story, cachedUser);
     });
   }, [
     stories,
@@ -250,29 +218,25 @@ export default function StoryBar() {
     getUserFromCache,
     currentCollegeGroupId,
     isUserBlocked,
+    currentUser?.id,
+    friendIds,
   ]);
 
-  const orderedStories = useMemo(() => {
-    if (feedScope === "college") return filteredStories;
-    return [...filteredStories].sort((a, b) => {
-      const aViews =
-        a.viewsCount ||
-        a.viewCount ||
-        (Array.isArray(a.views) ? a.views.length : 0) ||
-        0;
-      const bViews =
-        b.viewsCount ||
-        b.viewCount ||
-        (Array.isArray(b.views) ? b.views.length : 0) ||
-        0;
-      if (aViews !== bViews) return bViews - aViews;
-      return new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
-    });
-  }, [filteredStories, feedScope]);
+  const getStoryTimestamp = (story) => {
+    const raw =
+      story.createdAt ||
+      story.created_at ||
+      story.timestamp ||
+      story.time ||
+      story.date ||
+      0;
+    const ts = new Date(raw).getTime();
+    return Number.isNaN(ts) ? 0 : ts;
+  };
 
   const groupedStories = useMemo(() => {
     const grouped = {};
-    orderedStories.forEach((story) => {
+    filteredStories.forEach((story) => {
       const rawAuthorId = story.authorId || story.author?._id || story.author;
       const authorId = rawAuthorId || `unknown-${story._id || "story"}`;
       const cachedUser = rawAuthorId ? getUserFromCache(rawAuthorId) : null;
@@ -296,8 +260,55 @@ export default function StoryBar() {
         storyId: resolveStoryId(story),
       });
     });
-    return Object.values(grouped);
-  }, [orderedStories, getUserFromCache]);
+    const groups = Object.values(grouped);
+    groups.forEach((group) => {
+      group.stories.sort((a, b) => getStoryTimestamp(a) - getStoryTimestamp(b));
+    });
+    return groups;
+  }, [filteredStories, getUserFromCache]);
+
+  const orderedGroups = useMemo(() => {
+    const groups = [...groupedStories];
+    const getGroupLatest = (group) =>
+      Math.max(...group.stories.map((story) => getStoryTimestamp(story)), 0);
+    const getGroupRank = (group) => {
+      const authorId = group.authorId;
+      if (isOwner(authorId)) return 0;
+      if (isFriend(authorId)) return 1;
+      const cachedUser = authorId ? getUserFromCache(authorId) : null;
+      const hasCollegeMatch = group.stories.some((story) =>
+        matchesCollege(story, cachedUser)
+      );
+      if (hasCollegeMatch) return 2;
+      return 3;
+    };
+    groups.sort((a, b) => {
+      const rankA = getGroupRank(a);
+      const rankB = getGroupRank(b);
+      if (rankA !== rankB) return rankA - rankB;
+      return getGroupLatest(b) - getGroupLatest(a);
+    });
+    return groups;
+  }, [
+    groupedStories,
+    getUserFromCache,
+    currentUser?.id,
+    friendIds,
+    campusLabel,
+    currentCollegeGroupId,
+    campusLower,
+  ]);
+
+  const currentUserGroupIndex = useMemo(() => {
+    if (!currentUser?.id) return -1;
+    return orderedGroups.findIndex((group) => isOwner(group.authorId));
+  }, [orderedGroups, currentUser?.id]);
+
+  const storyGroupsForBar = useMemo(() => {
+    return orderedGroups
+      .map((group, index) => ({ group, index }))
+      .filter(({ index }) => index !== currentUserGroupIndex);
+  }, [orderedGroups, currentUserGroupIndex]);
 
   const handleStoryUpload = (e) => {
     const file = e.target.files[0];
@@ -318,22 +329,47 @@ export default function StoryBar() {
     setUploadError("");
     setUploadSpeed("");
     setPreviewDuration("");
+    setPrivacyType(feedScope === "college" ? "friends" : "universal");
+    setCollegeTagMode(campusLabel && feedScope === "college" ? "mine" : "none");
+    setCustomCollegeTag("");
+  };
+
+  const resolveCollegeTag = () => {
+    if (collegeTagMode === "mine") return campusLabel || "";
+    if (collegeTagMode === "custom") return customCollegeTag.trim();
+    return "";
   };
 
   const buildStoryMeta = () => {
     const meta = {};
-    if (feedScope === "college") {
+    const resolvedPrivacy = privacyType === "friends" ? "friends" : "universal";
+    meta.privacyType = resolvedPrivacy;
+    meta.privacy = resolvedPrivacy;
+    meta.visibility = resolvedPrivacy;
+    if (resolvedPrivacy === "universal") {
+      meta.isUniversal = true;
+    } else {
       meta.isUniversal = false;
-      if (campusLabel) meta.collegeTagName = campusLabel;
+      meta.isPrivate = true;
+      meta.friendsOnly = true;
+    }
+
+    const resolvedTag = resolveCollegeTag();
+    if (resolvedTag) {
+      meta.collegeTagName = resolvedTag;
+      meta.collegeTag = resolvedTag;
+    }
+
+    if (collegeTagMode === "mine") {
       const collegeTagId =
         currentUser?.collegeTagId ||
         currentUser?.college_tag_id ||
         currentUser?.collegeTag?._id ||
         "";
       if (collegeTagId) meta.collegeTagId = collegeTagId;
-    } else {
-      meta.isUniversal = true;
     }
+
+    if (campusLabel) meta.userCollege = campusLabel;
     return meta;
   };
 
@@ -425,6 +461,8 @@ export default function StoryBar() {
     setSelectedStoryIndex(index);
   };
 
+  const previewCollegeTag = resolveCollegeTag();
+
   return (
     <>
       <Motion.div
@@ -451,32 +489,40 @@ export default function StoryBar() {
           <div className="flex space-x-4 overflow-x-auto pb-2 scroll-container">
             {/* Your Story */}
             <div className="w-16 flex flex-col items-center flex-shrink-0">
-              <Motion.button
-                onClick={() => fileInputRef.current?.click()}
-                className="w-12 h-12 rounded-full border border-dashed border-[#b9b4c7] flex items-center justify-center text-[#b9b4c7] hover:bg-white/5 transition-colors"
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-              >
-                <i className="fa-solid fa-plus"></i>
-              </Motion.button>
+              {currentUserGroupIndex >= 0 ? (
+                <Motion.button
+                  onClick={() => openStory(currentUserGroupIndex)}
+                  className="w-12 h-12 rounded-full border border-[#b9b4c7] overflow-hidden flex items-center justify-center bg-white/10"
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                >
+                  <img
+                    src={
+                      orderedGroups[currentUserGroupIndex]?.authorProfilePic ||
+                      currentUser?.profilePicUrl ||
+                      ANONYMOUS_AVATAR
+                    }
+                    alt={currentUser?.fullName || currentUser?.username || "Your Story"}
+                    className="w-full h-full object-cover"
+                  />
+                </Motion.button>
+              ) : (
+                <Motion.button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-12 h-12 rounded-full border border-dashed border-[#b9b4c7] flex items-center justify-center text-[#b9b4c7] hover:bg-white/5 transition-colors"
+                  whileHover={{ scale: 1.1 }}
+                  whileTap={{ scale: 0.9 }}
+                >
+                  <i className="fa-solid fa-plus"></i>
+                </Motion.button>
+              )}
               <p className="text-[11px] text-center mt-1 truncate w-14 text-[#b9b4c7]">
                 Your Story
               </p>
             </div>
 
             {/* Other Stories */}
-            {groupedStories.map((group, index) => {
-              const isOwner = String(group.authorId) === String(currentUser?.id);
-              const groupViews = group.stories.reduce(
-                (sum, story) =>
-                  sum +
-                  (viewCounts[story.storyId || story._id] ||
-                    story.viewsCount ||
-                    story.views?.length ||
-                    0),
-                0
-              );
-
+            {storyGroupsForBar.map(({ group, index }) => {
               return (
               <Motion.div
                 key={group.authorId}
@@ -495,12 +541,6 @@ export default function StoryBar() {
                 <p className="text-[11px] font-medium text-center truncate w-14 mt-1 text-[#faf0e6]">
                   {group.authorDisplayName || "User"}
                 </p>
-                {isOwner && (
-                  <span className="mt-0.5 text-[10px] text-[#b9b4c7]">
-                    <i className="fa-regular fa-eye mr-1"></i>
-                    {groupViews}
-                  </span>
-                )}
               </Motion.div>
               );
             })}
@@ -518,7 +558,7 @@ export default function StoryBar() {
 
       {selectedStoryIndex !== null && (
         <StoryViewer
-          stories={groupedStories}
+          stories={orderedGroups}
           initialIndex={selectedStoryIndex}
           onClose={() => setSelectedStoryIndex(null)}
         />
@@ -545,7 +585,8 @@ export default function StoryBar() {
                 <div>
                   <h3 className="text-sm font-semibold text-[#faf0e6]">Story Preview</h3>
                   <p className="text-[11px] text-[#b9b4c7]">
-                    {campusLabel ? `College: ${campusLabel}` : "Universal Story"}
+                    {privacyType === "friends" ? "Friends Only" : "Universal"}
+                    {previewCollegeTag ? ` • ${previewCollegeTag}` : ""}
                   </p>
                 </div>
                 <button
@@ -574,6 +615,90 @@ export default function StoryBar() {
                     {uploadPreview.type === "video" ? "Video Story" : "Image Story"}
                     {previewDuration ? ` • ${previewDuration}` : ""}
                   </p>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-2">
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                    Privacy
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPrivacyType("friends")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                        privacyType === "friends"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      Private Friends
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPrivacyType("universal")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                        privacyType === "universal"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      Universal
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                    College Tag
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setCollegeTagMode("none")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                        collegeTagMode === "none"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      No Tag
+                    </button>
+                    {campusLabel && (
+                      <button
+                        type="button"
+                        onClick={() => setCollegeTagMode("mine")}
+                        className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                          collegeTagMode === "mine"
+                            ? "bg-white/15 text-[#faf0e6]"
+                            : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                        }`}
+                      >
+                        {campusLabel}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setCollegeTagMode("custom")}
+                      className={`rounded-full px-3 py-1 text-xs font-semibold transition-colors ${
+                        collegeTagMode === "custom"
+                          ? "bg-white/15 text-[#faf0e6]"
+                          : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                      }`}
+                    >
+                      Other College
+                    </button>
+                  </div>
+                  {collegeTagMode === "custom" && (
+                    <input
+                      type="text"
+                      value={customCollegeTag}
+                      onChange={(e) => setCustomCollegeTag(e.target.value)}
+                      placeholder="Enter college name"
+                      className="w-full rounded-2xl glass-input px-4 py-2 text-xs"
+                    />
+                  )}
                 </div>
               </div>
 

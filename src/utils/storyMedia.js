@@ -194,6 +194,30 @@ export const resolveStoryMediaType = (story, mediaUrl = "") => {
   return isVideoUrl(mediaUrl) ? "video" : "image";
 };
 
+export const resolveStoryPrivacyType = (story) => {
+  if (!story) return "universal";
+  const raw =
+    story.privacyType ||
+    story.privacy ||
+    story.visibility ||
+    story.access ||
+    story.storyPrivacy ||
+    story.story?.privacyType ||
+    story.story?.privacy ||
+    "";
+  if (typeof raw === "string") {
+    const value = raw.toLowerCase();
+    if (value.includes("friend") || value === "private") return "friends";
+    if (value.includes("public") || value.includes("universal")) return "universal";
+  }
+  if (story.isUniversal === true || story.universal === true) return "universal";
+  if (story.isUniversal === false) return "friends";
+  if (story.isPrivate === true || story.private === true || story.friendsOnly === true) {
+    return "friends";
+  }
+  return "universal";
+};
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const resolveStoryTimestamp = (story) => {
