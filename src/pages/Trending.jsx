@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion as Motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
-import { searchUsers, sendFriendRequest, likePost } from "../services/api";
+import { searchUsers, likePost } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
@@ -21,6 +21,19 @@ import {
   isStoryRecent,
   resolveStoryPrivacyType,
 } from "../utils/storyMedia";
+import {
+  resolveStudentType,
+  formatStudentType,
+  resolveCollegeName,
+  resolveUserBio,
+  isUserAnonymous,
+  resolveUserType,
+  formatUserType,
+  resolveCommunityType,
+  formatCommunityType,
+  resolveCommunityDescription,
+  resolveCommunityName,
+} from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -49,39 +62,6 @@ const getShareCount = (post) => {
       post.repostCount ||
       0
   );
-};
-
-const resolvePostCampus = (post) => {
-  return (
-    post.university ||
-    post.college ||
-    post.campus ||
-    post.school ||
-    post.author?.university ||
-    post.author?.college ||
-    post.author?.campus ||
-    post.author?.school ||
-    ""
-  );
-};
-
-const resolvePostCollegeTag = (post) => {
-  return (
-    post.collegeTagName ||
-    post.collegeTag ||
-    post.collegeName ||
-    post.college ||
-    post.university ||
-    ""
-  );
-};
-
-const matchesCampus = (post, campusLower) => {
-  const postCampus = resolvePostCampus(post);
-  const postTag = resolvePostCollegeTag(post);
-  const campusMatch = postCampus && String(postCampus).toLowerCase() === campusLower;
-  const tagMatch = postTag && String(postTag).toLowerCase() === campusLower;
-  return campusMatch || tagMatch;
 };
 
 const getStoryViewCount = (story) => {
@@ -122,6 +102,23 @@ const getStoryScore = (story) => {
   return views * 2 + getRecencyBoost(story.createdAt);
 };
 
+const resolvePostPrivacy = (post) => {
+  const raw = String(
+    post.visibility ||
+      post.privacy ||
+      post.privacyType ||
+      post.postVisibility ||
+      post.audience ||
+      ""
+  ).toLowerCase();
+  if (raw.includes("friend") || raw.includes("private")) return "friends";
+  if (raw.includes("universal") || raw.includes("public")) return "public";
+  if (post.friendsOnly === true || post.isPrivate === true || post.private === true) {
+    return "friends";
+  }
+  return "public";
+};
+
 export default function Trending() {
   const {
     posts,
@@ -129,6 +126,11 @@ export default function Trending() {
     updatePost,
     getUserFromCache,
     isUserBlocked,
+    getFriendStatus,
+    ensureFriendStatus,
+    sendFriendRequest,
+    acceptFriend,
+    rejectFriend,
   } = useApp();
   const { currentUser } = useAuth();
   const navigate = useNavigate();
@@ -136,17 +138,65 @@ export default function Trending() {
   const [searchResults, setSearchResults] = useState([]);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
-  const [requestedMap, setRequestedMap] = useState({});
   const [selectedPost, setSelectedPost] = useState(null);
   const [commentPost, setCommentPost] = useState(null);
   const [sharePost, setSharePost] = useState(null);
   const [shareChatPost, setShareChatPost] = useState(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
-  const campusLabel = currentUser?.university || currentUser?.college || "";
-  const campusLower = campusLabel.toLowerCase();
+
+  const setActionLoading = useCallback((userId, value) => {
+    if (!userId) return;
+    setFriendActionLoading((prev) => ({ ...prev, [userId]: value }));
+  }, []);
+
+  const handleAddFriend = useCallback(
+    async (userId) => {
+      if (!userId) return;
+      setActionLoading(userId, true);
+      try {
+        await sendFriendRequest(userId);
+      } catch (error) {
+        alert(error.message || "Failed to send request");
+      } finally {
+        setActionLoading(userId, false);
+      }
+    },
+    [sendFriendRequest, setActionLoading]
+  );
+
+  const handleAcceptFriend = useCallback(
+    async (userId) => {
+      if (!userId) return;
+      setActionLoading(userId, true);
+      try {
+        await acceptFriend(userId);
+      } catch (error) {
+        alert(error.message || "Failed to accept request");
+      } finally {
+        setActionLoading(userId, false);
+      }
+    },
+    [acceptFriend, setActionLoading]
+  );
+
+  const handleRejectFriend = useCallback(
+    async (userId) => {
+      if (!userId) return;
+      setActionLoading(userId, true);
+      try {
+        await rejectFriend(userId);
+      } catch (error) {
+        alert(error.message || "Failed to reject request");
+      } finally {
+        setActionLoading(userId, false);
+      }
+    },
+    [rejectFriend, setActionLoading]
+  );
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -172,7 +222,12 @@ export default function Trending() {
       try {
         const users = await searchUsers(searchQuery);
         const filtered = users.filter(
-          (user) => !isUserBlocked(user?._id || user?.id)
+          (user) => {
+            const userId = user?._id || user?.id;
+            if (isUserBlocked(userId)) return false;
+            if (isUserAnonymous(user)) return false;
+            return true;
+          }
         );
         setSearchResults(filtered);
       } catch (error) {
@@ -187,13 +242,32 @@ export default function Trending() {
     return () => clearTimeout(timeoutId);
   }, [searchQuery, isUserBlocked]);
 
+  useEffect(() => {
+    if (!searchResults || searchResults.length === 0) return;
+    searchResults.forEach((user) => {
+      const userId = user?._id || user?.id;
+      if (!userId) return;
+      if (String(userId) === String(currentUser?.id)) return;
+      ensureFriendStatus(userId);
+    });
+  }, [searchResults, ensureFriendStatus, currentUser?.id]);
+
   const postsArray = useMemo(() => {
     const list = Array.isArray(posts) ? posts : [];
     return list.filter((post) => {
       const authorId = post.author?._id || post.authorId || post.author;
-      return !isUserBlocked(authorId);
+      if (isUserBlocked(authorId)) return false;
+      const privacy = resolvePostPrivacy(post);
+      if (
+        privacy === "friends" &&
+        String(authorId) !== String(currentUser?.id) &&
+        getFriendStatus(authorId) !== "friends"
+      ) {
+        return false;
+      }
+      return true;
     });
-  }, [posts, isUserBlocked]);
+  }, [posts, isUserBlocked, currentUser?.id, getFriendStatus]);
   const storiesArray = useMemo(() => {
     const list = Array.isArray(stories) ? stories : [];
     return list.filter((story) => {
@@ -258,56 +332,6 @@ export default function Trending() {
   }, [postsArray]);
 
   const featuredStory = mostViewedStories[0];
-
-  const matchesPostQuery = useCallback((post, q) => {
-    if (!q) return false;
-    const content = post.content || "";
-    const author = post.author?.displayName || post.author?.fullName || "";
-    return content.toLowerCase().includes(q) || author.toLowerCase().includes(q);
-  }, []);
-
-  const matchingCollegePosts = useMemo(() => {
-    if (!searchQuery || searchQuery.length < 2 || !campusLabel) return [];
-    const q = searchQuery.toLowerCase();
-    return postsArray.filter(
-      (post) => matchesCampus(post, campusLower) && matchesPostQuery(post, q)
-    );
-  }, [postsArray, searchQuery, campusLabel, campusLower, matchesPostQuery]);
-
-  const matchingTrendingPosts = useMemo(() => {
-    if (!searchQuery || searchQuery.length < 2) return [];
-    const q = searchQuery.toLowerCase();
-    return [...postsArray]
-      .filter((post) => matchesPostQuery(post, q))
-      .sort((a, b) => getTrendingScore(b) - getTrendingScore(a));
-  }, [postsArray, searchQuery, matchesPostQuery]);
-
-  const friendIds = useMemo(() => new Set(currentUser?.friends || []), [currentUser?.friends]);
-
-  const getMutualCount = (user) => {
-    const list = user?.friends || [];
-    const base = currentUser?.friends || [];
-    return base.filter((id) => list.includes(id)).length;
-  };
-
-  const handleSendRequest = async (userId) => {
-    if (!userId || friendIds.has(userId) || requestedMap[userId]) return;
-    setRequestedMap((prev) => ({ ...prev, [userId]: true }));
-    try {
-      await sendFriendRequest(userId);
-    } catch (error) {
-      setRequestedMap((prev) => {
-        const next = { ...prev };
-        delete next[userId];
-        return next;
-      });
-      alert(error.message || "Failed to send request");
-    }
-  };
-
-  const handleMessage = () => {
-    navigate("/chat");
-  };
 
   const groupedStories = useMemo(() => {
     const grouped = {};
@@ -422,7 +446,7 @@ export default function Trending() {
                 <div className="p-3 space-y-4">
                   <div>
                     <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em] px-2 py-2 border-b border-white/10">
-                      Matching Users
+                      Students
                     </h3>
                     {searchResults.length === 0 ? (
                       <div className="p-3 text-center text-[#b9b4c7] text-sm">
@@ -431,103 +455,121 @@ export default function Trending() {
                     ) : (
                       searchResults.map((user) => {
                         const userId = user._id || user.id;
-                        const isFriend = friendIds.has(userId);
-                        const isRequested = requestedMap[userId];
-                        const mutualCount = getMutualCount(user);
+                        const userType = resolveUserType(user);
+                        const userTypeBadge = formatUserType(userType);
+                        const isCommunity = userType === "community";
+                        const studentType = formatStudentType(resolveStudentType(user));
+                        const communityType = formatCommunityType(resolveCommunityType(user));
+                        const collegeLabel = resolveCollegeName(user);
+                        const bio = isCommunity
+                          ? resolveCommunityDescription(user)
+                          : resolveUserBio(user);
+                        const bioPreview =
+                          bio && bio.length > 90 ? `${bio.slice(0, 90)}...` : bio || "No bio yet.";
+                        const secondaryLine = isCommunity
+                          ? `${communityType || "Community"}${collegeLabel ? ` • ${collegeLabel}` : ""}`
+                          : `${studentType}${collegeLabel ? ` • ${collegeLabel}` : ""}`;
+                        const status = getFriendStatus(userId);
+                        const isSelf = String(userId) === String(currentUser?.id);
+                        const isLoading = friendActionLoading[userId];
                         return (
                           <div
                             key={userId}
-                            className="w-full flex items-center justify-between p-2 rounded-xl hover:bg-white/5"
+                            className="w-full flex items-start gap-3 p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
                           >
                             <button
                               type="button"
                               onClick={() => setSelectedUser(user)}
-                              className="flex items-center flex-1 text-left"
+                              className="flex items-start gap-3 text-left flex-1 min-w-0"
                             >
                               <img
                                 src={user.profilePicUrl || ANONYMOUS_AVATAR}
-                                alt={user.fullName}
-                                className="w-8 h-8 rounded-full mr-3 object-cover"
+                                alt={user.fullName || user.username}
+                                className="w-10 h-10 rounded-full object-cover"
                               />
-                              <div>
-                                <p className="font-semibold text-sm text-[#faf0e6]">
-                                  {user.fullName || user.username}
-                                </p>
-                                <p className="text-xs text-[#b9b4c7]">
-                                  @{user.username} - {user.university || user.college || "Campus"}
-                                </p>
-                                <p className="text-[11px] text-[#b9b4c7]">
-                                  {mutualCount} mutual friends
+                              <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-semibold text-sm text-[#faf0e6]">
+                                    {isCommunity
+                                      ? resolveCommunityName(user) ||
+                                        user.displayName ||
+                                        user.username ||
+                                        "Community"
+                                      : user.fullName ||
+                                        user.displayName ||
+                                        user.username ||
+                                        "User"}
+                                  </p>
+                                  <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                                    {userTypeBadge}
+                                  </span>
+                                </div>
+                                <p className="text-xs text-[#b9b4c7]">{secondaryLine}</p>
+                                <p className="text-[11px] text-[#b9b4c7] truncate">
+                                  {bioPreview}
                                 </p>
                               </div>
                             </button>
-                            {userId === currentUser?.id ? (
-                              <span className="text-[10px] text-[#b9b4c7]">You</span>
-                            ) : isFriend ? (
-                              <button
-                                type="button"
-                                onClick={handleMessage}
-                                className="liquid-button rounded-full px-3 py-1 text-xs font-semibold text-[#faf0e6]"
-                              >
-                                Message
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => handleSendRequest(userId)}
-                                disabled={isRequested}
-                                className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                                  isRequested
-                                    ? "bg-white/10 text-[#b9b4c7] cursor-not-allowed"
-                                    : "liquid-button text-[#faf0e6]"
-                                }`}
-                              >
-                                {isRequested ? "Requested" : "Add"}
-                              </button>
-                            )}
+                            <div className="flex flex-col gap-2 shrink-0">
+                              {isSelf ? (
+                                <span className="text-[10px] text-[#b9b4c7]">You</span>
+                              ) : status === "friends" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => navigate("/chat")}
+                                  className="text-[10px] px-3 py-1 rounded-full bg-white/10 text-[#faf0e6] hover:bg-white/20 transition-colors"
+                                >
+                                  Message
+                                </button>
+                              ) : status === "pending_sent" ? (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] cursor-not-allowed"
+                                >
+                                  Requested
+                                </button>
+                              ) : status === "pending_received" ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAcceptFriend(userId)}
+                                    disabled={isLoading}
+                                    className="text-[10px] px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200 hover:bg-emerald-400/30 transition-colors"
+                                  >
+                                    Accept
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRejectFriend(userId)}
+                                    disabled={isLoading}
+                                    className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] hover:bg-white/10 transition-colors"
+                                  >
+                                    Reject
+                                  </button>
+                                </>
+                              ) : status === "blocked" ? (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] cursor-not-allowed"
+                                >
+                                  Blocked
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddFriend(userId)}
+                                  disabled={isLoading}
+                                  className="text-[10px] px-3 py-1 rounded-full bg-[#b9b4c7]/20 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors"
+                                >
+                                  Add Friend
+                                </button>
+                              )}
+                            </div>
                           </div>
                         );
                       })
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em] px-2 py-2 border-b border-white/10">
-                      College Posts
-                    </h3>
-                    {matchingCollegePosts.length === 0 ? (
-                      <div className="p-3 text-center text-[#b9b4c7] text-sm">
-                        No college posts found
-                      </div>
-                    ) : (
-                      matchingCollegePosts.slice(0, 4).map((post) => (
-                        <div
-                          key={post._id || post.id}
-                          className="p-3 rounded-xl border border-white/10 bg-white/5 text-sm text-[#faf0e6]"
-                        >
-                          {post.content || "Campus update"}
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  <div>
-                    <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em] px-2 py-2 border-b border-white/10">
-                      Trending Posts
-                    </h3>
-                    {matchingTrendingPosts.length === 0 ? (
-                      <div className="p-3 text-center text-[#b9b4c7] text-sm">
-                        No trending posts found
-                      </div>
-                    ) : (
-                      matchingTrendingPosts.slice(0, 4).map((post) => (
-                        <div
-                          key={post._id || post.id}
-                          className="p-3 rounded-xl border border-white/10 bg-white/5 text-sm text-[#faf0e6]"
-                        >
-                          {post.content || "Campus update"}
-                        </div>
-                      ))
                     )}
                   </div>
                 </div>
@@ -942,10 +984,6 @@ export default function Trending() {
         user={selectedUser}
         onClose={() => setSelectedUser(null)}
         currentUser={currentUser}
-        requested={selectedUser ? requestedMap[selectedUser._id || selectedUser.id] : false}
-        onRequestSent={(userId) =>
-          setRequestedMap((prev) => ({ ...prev, [userId]: true }))
-        }
       />
 
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />

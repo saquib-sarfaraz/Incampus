@@ -5,8 +5,6 @@ import { useApp } from "../context/useApp";
 import {
   getChatMessages,
   getPendingRequests,
-  acceptFriendRequest,
-  ignoreFriendRequest,
   getUserById,
   sendChatMessage,
   markChatSeen,
@@ -30,6 +28,12 @@ const isAnonymousUser = (userData) =>
       userData?.isAnonymousProfile ||
       userData?.displayName === "Anonymous"
   );
+
+const resolveFriendId = (value) => {
+  if (!value) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  return String(value._id || value.id || value.userId || value.user_id || "");
+};
 
 const messageKey = (msg) => msg._id || `${msg.from}-${msg.to}-${msg.createdAt}-${msg.text}`;
 
@@ -75,7 +79,18 @@ const formatLastSeen = (dateString) => {
 
 export default function Chat() {
   const { currentUser } = useAuth();
-  const { cacheUser, getUserFromCache, isUserBlocked, addBlockedUser } = useApp();
+  const {
+    cacheUser,
+    getUserFromCache,
+    isUserBlocked,
+    addBlockedUser,
+    friendIds,
+    friendIdSet: friendIdSetFromContext,
+    friendMapLoaded,
+    canChat,
+    acceptFriend,
+    rejectFriend,
+  } = useApp();
   const [activeTab, setActiveTab] = useState("contacts");
   const [contacts, setContacts] = useState([]);
   const [requests, setRequests] = useState([]);
@@ -93,6 +108,16 @@ export default function Chat() {
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
   const loadedChatsRef = useRef(new Set());
+
+  const resolvedFriendIds = useMemo(() => {
+    if (friendMapLoaded) return friendIds;
+    return currentUser?.friends || [];
+  }, [friendIds, friendMapLoaded, currentUser?.friends]);
+
+  const resolvedFriendIdSet = useMemo(() => {
+    if (friendMapLoaded) return friendIdSetFromContext || new Set();
+    return new Set((currentUser?.friends || []).map((id) => String(id)));
+  }, [friendMapLoaded, friendIdSetFromContext, currentUser?.friends]);
 
   const handleReportMessage = (msg) => {
     setReportTarget(msg);
@@ -180,6 +205,21 @@ export default function Chat() {
       // ignore audio errors
     }
   }, []);
+
+  const resolveContactName = useCallback(
+    (contact) => {
+      if (!contact) return "User";
+      if (contact.isGroup) return contact.displayName || "Group";
+      const cached = getUserFromCache(contact.id);
+      return (
+        cached?.displayName ||
+        contact.displayName ||
+        contact.fullName ||
+        "User"
+      );
+    },
+    [getUserFromCache]
+  );
 
   const updatePresence = useCallback((userId, updates) => {
     if (!userId) return;
@@ -306,9 +346,9 @@ export default function Chat() {
   }, []);
 
   const loadContacts = useCallback(async () => {
-    if (!currentUser?.friends) return [];
+    if (!resolvedFriendIds || resolvedFriendIds.length === 0) return [];
     const friendsData = await Promise.all(
-      currentUser.friends.map(async (friendId) => {
+      resolvedFriendIds.map(async (friendId) => {
         if (isUserBlocked(friendId)) {
           return null;
         }
@@ -337,7 +377,7 @@ export default function Chat() {
       })
     );
     return friendsData.filter(Boolean);
-  }, [cacheUser, currentUser, getUserFromCache, isUserBlocked]);
+  }, [cacheUser, getUserFromCache, isUserBlocked, resolvedFriendIds]);
 
   const resolveUnreadCount = useCallback(
     (messages = [], chatId) => {
@@ -465,6 +505,14 @@ export default function Chat() {
 
     const socket = getSocket();
     const isGroupChat = String(activeChatId).startsWith("group:");
+    if (!isGroupChat && !canChat(activeChatId)) {
+      showToast({
+        id: `chat-blocked-${activeChatId}`,
+        title: "Chat unavailable",
+        message: "You can only message friends.",
+      });
+      return;
+    }
     const newMessage = {
       from: currentUser.id,
       to: activeChatId,
@@ -492,7 +540,7 @@ export default function Chat() {
 
   const handleAcceptRequest = async (requesterId) => {
     try {
-      await acceptFriendRequest(requesterId);
+      await acceptFriend(requesterId);
       await refreshLists();
     } catch (error) {
       alert(error.message || "Failed to accept request");
@@ -502,7 +550,7 @@ export default function Chat() {
   const handleIgnoreRequest = async (requesterId) => {
     setRequests((prev) => prev.filter((req) => (req.user?.id || req.fromUserId) !== requesterId));
     try {
-      await ignoreFriendRequest(requesterId);
+      await rejectFriend(requesterId);
     } catch (error) {
       console.error("Failed to ignore request:", error);
     }
@@ -681,7 +729,7 @@ export default function Chat() {
       const sender =
         allContacts.find((contact) => contact.id === chatId) ||
         contacts.find((contact) => contact.id === senderId);
-      const senderName = sender?.displayName || "New message";
+      const senderName = resolveContactName(sender) || "New message";
       mergeMessages(chatId, [msg]);
       updateChatMeta(chatId, msg, {
         incrementUnread: chatId !== activeChatRef.current,
@@ -715,6 +763,7 @@ export default function Chat() {
     markMessagesSeen,
     mergeMessages,
     playNotificationSound,
+    resolveContactName,
     scrollToBottom,
     showToast,
     updateChatMeta,
@@ -728,6 +777,10 @@ export default function Chat() {
     });
   }, [messagesByChat, activeChatId, isUserBlocked]);
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
+  const canChatActive = activeChatUser?.isGroup
+    ? true
+    : canChat(activeChatUser?.id || activeChatId);
+  const activeChatName = resolveContactName(activeChatUser);
   const activePresence = activeChatUser?.isGroup
     ? { isOnline: false, lastSeen: "" }
     : getPresence(activeChatUser?.id, activeChatUser);
@@ -805,6 +858,7 @@ export default function Chat() {
                   const unreadCount = meta.unreadCount || 0;
                   const presence = getPresence(contact.id, contact);
                   const isOnline = presence.isOnline;
+                  const displayName = resolveContactName(contact);
                   return (
                     <Motion.div
                       key={contact.id}
@@ -820,7 +874,7 @@ export default function Chat() {
                       <div className="relative">
                         <img
                           src={contact.profilePicUrl || ANONYMOUS_AVATAR}
-                          alt={contact.displayName}
+                          alt={displayName}
                           className="w-11 h-11 rounded-full object-cover"
                         />
                         {isOnline && (
@@ -836,7 +890,7 @@ export default function Chat() {
                             unreadCount > 0 ? "font-bold" : "font-semibold"
                           }`}
                         >
-                          {contact.displayName}
+                          {displayName}
                         </p>
                         <p
                           className={`text-xs truncate ${
@@ -937,8 +991,8 @@ export default function Chat() {
                   const requesterId = req.user?.id || req.fromUserId;
                   const requestKey = req._id || req.id || requesterId || "req";
                   const requesterFriends = req.user?.friends || [];
-                  const mutualCount = (currentUser?.friends || []).filter((id) =>
-                    requesterFriends.includes(id)
+                  const mutualCount = requesterFriends.filter((id) =>
+                    resolvedFriendIdSet.has(resolveFriendId(id))
                   ).length;
                   return (
                     <div
@@ -1019,12 +1073,12 @@ export default function Chat() {
                   )}
                   <img
                     src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
-                    alt={activeChatUser?.displayName}
+                    alt={activeChatName}
                     className="w-10 h-10 rounded-full object-cover"
                   />
                   <div>
                     <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
-                      {activeChatUser?.displayName || "Chat"}
+                      {activeChatName || "Chat"}
                       {!activeChatUser?.isGroup && activePresence.isOnline && (
                         <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
                       )}
@@ -1114,12 +1168,20 @@ export default function Chat() {
                     type="text"
                     value={messageText}
                     onChange={(e) => setMessageText(e.target.value)}
-                    placeholder="Type a message..."
-                    className="flex-grow px-4 py-2 rounded-full glass-input text-sm"
+                    placeholder={
+                      canChatActive ? "Type a message..." : "Only friends can message"
+                    }
+                    disabled={!canChatActive}
+                    className={`flex-grow px-4 py-2 rounded-full glass-input text-sm ${
+                      canChatActive ? "" : "opacity-60 cursor-not-allowed"
+                    }`}
                   />
                   <Motion.button
                     type="submit"
-                    className="liquid-button text-[#faf0e6] rounded-full h-10 w-10 flex items-center justify-center"
+                    disabled={!canChatActive}
+                    className={`liquid-button text-[#faf0e6] rounded-full h-10 w-10 flex items-center justify-center ${
+                      canChatActive ? "" : "opacity-60 cursor-not-allowed"
+                    }`}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >

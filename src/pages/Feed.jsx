@@ -55,6 +55,23 @@ const resolvePostCollegeTag = (post) => {
   );
 };
 
+const resolvePostPrivacy = (post) => {
+  const raw = String(
+    post.visibility ||
+      post.privacy ||
+      post.privacyType ||
+      post.postVisibility ||
+      post.audience ||
+      ""
+  ).toLowerCase();
+  if (raw.includes("friend") || raw.includes("private")) return "friends";
+  if (raw.includes("universal") || raw.includes("public")) return "public";
+  if (post.friendsOnly === true || post.isPrivate === true || post.private === true) {
+    return "friends";
+  }
+  return "public";
+};
+
 const matchesCampus = (post, campusLower) => {
   const postCampus = resolvePostCampus(post);
   const postTag = resolvePostCollegeTag(post);
@@ -65,14 +82,9 @@ const matchesCampus = (post, campusLower) => {
 };
 
 export default function Feed() {
-  const { posts, loading, feedScope, isUserBlocked } = useApp();
+  const { posts, loading, feedScope, isUserBlocked, isFriend } = useApp();
   const { currentUser } = useAuth();
   const [showCreateModal, setShowCreateModal] = useState(false);
-
-  const friendIds = useMemo(
-    () => new Set((currentUser?.friends || []).map((id) => String(id))),
-    [currentUser?.friends]
-  );
 
   const campusLabel = resolveUserCampus(currentUser);
   const shouldFilterByCollege = feedScope === "college" && Boolean(campusLabel);
@@ -80,12 +92,26 @@ export default function Feed() {
   const scopedPosts = useMemo(() => {
     const postsArray = (Array.isArray(posts) ? posts : []).filter((post) => {
       const authorId = getAuthorId(post);
-      return !isUserBlocked(authorId);
+      if (isUserBlocked(authorId)) return false;
+      const privacy = resolvePostPrivacy(post);
+      if (
+        privacy === "friends" &&
+        !isFriend(authorId) &&
+        String(authorId) !== String(currentUser?.id)
+      ) {
+        return false;
+      }
+      return true;
     });
     if (!shouldFilterByCollege) return postsArray;
     const campusLower = campusLabel.toLowerCase();
-    return postsArray.filter((post) => matchesCampus(post, campusLower));
-  }, [posts, shouldFilterByCollege, campusLabel, isUserBlocked]);
+    return postsArray.filter((post) => {
+      const authorId = getAuthorId(post);
+      if (String(authorId) === String(currentUser?.id)) return true;
+      if (isFriend(authorId)) return true;
+      return matchesCampus(post, campusLower);
+    });
+  }, [posts, shouldFilterByCollege, campusLabel, isUserBlocked, isFriend, currentUser?.id]);
 
   const sortedByLatest = useMemo(() => {
     return [...scopedPosts].sort((a, b) => getPostTimestamp(b) - getPostTimestamp(a));
@@ -94,13 +120,13 @@ export default function Feed() {
   const applyFriendBoost = useCallback(
     (list) => {
       return [...list].sort((a, b) => {
-        const aFriend = friendIds.has(String(getAuthorId(a)));
-        const bFriend = friendIds.has(String(getAuthorId(b)));
+        const aFriend = isFriend(getAuthorId(a));
+        const bFriend = isFriend(getAuthorId(b));
         if (aFriend !== bFriend) return aFriend ? -1 : 1;
         return getPostTimestamp(b) - getPostTimestamp(a);
       });
     },
-    [friendIds]
+    [isFriend]
   );
 
   const campusPosts = useMemo(() => {
@@ -123,6 +149,8 @@ export default function Feed() {
     if (shouldFilterByCollege) return campusPosts;
     return campusPosts.length > 0 ? [...campusPosts, ...globalPosts] : sortedByLatest;
   }, [shouldFilterByCollege, campusPosts, globalPosts, sortedByLatest]);
+
+  const showSkeletons = loading && finalFeedPosts.length === 0;
 
   return (
     <div id="feed-view" className="min-h-screen flex flex-col pb-24 sm:pb-6">
@@ -150,7 +178,7 @@ export default function Feed() {
           </div>
           <StoryBar />
 
-          {loading ? (
+          {showSkeletons ? (
             <div className="space-y-6">
               {[1, 2, 3].map((i) => (
                 <div

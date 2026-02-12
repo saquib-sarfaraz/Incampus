@@ -14,8 +14,15 @@ const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
 export default function StoryBar() {
   const { currentUser } = useAuth();
-  const { stories, loadStories, cacheUser, getUserFromCache, feedScope, isUserBlocked } =
-    useApp();
+  const {
+    stories,
+    loadStories,
+    cacheUser,
+    getUserFromCache,
+    feedScope,
+    isUserBlocked,
+    isFriend,
+  } = useApp();
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const [uploadPreview, setUploadPreview] = useState(null);
   const [pendingFile, setPendingFile] = useState(null);
@@ -164,11 +171,6 @@ export default function StoryBar() {
     );
   };
 
-  const friendIds = useMemo(
-    () => new Set((currentUser?.friends || []).map((id) => String(id))),
-    [currentUser?.friends]
-  );
-
   const campusLower = campusLabel ? campusLabel.toLowerCase() : "";
 
   const getAuthorId = (story) => {
@@ -178,11 +180,6 @@ export default function StoryBar() {
   const isOwner = (authorId) => {
     if (!authorId || !currentUser?.id) return false;
     return String(authorId) === String(currentUser.id);
-  };
-
-  const isFriend = (authorId) => {
-    if (!authorId) return false;
-    return friendIds.has(String(authorId));
   };
 
   const matchesCollege = (story, cachedUser) => {
@@ -219,7 +216,7 @@ export default function StoryBar() {
     currentCollegeGroupId,
     isUserBlocked,
     currentUser?.id,
-    friendIds,
+    isFriend,
   ]);
 
   const getStoryTimestamp = (story) => {
@@ -293,7 +290,7 @@ export default function StoryBar() {
     groupedStories,
     getUserFromCache,
     currentUser?.id,
-    friendIds,
+    isFriend,
     campusLabel,
     currentCollegeGroupId,
     campusLower,
