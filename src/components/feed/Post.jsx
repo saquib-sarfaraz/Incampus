@@ -10,6 +10,41 @@ import ReportModal from "../moderation/ReportModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
+const resolvePostPrivacy = (post) => {
+  const raw = String(
+    post.visibility ||
+      post.privacy ||
+      post.privacyType ||
+      post.postVisibility ||
+      post.audience ||
+      ""
+  ).toLowerCase();
+  if (raw.includes("friend") || raw.includes("private")) return "friends";
+  if (raw.includes("public") || raw.includes("universal")) return "public";
+  if (post.friendsOnly === true || post.isPrivate === true || post.private === true) {
+    return "friends";
+  }
+  return "public";
+};
+
+const resolvePostMediaUrl = (post) => {
+  if (!post) return "";
+  return (
+    post.mediaUrl ||
+    post.media?.url ||
+    post.media?.secure_url ||
+    post.media?.secureUrl ||
+    post.media?.publicUrl ||
+    post.imageUrl ||
+    post.image ||
+    post.videoUrl ||
+    post.video ||
+    post.fileUrl ||
+    post.file ||
+    ""
+  );
+};
+
 export default function Post({ post, onOpen }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
@@ -43,6 +78,21 @@ export default function Post({ post, onOpen }) {
   const likesCount =
     baseLikesCount +
     (optimisticLiked === null ? 0 : (optimisticLiked ? 1 : 0) - (baseIsLiked ? 1 : 0));
+  const postId = post._id || post.id;
+  const postUrl = `${window.location.origin}/feed?post=${postId}`;
+  const postThumbnail = resolvePostMediaUrl(post);
+  const postPreviewText =
+    post.content && post.content.length > 0
+      ? post.content.slice(0, 80)
+      : "Campus update";
+  const isPrivate = resolvePostPrivacy(post) === "friends";
+  const resolvedAuthorName =
+    author?.displayName ||
+    authorName ||
+    post.authorDisplayName ||
+    post.author?.fullName ||
+    post.author?.username ||
+    "";
 
   useEffect(() => {
     const loadAuthor = async () => {
@@ -98,7 +148,6 @@ export default function Post({ post, onOpen }) {
 
   const handleLike = async () => {
     if (!currentUser || likePending) return;
-    const postId = post._id || post.id;
     if (!postId) return;
 
     const nextLiked = !isLiked;
@@ -194,7 +243,6 @@ export default function Post({ post, onOpen }) {
       post.commentsCount ||
       (Array.isArray(post.comments) ? post.comments.length : 0)
   );
-  const postUrl = `${window.location.origin}/feed?post=${post._id || post.id}`;
   const isOwner = String(authorId) === String(currentUser?.id);
 
   return (
@@ -342,6 +390,11 @@ export default function Post({ post, onOpen }) {
         onClose={() => setShowShare(false)}
         postUrl={postUrl}
         postTitle={post.content}
+        postId={postId}
+        postThumbnail={postThumbnail}
+        postPreviewText={postPreviewText}
+        isPrivate={isPrivate}
+        isAnonymous={post.isAnonymous}
         onShareToChat={() => {
           setShowShare(false);
           setShowShareChat(true);
@@ -352,6 +405,12 @@ export default function Post({ post, onOpen }) {
         onClose={() => setShowShareChat(false)}
         postUrl={postUrl}
         postTitle={post.content}
+        postId={postId}
+        postThumbnail={postThumbnail}
+        postPreviewText={postPreviewText}
+        postIsAnonymous={post.isAnonymous}
+        postAuthorName={resolvedAuthorName}
+        postAuthorId={authorId}
       />
       <ReportModal
         isOpen={showReport}

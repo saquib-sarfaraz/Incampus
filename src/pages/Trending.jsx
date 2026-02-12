@@ -3,7 +3,7 @@ import { motion as Motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
-import { searchUsers, likePost } from "../services/api";
+import { searchAll, searchUsers, likePost } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
@@ -119,6 +119,139 @@ const resolvePostPrivacy = (post) => {
   return "public";
 };
 
+const resolvePostMediaUrl = (post) => {
+  if (!post) return "";
+  return (
+    post.mediaUrl ||
+    post.media?.url ||
+    post.media?.secure_url ||
+    post.media?.secureUrl ||
+    post.media?.publicUrl ||
+    post.imageUrl ||
+    post.image ||
+    post.videoUrl ||
+    post.video ||
+    post.fileUrl ||
+    post.file ||
+    ""
+  );
+};
+
+const DEFAULT_SEARCH_RESULTS = {
+  users: [],
+  posts: [],
+  communities: [],
+  topResult: null,
+};
+
+const extractList = (payload, keys) => {
+  if (!payload || typeof payload !== "object") return [];
+  for (const key of keys) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  return [];
+};
+
+const isUserLike = (item) => {
+  if (!item || typeof item !== "object") return false;
+  return Boolean(
+    item.fullName ||
+      item.displayName ||
+      item.username ||
+      item.profilePicUrl ||
+      item.userType ||
+      item.studentType
+  );
+};
+
+const isPostLike = (item) => {
+  if (!item || typeof item !== "object") return false;
+  return Boolean(
+    item.content ||
+      item.mediaUrl ||
+      item.imageUrl ||
+      item.videoUrl ||
+      item.isAnonymous !== undefined ||
+      item.visibility ||
+      item.postId
+  );
+};
+
+const splitMixedResults = (items) => {
+  const users = [];
+  const posts = [];
+  const communities = [];
+
+  items.forEach((item) => {
+    if (!item || typeof item !== "object") return;
+    const type = String(item.type || item.kind || "").toLowerCase();
+    if (type === "community" || type === "group") {
+      communities.push(item);
+      return;
+    }
+    if (type === "post") {
+      posts.push(item);
+      return;
+    }
+    if (type === "user" || type === "profile") {
+      users.push(item);
+      return;
+    }
+    const looksLikePost = isPostLike(item);
+    const looksLikeUser = isUserLike(item);
+    if (looksLikePost && !looksLikeUser) {
+      posts.push(item);
+      return;
+    }
+    if (looksLikeUser && !looksLikePost) {
+      users.push(item);
+      return;
+    }
+    if (looksLikeUser) {
+      users.push(item);
+      return;
+    }
+    if (looksLikePost) {
+      posts.push(item);
+    }
+  });
+
+  return { users, posts, communities };
+};
+
+const normalizeSearchPayload = (payload) => {
+  if (!payload) return { ...DEFAULT_SEARCH_RESULTS };
+  if (Array.isArray(payload)) {
+    return { ...DEFAULT_SEARCH_RESULTS, users: payload };
+  }
+
+  let users = extractList(payload, [
+    "users",
+    "people",
+    "profiles",
+    "userResults",
+    "userItems",
+  ]);
+  let posts = extractList(payload, ["posts", "postResults", "postItems"]);
+  let communities = extractList(payload, ["communities", "groups"]);
+  let topResult = payload.topResult || payload.top || payload.bestMatch || null;
+
+  const items = extractList(payload, ["items", "results", "data"]);
+  if (items.length) {
+    const split = splitMixedResults(items);
+    if (!users.length) users = split.users;
+    if (!posts.length) posts = split.posts;
+    if (!communities.length) communities = split.communities;
+    if (!topResult && items[0]) topResult = items[0];
+  }
+
+  if (!topResult) {
+    topResult = users[0] || posts[0] || communities[0] || null;
+  }
+
+  return { users, posts, communities, topResult };
+};
+
 export default function Trending() {
   const {
     posts,
@@ -135,9 +268,11 @@ export default function Trending() {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchResults, setSearchResults] = useState([]);
+  const [searchTab, setSearchTab] = useState("all");
+  const [searchData, setSearchData] = useState(DEFAULT_SEARCH_RESULTS);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState("");
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -147,7 +282,8 @@ export default function Trending() {
   const [shareChatPost, setShareChatPost] = useState(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
-  const showSearchSkeleton = searchLoading && searchResults.length === 0;
+  const searchAbortRef = useRef(null);
+  const searchRequestRef = useRef(0);
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
@@ -199,6 +335,137 @@ export default function Trending() {
     [rejectFriend, setActionLoading]
   );
 
+  const trimmedSearchQuery = searchQuery.trim();
+  const hasSearchQuery = trimmedSearchQuery.length >= 2;
+
+  const searchUsersResults = useMemo(() => {
+    const list = Array.isArray(searchData.users) ? searchData.users : [];
+    return list.filter((user) => {
+      const userId = user?._id || user?.id;
+      if (userId && isUserBlocked(userId)) return false;
+      if (isUserAnonymous(user)) return false;
+      return true;
+    });
+  }, [searchData.users, isUserBlocked]);
+
+  const searchCommunities = useMemo(() => {
+    return searchUsersResults.filter(
+      (user) => resolveUserType(user) === "community"
+    );
+  }, [searchUsersResults]);
+
+  const searchPeople = useMemo(() => {
+    return searchUsersResults.filter(
+      (user) => resolveUserType(user) !== "community"
+    );
+  }, [searchUsersResults]);
+
+  const searchPostsResults = useMemo(() => {
+    const list = Array.isArray(searchData.posts) ? searchData.posts : [];
+    return list.filter((post) => {
+      if (!post) return false;
+      const authorId = post.author?._id || post.authorId || post.author;
+      if (authorId && isUserBlocked(authorId)) return false;
+      return resolvePostPrivacy(post) === "public";
+    });
+  }, [searchData.posts, isUserBlocked]);
+
+  const topResult = useMemo(() => {
+    const candidate = searchData.topResult;
+    if (isUserLike(candidate)) {
+      const userId = candidate?._id || candidate?.id;
+      if ((!userId || !isUserBlocked(userId)) && !isUserAnonymous(candidate)) {
+        return candidate;
+      }
+    }
+    if (isPostLike(candidate)) {
+      const authorId = candidate.author?._id || candidate.authorId || candidate.author;
+      if ((!authorId || !isUserBlocked(authorId)) && resolvePostPrivacy(candidate) === "public") {
+        return candidate;
+      }
+    }
+    return searchPeople[0] || searchPostsResults[0] || searchCommunities[0] || null;
+  }, [searchData.topResult, searchPeople, searchPostsResults, searchCommunities, isUserBlocked]);
+
+  const topResultType = useMemo(() => {
+    if (!topResult) return null;
+    if (isUserLike(topResult)) return "user";
+    if (isPostLike(topResult)) return "post";
+    return null;
+  }, [topResult]);
+
+  const topUserId =
+    topResultType === "user" ? topResult?._id || topResult?.id : null;
+  const topPostId =
+    topResultType === "post"
+      ? topResult?._id || topResult?.id || topResult?.postId
+      : null;
+
+  const peopleWithoutTop = useMemo(() => {
+    if (!topUserId) return searchPeople;
+    return searchPeople.filter((user) => {
+      const userId = user?._id || user?.id;
+      return String(userId) !== String(topUserId);
+    });
+  }, [searchPeople, topUserId]);
+
+  const postsWithoutTop = useMemo(() => {
+    if (!topPostId) return searchPostsResults;
+    return searchPostsResults.filter((post) => {
+      const postId = post?._id || post?.id || post?.postId;
+      return String(postId) !== String(topPostId);
+    });
+  }, [searchPostsResults, topPostId]);
+
+  const peoplePreview = useMemo(() => {
+    return searchTab === "all" ? peopleWithoutTop.slice(0, 4) : peopleWithoutTop;
+  }, [peopleWithoutTop, searchTab]);
+
+  const postsPreview = useMemo(() => {
+    return searchTab === "all"
+      ? postsWithoutTop.slice(0, 6)
+      : postsWithoutTop;
+  }, [postsWithoutTop, searchTab]);
+
+  const communityPreview = useMemo(() => {
+    return searchTab === "all"
+      ? searchCommunities.slice(0, 4)
+      : searchCommunities;
+  }, [searchCommunities, searchTab]);
+
+  const searchHasResults =
+    Boolean(topResult) ||
+    searchPeople.length > 0 ||
+    searchPostsResults.length > 0 ||
+    searchCommunities.length > 0;
+  const showSearchSkeleton = searchLoading && !searchHasResults;
+
+  const searchTabs = [
+    { id: "all", label: "All" },
+    { id: "people", label: "People" },
+    { id: "posts", label: "Posts" },
+    { id: "communities", label: "Communities" },
+  ];
+
+  const isEmptyState = useMemo(() => {
+    if (showSearchSkeleton || searchError) return false;
+    if (searchTab === "all") {
+      return !topResult && peoplePreview.length === 0 && postsPreview.length === 0;
+    }
+    if (searchTab === "people") return peoplePreview.length === 0;
+    if (searchTab === "posts") return postsPreview.length === 0;
+    if (searchTab === "communities") return communityPreview.length === 0;
+    return false;
+  }, [
+    communityPreview.length,
+    peoplePreview.length,
+    postsPreview.length,
+    searchError,
+    searchTab,
+    showSearchSkeleton,
+    topResult,
+  ]);
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (searchRef.current && !searchRef.current.contains(event.target)) {
@@ -211,47 +478,74 @@ export default function Trending() {
   }, []);
 
   useEffect(() => {
-    const handleSearch = async () => {
-      if (searchQuery.length < 2) {
-        setSearchResults([]);
-        setShowSearchResults(false);
-        return;
+    if (!hasSearchQuery) {
+      if (searchAbortRef.current) {
+        searchAbortRef.current.abort();
       }
+      setSearchLoading(false);
+      setSearchError("");
+      setSearchData(DEFAULT_SEARCH_RESULTS);
+      setShowSearchResults(false);
+      return;
+    }
 
-      setSearchLoading(true);
-      setShowSearchResults(true);
+    setShowSearchResults(true);
+    setSearchError("");
+    setSearchLoading(true);
+
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const requestId = ++searchRequestRef.current;
+
+    const timeoutId = setTimeout(async () => {
       try {
-        const users = await searchUsers(searchQuery);
-        const filtered = users.filter(
-          (user) => {
-            const userId = user?._id || user?.id;
-            if (isUserBlocked(userId)) return false;
-            if (isUserAnonymous(user)) return false;
-            return true;
-          }
-        );
-        setSearchResults(filtered);
+        const data = await searchAll(trimmedSearchQuery, {
+          type: "all",
+          signal: controller.signal,
+        });
+        if (requestId !== searchRequestRef.current) return;
+        setSearchData(normalizeSearchPayload(data));
       } catch (error) {
-        console.error("Search error:", error);
-        setSearchResults([]);
+        if (error?.name === "AbortError") return;
+        try {
+          const fallbackUsers = await searchUsers(trimmedSearchQuery, {
+            signal: controller.signal,
+          });
+          if (requestId !== searchRequestRef.current) return;
+          setSearchData({ ...DEFAULT_SEARCH_RESULTS, users: fallbackUsers });
+        } catch (fallbackError) {
+          if (fallbackError?.name === "AbortError") return;
+          if (requestId !== searchRequestRef.current) return;
+          setSearchData(DEFAULT_SEARCH_RESULTS);
+          setSearchError(
+            fallbackError?.message || error?.message || "Search unavailable."
+          );
+        }
       } finally {
-        setSearchLoading(false);
+        if (requestId === searchRequestRef.current) {
+          setSearchLoading(false);
+        }
       }
-    };
+    }, 300);
 
-    const timeoutId = setTimeout(handleSearch, 300);
-    return () => clearTimeout(timeoutId);
-  }, [searchQuery, isUserBlocked]);
+    return () => {
+      clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [hasSearchQuery, trimmedSearchQuery]);
 
   useEffect(() => {
-    if (!searchResults || searchResults.length === 0) return;
-    searchResults.forEach((user) => {
+    if (!searchUsersResults || searchUsersResults.length === 0) return;
+    searchUsersResults.forEach((user) => {
       const userId = user?._id || user?.id;
       if (!userId) return;
       if (String(userId) === String(currentUser?.id)) return;
       ensureFriendStatus(userId);
     });
-  }, [searchResults, ensureFriendStatus, currentUser?.id]);
+  }, [searchUsersResults, ensureFriendStatus, currentUser?.id]);
 
   const postsArray = useMemo(() => {
     const list = Array.isArray(posts) ? posts : [];
@@ -409,6 +703,283 @@ export default function Trending() {
     }
   };
 
+  const sharePostId = sharePost?._id || sharePost?.id;
+  const sharePostUrl = sharePostId
+    ? `${window.location.origin}/feed?post=${sharePostId}`
+    : "";
+  const sharePostThumbnail = sharePost ? resolvePostMediaUrl(sharePost) : "";
+  const sharePostPreviewText =
+    sharePost?.content && sharePost.content.length > 0
+      ? sharePost.content.slice(0, 80)
+      : "Campus update";
+  const sharePostIsPrivate = sharePost
+    ? resolvePostPrivacy(sharePost) === "friends"
+    : false;
+  const sharePostAuthorName =
+    sharePost?.author?.displayName ||
+    sharePost?.author?.fullName ||
+    sharePost?.author?.username ||
+    sharePost?.authorName ||
+    "";
+  const sharePostAuthorId =
+    sharePost?.author?._id || sharePost?.authorId || sharePost?.author;
+
+  const shareChatPostId = shareChatPost?._id || shareChatPost?.id;
+  const shareChatPostUrl = shareChatPostId
+    ? `${window.location.origin}/feed?post=${shareChatPostId}`
+    : "";
+  const shareChatPostThumbnail = shareChatPost
+    ? resolvePostMediaUrl(shareChatPost)
+    : "";
+  const shareChatPostPreviewText =
+    shareChatPost?.content && shareChatPost.content.length > 0
+      ? shareChatPost.content.slice(0, 80)
+      : "Campus update";
+  const shareChatPostAuthorName =
+    shareChatPost?.author?.displayName ||
+    shareChatPost?.author?.fullName ||
+    shareChatPost?.author?.username ||
+    shareChatPost?.authorName ||
+    "";
+  const shareChatPostAuthorId =
+    shareChatPost?.author?._id || shareChatPost?.authorId || shareChatPost?.author;
+
+  const renderUserCard = (user, { variant = "default" } = {}) => {
+    if (!user) return null;
+    const userId = user._id || user.id;
+    const userType = resolveUserType(user);
+    const isCommunity = userType === "community";
+    const userTypeBadge = formatUserType(userType);
+    const studentType = formatStudentType(resolveStudentType(user));
+    const communityType = formatCommunityType(resolveCommunityType(user));
+    const collegeLabel = resolveCollegeName(user);
+    const bio = isCommunity
+      ? resolveCommunityDescription(user)
+      : resolveUserBio(user);
+    const bioPreview =
+      bio && bio.length > 90 ? `${bio.slice(0, 90)}...` : bio || "No bio yet.";
+    const secondaryLine = isCommunity
+      ? `${communityType || "Community"}${collegeLabel ? ` • ${collegeLabel}` : ""}`
+      : `${studentType}${collegeLabel ? ` • ${collegeLabel}` : ""}`;
+    const displayName = isCommunity
+      ? resolveCommunityName(user) ||
+        user.displayName ||
+        user.username ||
+        "Community"
+      : user.fullName || user.displayName || user.username || "User";
+    const status = getFriendStatus(userId);
+    const isSelf = String(userId) === String(currentUser?.id);
+    const isLoading = friendActionLoading[userId];
+    const mutualCount = Number(
+      user.mutualFriendsCount || user.mutualFriends?.length || 0
+    );
+    const publicPostCount = Number(
+      user.publicPostCount || user.publicPostsCount || user.postCount || 0
+    );
+    const memberCount = Number(
+      user.memberCount || user.membersCount || user.members?.length || 0
+    );
+    const stats = [];
+    if (isCommunity) {
+      if (memberCount || memberCount === 0) stats.push(`${memberCount} members`);
+    } else {
+      if (mutualCount > 0) stats.push(`${mutualCount} mutual`);
+      if (!Number.isNaN(publicPostCount)) stats.push(`${publicPostCount} posts`);
+    }
+
+    return (
+      <div
+        key={userId}
+        className={`w-full rounded-2xl border border-white/10 bg-white/5 p-4 transition-colors hover:bg-white/10 ${
+          variant === "top" ? "glow-border" : ""
+        }`}
+      >
+        <div className="flex items-start gap-3">
+          <button
+            type="button"
+            onClick={() => setSelectedUser(user)}
+            className="flex items-start gap-3 text-left flex-1 min-w-0"
+          >
+            <img
+              src={user.profilePicUrl || ANONYMOUS_AVATAR}
+              alt={displayName}
+              className="w-11 h-11 rounded-full object-cover"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="font-semibold text-sm text-[#faf0e6] truncate">
+                  {displayName}
+                </p>
+                <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                  {userTypeBadge}
+                </span>
+              </div>
+              <p className="text-xs text-[#b9b4c7]">{secondaryLine}</p>
+              <p className="text-[11px] text-[#b9b4c7] line-clamp-2">
+                {bioPreview}
+              </p>
+              {stats.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-[#b9b4c7]">
+                  {stats.map((item) => (
+                    <span
+                      key={item}
+                      className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5"
+                    >
+                      {item}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </button>
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            {isSelf ? (
+              <span className="text-[10px] text-[#b9b4c7]">You</span>
+            ) : (
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {status !== "pending_received" && (
+                  <button
+                    type="button"
+                    onClick={() => navigate("/chat")}
+                    disabled={status !== "friends"}
+                    className={`text-[10px] px-3 py-1 rounded-full border border-white/10 ${
+                      status === "friends"
+                        ? "bg-white/10 text-[#faf0e6] hover:bg-white/20"
+                        : "bg-white/5 text-[#b9b4c7] cursor-not-allowed"
+                    }`}
+                  >
+                    Message
+                  </button>
+                )}
+
+                {status === "friends" ? (
+                  <span className="text-[10px] px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200">
+                    Friends
+                  </span>
+                ) : status === "pending_sent" ? (
+                  <button
+                    type="button"
+                    disabled
+                    className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] cursor-not-allowed"
+                  >
+                    Requested
+                  </button>
+                ) : status === "pending_received" ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleAcceptFriend(userId)}
+                      disabled={isLoading}
+                      className="text-[10px] px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200 hover:bg-emerald-400/30 transition-colors"
+                    >
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRejectFriend(userId)}
+                      disabled={isLoading}
+                      className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] hover:bg-white/10 transition-colors"
+                    >
+                      Reject
+                    </button>
+                  </>
+                ) : status === "blocked" ? (
+                  <span className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7]">
+                    Blocked
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleAddFriend(userId)}
+                    disabled={isLoading}
+                    className="text-[10px] px-3 py-1 rounded-full bg-[#b9b4c7]/20 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors"
+                  >
+                    Add Friend
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedUser(user)}
+                  className="h-7 w-7 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
+                  aria-label="More actions"
+                >
+                  <i className="fa-solid fa-circle-info text-[11px]"></i>
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderPostCard = (post, { variant = "grid" } = {}) => {
+    if (!post) return null;
+    const postId = post._id || post.id || post.postId;
+    const mediaUrl = resolvePostMediaUrl(post);
+    const isVideo =
+      isVideoUrl(mediaUrl) ||
+      String(post.mediaType || post.type || "").toLowerCase().includes("video");
+    const isAnonymous = Boolean(
+      post.isAnonymous ||
+        post.anonymous ||
+        post.is_anonymous ||
+        post.author?.isAnonymous
+    );
+    const label = isAnonymous ? "Anonymous" : "Public";
+    const caption =
+      post.content && post.content.length > 60
+        ? `${post.content.slice(0, 60)}...`
+        : post.content || "Campus update";
+    const aspectClass = variant === "featured" ? "aspect-[16/9]" : "aspect-square";
+
+    return (
+      <button
+        key={postId}
+        type="button"
+        onClick={() => setSelectedPost(post)}
+        className={`relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 text-left ${
+          variant === "featured" ? "w-full" : ""
+        }`}
+      >
+        <div className={`relative w-full ${aspectClass}`}>
+          {mediaUrl ? (
+            isVideo ? (
+              <video
+                src={mediaUrl}
+                className="h-full w-full object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+            ) : (
+              <img
+                src={mediaUrl}
+                alt="Search post"
+                className="h-full w-full object-cover"
+                loading="lazy"
+              />
+            )
+          ) : (
+            <div className="h-full w-full bg-white/5 p-3 flex items-end">
+              <p className="text-xs text-[#faf0e6] line-clamp-3">{caption}</p>
+            </div>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
+          <div className="absolute bottom-2 left-2 flex items-center gap-2 text-[10px] text-[#faf0e6]">
+            <span className="rounded-full border border-white/20 bg-black/40 px-2 py-0.5">
+              {isVideo ? "Video" : "Post"}
+            </span>
+            <span className="rounded-full border border-white/20 bg-black/40 px-2 py-0.5">
+              {label}
+            </span>
+          </div>
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div className="min-h-screen flex flex-col pb-24 sm:pb-6">
       <Header />
@@ -429,155 +1000,143 @@ export default function Trending() {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              onFocus={() => searchQuery.length >= 2 && setShowSearchResults(true)}
+              onFocus={() => hasSearchQuery && setShowSearchResults(true)}
               placeholder="Search students, posts, and campus signals..."
               className="w-full pl-11 pr-4 py-3 rounded-full glass-input"
             />
           </div>
 
-          {showSearchResults && (
+          {showSearchResults && hasSearchQuery && (
             <Motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="absolute left-0 right-0 mt-3 rounded-2xl glass-card max-h-96 overflow-y-auto z-30"
+              className="absolute left-0 right-0 mt-3 rounded-3xl glass-card overflow-hidden z-30"
             >
-              {showSearchSkeleton ? (
-                <div className="p-4 text-center text-[#b9b4c7]">Searching...</div>
-              ) : (
-                <div className="p-3 space-y-4">
-                  {searchLoading && (
-                    <div className="px-2 text-[11px] text-[#b9b4c7]">Updating...</div>
-                  )}
-                  <div>
-                    <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em] px-2 py-2 border-b border-white/10">
-                      Students
-                    </h3>
-                    {searchResults.length === 0 ? (
-                      <div className="p-3 text-center text-[#b9b4c7] text-sm">
-                        No users found
-                      </div>
-                    ) : (
-                      searchResults.map((user) => {
-                        const userId = user._id || user.id;
-                        const userType = resolveUserType(user);
-                        const userTypeBadge = formatUserType(userType);
-                        const isCommunity = userType === "community";
-                        const studentType = formatStudentType(resolveStudentType(user));
-                        const communityType = formatCommunityType(resolveCommunityType(user));
-                        const collegeLabel = resolveCollegeName(user);
-                        const bio = isCommunity
-                          ? resolveCommunityDescription(user)
-                          : resolveUserBio(user);
-                        const bioPreview =
-                          bio && bio.length > 90 ? `${bio.slice(0, 90)}...` : bio || "No bio yet.";
-                        const secondaryLine = isCommunity
-                          ? `${communityType || "Community"}${collegeLabel ? ` • ${collegeLabel}` : ""}`
-                          : `${studentType}${collegeLabel ? ` • ${collegeLabel}` : ""}`;
-                        const status = getFriendStatus(userId);
-                        const isSelf = String(userId) === String(currentUser?.id);
-                        const isLoading = friendActionLoading[userId];
-                        return (
-                          <div
-                            key={userId}
-                            className="w-full flex items-start gap-3 p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-colors"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setSelectedUser(user)}
-                              className="flex items-start gap-3 text-left flex-1 min-w-0"
-                            >
-                              <img
-                                src={user.profilePicUrl || ANONYMOUS_AVATAR}
-                                alt={user.fullName || user.username}
-                                className="w-10 h-10 rounded-full object-cover"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="font-semibold text-sm text-[#faf0e6]">
-                                    {isCommunity
-                                      ? resolveCommunityName(user) ||
-                                        user.displayName ||
-                                        user.username ||
-                                        "Community"
-                                      : user.fullName ||
-                                        user.displayName ||
-                                        user.username ||
-                                        "User"}
-                                  </p>
-                                  <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
-                                    {userTypeBadge}
-                                  </span>
-                                </div>
-                                <p className="text-xs text-[#b9b4c7]">{secondaryLine}</p>
-                                <p className="text-[11px] text-[#b9b4c7] truncate">
-                                  {bioPreview}
-                                </p>
-                              </div>
-                            </button>
-                            <div className="flex flex-col gap-2 shrink-0">
-                              {isSelf ? (
-                                <span className="text-[10px] text-[#b9b4c7]">You</span>
-                              ) : status === "friends" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => navigate("/chat")}
-                                  className="text-[10px] px-3 py-1 rounded-full bg-white/10 text-[#faf0e6] hover:bg-white/20 transition-colors"
-                                >
-                                  Message
-                                </button>
-                              ) : status === "pending_sent" ? (
-                                <button
-                                  type="button"
-                                  disabled
-                                  className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] cursor-not-allowed"
-                                >
-                                  Requested
-                                </button>
-                              ) : status === "pending_received" ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleAcceptFriend(userId)}
-                                    disabled={isLoading}
-                                    className="text-[10px] px-3 py-1 rounded-full bg-emerald-400/20 text-emerald-200 hover:bg-emerald-400/30 transition-colors"
-                                  >
-                                    Accept
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRejectFriend(userId)}
-                                    disabled={isLoading}
-                                    className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] hover:bg-white/10 transition-colors"
-                                  >
-                                    Reject
-                                  </button>
-                                </>
-                              ) : status === "blocked" ? (
-                                <button
-                                  type="button"
-                                  disabled
-                                  className="text-[10px] px-3 py-1 rounded-full bg-white/5 text-[#b9b4c7] cursor-not-allowed"
-                                >
-                                  Blocked
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => handleAddFriend(userId)}
-                                  disabled={isLoading}
-                                  className="text-[10px] px-3 py-1 rounded-full bg-[#b9b4c7]/20 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors"
-                                >
-                                  Add Friend
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
+              <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3 bg-black/30 backdrop-blur">
+                {searchTabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setSearchTab(tab.id)}
+                    className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                      searchTab === tab.id
+                        ? "bg-white/15 text-[#faf0e6]"
+                        : "text-[#b9b4c7] hover:text-[#faf0e6]"
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="max-h-[28rem] overflow-y-auto px-4 py-4 space-y-6">
+                {searchError ? (
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center text-sm text-rose-200">
+                    Search unavailable
                   </div>
-                </div>
-              )}
+                ) : showSearchSkeleton ? (
+                  <div className="space-y-3">
+                    {[...Array(3)].map((_, index) => (
+                      <div
+                        key={`user-skeleton-${index}`}
+                        className="h-20 rounded-2xl border border-white/10 bg-white/5 animate-pulse"
+                      ></div>
+                    ))}
+                    <div className="grid grid-cols-3 gap-2">
+                      {[...Array(6)].map((_, index) => (
+                        <div
+                          key={`post-skeleton-${index}`}
+                          className="aspect-square rounded-xl border border-white/10 bg-white/5 animate-pulse"
+                        ></div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {searchLoading && searchHasResults && (
+                      <div className="text-[11px] text-[#b9b4c7]">
+                        Updating results...
+                      </div>
+                    )}
+
+                    {searchTab === "all" && (
+                      <>
+                        {topResult && (
+                          <section className="space-y-3">
+                            <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                              Top Result
+                            </h3>
+                            {topResultType === "post"
+                              ? renderPostCard(topResult, { variant: "featured" })
+                              : renderUserCard(topResult, { variant: "top" })}
+                          </section>
+                        )}
+
+                        {peoplePreview.length > 0 && (
+                          <section className="space-y-3">
+                            <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                              People
+                            </h3>
+                            <div className="space-y-3">
+                              {peoplePreview.map((user) => renderUserCard(user))}
+                            </div>
+                          </section>
+                        )}
+
+                        {postsPreview.length > 0 && (
+                          <section className="space-y-3">
+                            <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                              Posts
+                            </h3>
+                            <div className="grid grid-cols-3 gap-2">
+                              {postsPreview.map((post) => renderPostCard(post))}
+                            </div>
+                          </section>
+                        )}
+                      </>
+                    )}
+
+                    {searchTab === "people" && (
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                          People
+                        </h3>
+                        <div className="space-y-3">
+                          {peoplePreview.map((user) => renderUserCard(user))}
+                        </div>
+                      </section>
+                    )}
+
+                    {searchTab === "posts" && (
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                          Posts
+                        </h3>
+                        <div className="grid grid-cols-3 gap-2">
+                          {postsPreview.map((post) => renderPostCard(post))}
+                        </div>
+                      </section>
+                    )}
+
+                    {searchTab === "communities" && (
+                      <section className="space-y-3">
+                        <h3 className="text-xs font-semibold text-[#b9b4c7] uppercase tracking-[0.2em]">
+                          Communities
+                        </h3>
+                        <div className="space-y-3">
+                          {communityPreview.map((user) => renderUserCard(user))}
+                        </div>
+                      </section>
+                    )}
+
+                    {isEmptyState && (
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-center text-sm text-[#b9b4c7]">
+                        No results found.
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </Motion.div>
           )}
         </div>
@@ -965,8 +1524,13 @@ export default function Trending() {
         <ShareSheet
           isOpen={!!sharePost}
           onClose={() => setSharePost(null)}
-          postUrl={`${window.location.origin}/feed?post=${sharePost._id || sharePost.id}`}
+          postUrl={sharePostUrl}
           postTitle={sharePost.content}
+          postId={sharePostId}
+          postThumbnail={sharePostThumbnail}
+          postPreviewText={sharePostPreviewText}
+          isPrivate={sharePostIsPrivate}
+          isAnonymous={sharePost?.isAnonymous}
           onShareToChat={() => {
             setShareChatPost(sharePost);
             setSharePost(null);
@@ -978,8 +1542,14 @@ export default function Trending() {
         <ShareToChatModal
           isOpen={!!shareChatPost}
           onClose={() => setShareChatPost(null)}
-          postUrl={`${window.location.origin}/feed?post=${shareChatPost._id || shareChatPost.id}`}
+          postUrl={shareChatPostUrl}
           postTitle={shareChatPost.content}
+          postId={shareChatPostId}
+          postThumbnail={shareChatPostThumbnail}
+          postPreviewText={shareChatPostPreviewText}
+          postIsAnonymous={shareChatPost?.isAnonymous}
+          postAuthorName={shareChatPostAuthorName}
+          postAuthorId={shareChatPostAuthorId}
         />
       )}
 

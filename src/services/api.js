@@ -97,6 +97,7 @@ const apiFetch = async (path, options = {}) => {
     headers = {},
     auth = true,
     isFormData = false,
+    signal,
   } = options;
 
   if (!API_BASE_URL) {
@@ -126,6 +127,7 @@ const apiFetch = async (path, options = {}) => {
           : isFormData || isBodyFormData
             ? body
             : JSON.stringify(body),
+      signal,
     });
 
     const data = await parseResponse(res);
@@ -334,17 +336,29 @@ export const deleteProfilePic = async () => {
   });
 };
 
-export const searchUsers = async (query, params = {}) => {
+const resolveSearchOptions = (paramsOrOptions = {}) => {
+  if (!paramsOrOptions) return { params: {}, signal: undefined };
+  const { signal, params, ...rest } = paramsOrOptions;
+  if (signal || params) {
+    return { params: params || rest, signal };
+  }
+  return { params: rest, signal: undefined };
+};
+
+export const searchUsers = async (query, paramsOrOptions = {}) => {
   if (!query) return [];
+  const { params, signal } = resolveSearchOptions(paramsOrOptions);
   try {
     const data = await apiFetch("/search/users", {
       params: { q: query, ...params },
+      signal,
     });
     return normalizeList(data, ["users", "items", "results"]);
   } catch {
     try {
       const data = await apiFetch("/users/search", {
         params: { query },
+        signal,
       });
       return normalizeList(data, ["users", "items", "results"]);
     } catch {
@@ -353,12 +367,14 @@ export const searchUsers = async (query, params = {}) => {
   }
 };
 
-export const searchAll = async (query, params = {}) => {
-  if (!query) return [];
-  const data = await apiFetch("/search", {
-    params: { query, type: "all", ...params },
+export const searchAll = async (query, paramsOrOptions = {}) => {
+  if (!query) return null;
+  const { params, signal } = resolveSearchOptions(paramsOrOptions);
+  const data = await apiFetchWithFallback(["/search", "/search/all"], {
+    params: { q: query, query, type: "all", ...params },
+    signal,
   });
-  return normalizeList(data, ["items", "results", "data"]);
+  return data;
 };
 
 export const searchColleges = async (query, params = {}) => {
@@ -844,16 +860,22 @@ export const fetchNotificationsMeta = async (params = {}) => {
 };
 
 export const markNotificationsRead = async (notificationIds = []) => {
-  return apiFetch("/notifications/mark-read", {
-    method: "POST",
-    body: { notificationIds },
-  });
+  return apiFetchWithFallback(
+    ["/notifications/read", "/notifications/mark-read"],
+    {
+      method: "PATCH",
+      body: { notificationIds },
+    }
+  );
 };
 
 export const markAllNotificationsRead = async () => {
-  return apiFetch("/notifications/mark-all-read", {
-    method: "POST",
-  });
+  return apiFetchWithFallback(
+    ["/notifications/read-all", "/notifications/mark-all-read"],
+    {
+      method: "PATCH",
+    }
+  );
 };
 
 export const createNotification = async (payload) => {

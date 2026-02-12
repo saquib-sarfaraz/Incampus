@@ -16,6 +16,7 @@ import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import ReportModal from "../components/moderation/ReportModal";
+import PostModal from "../components/profile/PostModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -35,7 +36,9 @@ const resolveFriendId = (value) => {
   return String(value._id || value.id || value.userId || value.user_id || "");
 };
 
-const messageKey = (msg) => msg._id || `${msg.from}-${msg.to}-${msg.createdAt}-${msg.text}`;
+const messageKey = (msg) =>
+  msg._id ||
+  `${msg.from}-${msg.to}-${msg.createdAt}-${msg.text || msg.postId || msg.messageType || ""}`;
 
 const getMessageTimestamp = (msg) => {
   const raw = msg?.createdAt || msg?.created_at || msg?.timestamp;
@@ -72,16 +75,26 @@ const formatLastSeen = (dateString) => {
   })} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 };
 
-  const truncateMessage = (text = "") => {
-    if (!text) return "";
-    return text.length > 40 ? `${text.slice(0, 40)}…` : text;
-  };
+const resolveMessagePreview = (msg) => {
+  if (!msg) return "";
+  if (msg.messageType === "shared_post" || msg.type === "shared_post") {
+    return msg.postPreviewText || msg.postTitle || "Shared a post";
+  }
+  return msg.text || "";
+};
+
+const truncateMessage = (text = "") => {
+  if (!text) return "";
+  return text.length > 40 ? `${text.slice(0, 40)}…` : text;
+};
 
 export default function Chat() {
   const { currentUser } = useAuth();
   const {
     cacheUser,
     getUserFromCache,
+    posts,
+    loadPosts,
     isUserBlocked,
     addBlockedUser,
     friendIds,
@@ -102,6 +115,7 @@ export default function Chat() {
   const [toasts, setToasts] = useState([]);
   const [presenceMap, setPresenceMap] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
   const messagesEndRef = useRef(null);
@@ -205,6 +219,41 @@ export default function Chat() {
       // ignore audio errors
     }
   }, []);
+
+  const findPostById = useCallback(
+    (postId) => {
+      if (!postId) return null;
+      const list = Array.isArray(posts) ? posts : [];
+      return list.find((post) => String(post._id || post.id) === String(postId)) || null;
+    },
+    [posts]
+  );
+
+  const handleOpenSharedPost = useCallback(
+    async (msg) => {
+      if (!msg) return;
+      const postId = msg.postId || msg.post_id || msg.post?.id || msg.post?._id;
+      if (!postId) return;
+      let found = findPostById(postId);
+      if (!found) {
+        await loadPosts();
+        found = findPostById(postId);
+      }
+      if (found) {
+        setSharedPost(found);
+        return;
+      }
+      setSharedPost({
+        _id: postId,
+        content: msg.postPreviewText || msg.postTitle || "Shared post",
+        mediaUrl: msg.postThumbnail,
+        isAnonymous: msg.postIsAnonymous || msg.isAnonymous,
+        authorDisplayName: msg.postAuthorName,
+        authorId: msg.postAuthorId,
+      });
+    },
+    [findPostById, loadPosts]
+  );
 
   const resolveContactName = useCallback(
     (contact) => {
@@ -740,7 +789,7 @@ export default function Chat() {
           id: `${chatId}-${msg.createdAt}`,
           chatId,
           title: `New message from ${senderName}`,
-          message: truncateMessage(msg.text),
+          message: truncateMessage(resolveMessagePreview(msg)),
         });
         playNotificationSound();
         if (navigator.vibrate) navigator.vibrate(40);
@@ -897,7 +946,7 @@ export default function Chat() {
                             unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
                           }`}
                         >
-                          {truncateMessage(meta.lastMessage?.text) ||
+                          {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
                             "Say hello to start chatting"}
                         </p>
                       </div>
@@ -959,7 +1008,8 @@ export default function Chat() {
                             unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
                           }`}
                         >
-                          {truncateMessage(meta.lastMessage?.text) || "Campus group channel"}
+                          {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+                            "Campus group channel"}
                         </p>
                       </div>
                       <div className="flex flex-col items-end gap-1">
@@ -1115,6 +1165,10 @@ export default function Chat() {
                 ) : (
                   visibleMessages.map((msg) => {
                     const isMine = msg.from === currentUser?.id;
+                    const isSharedPost =
+                      msg.messageType === "shared_post" || msg.type === "shared_post";
+                    const previewText = resolveMessagePreview(msg);
+                    const previewThumb = msg.postThumbnail;
                     return (
                       <Motion.div
                         key={messageKey(msg)}
@@ -1123,7 +1177,37 @@ export default function Chat() {
                         className={`message-row ${isMine ? "mine" : "theirs"}`}
                       >
                         <div className="message-bubble">
-                          <span className="text-sm">{msg.text}</span>
+                          {isSharedPost ? (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenSharedPost(msg)}
+                              className="w-full text-left space-y-2"
+                            >
+                              <div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
+                                {previewThumb ? (
+                                  <img
+                                    src={previewThumb}
+                                    alt="Shared post"
+                                    className="w-full h-32 object-cover"
+                                  />
+                                ) : (
+                                  <div className="h-24 w-full bg-white/5 flex items-center justify-center text-xs text-[#b9b4c7]">
+                                    Post preview
+                                  </div>
+                                )}
+                                <div className="p-3">
+                                  <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                                    Shared post
+                                  </p>
+                                  <p className="text-sm text-[#faf0e6] line-clamp-2">
+                                    {previewText}
+                                  </p>
+                                </div>
+                              </div>
+                            </button>
+                          ) : (
+                            <span className="text-sm">{msg.text}</span>
+                          )}
                           <span className="message-time flex items-center gap-1">
                             {formatTime(msg.createdAt)}
                             {isMine && !activeChatUser?.isGroup && (
@@ -1237,6 +1321,14 @@ export default function Chat() {
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
+      {sharedPost && (
+        <PostModal
+          post={sharedPost}
+          isOpen={!!sharedPost}
+          onClose={() => setSharedPost(null)}
+          onDelete={() => {}}
+        />
+      )}
       <ReportModal
         isOpen={!!reportTarget}
         onClose={() => setReportTarget(null)}

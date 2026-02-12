@@ -5,6 +5,55 @@ import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 
+const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+
+const resolveIsRead = (notif) => {
+  if (notif?.isRead !== undefined) return Boolean(notif.isRead);
+  if (notif?.read !== undefined) return Boolean(notif.read);
+  return false;
+};
+
+const resolveActor = (notif) => {
+  return notif?.actor || notif?.fromUser || notif?.user || notif?.sender || null;
+};
+
+const resolveActorName = (actor) => {
+  return actor?.username || actor?.fullName || actor?.displayName || "Someone";
+};
+
+const resolveActorAvatar = (actor) => {
+  return (
+    actor?.profilePicUrl ||
+    actor?.profile_pic_url ||
+    actor?.avatar ||
+    actor?.photoUrl ||
+    ANONYMOUS_AVATAR
+  );
+};
+
+const formatNotificationText = (notif) => {
+  const type = String(notif?.type || notif?.action || "").toLowerCase();
+  if (type === "like") return "liked your post";
+  if (type === "comment") return "commented on your post";
+  if (type === "friend") return "accepted your friend request";
+  if (type === "mention") return "mentioned you";
+  return notif?.message || "sent you a notification";
+};
+
+const formatTimeAgo = (dateValue) => {
+  if (!dateValue) return "";
+  const time = new Date(dateValue).getTime();
+  if (Number.isNaN(time)) return "";
+  const diff = Date.now() - time;
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diff < minute) return "now";
+  if (diff < hour) return `${Math.floor(diff / minute)}m`;
+  if (diff < day) return `${Math.floor(diff / hour)}h`;
+  return `${Math.floor(diff / day)}d`;
+};
+
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -25,14 +74,37 @@ export default function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const unreadCount = notifications.filter((n) => !n.read).length;
+  const unreadCount = notifications.filter((n) => !resolveIsRead(n)).length;
+
+  const markAllReadOptimistic = () => {
+    setNotifications((prev) =>
+      prev.map((n) => ({
+        ...n,
+        read: true,
+        isRead: true,
+      }))
+    );
+  };
 
   const handleMarkAllRead = async () => {
     try {
+      markAllReadOptimistic();
       await markAllNotificationsRead();
-      setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     } catch (error) {
       console.error("Failed to mark as read:", error);
+    }
+  };
+
+  const handleToggleNotifications = async () => {
+    const nextOpen = !showNotifications;
+    setShowNotifications(nextOpen);
+    if (nextOpen && unreadCount > 0) {
+      markAllReadOptimistic();
+      try {
+        await markAllNotificationsRead();
+      } catch (error) {
+        console.error("Failed to mark notifications read:", error);
+      }
     }
   };
 
@@ -135,7 +207,7 @@ export default function Header() {
 
             <div className="relative">
               <Motion.button
-                onClick={() => setShowNotifications(!showNotifications)}
+                onClick={handleToggleNotifications}
                 className="relative rounded-full px-3 py-2 text-sm text-[#b9b4c7] transition-all duration-300 ease-out hover:bg-white/5 hover:text-[#faf0e6]"
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.96 }}
@@ -172,19 +244,44 @@ export default function Header() {
                           No notifications
                         </p>
                       ) : (
-                        notifications.map((notif) => (
-                          <div
-                            key={notif._id}
-                            className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
-                              !notif.read ? "bg-white/5" : ""
-                            }`}
-                          >
-                            <b className="text-[#faf0e6]">
-                              {notif.fromUser?.fullName || "Someone"}
-                            </b>{" "}
-                            <span className="text-[#b9b4c7]">{notif.message}</span>
-                          </div>
-                        ))
+                        notifications.map((notif) => {
+                          const actor = resolveActor(notif);
+                          const actorName = resolveActorName(actor);
+                          const actorAvatar = resolveActorAvatar(actor);
+                          const isUnread = !resolveIsRead(notif);
+                          const actionText = formatNotificationText(notif);
+                          const timeAgo = formatTimeAgo(
+                            notif.createdAt || notif.created_at || notif.timestamp
+                          );
+                          return (
+                            <div
+                              key={notif._id || notif.id}
+                              className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
+                                isUnread ? "bg-white/5" : ""
+                              }`}
+                            >
+                              <div className="flex items-center gap-3">
+                                <img
+                                  src={actorAvatar}
+                                  alt={actorName}
+                                  className="h-9 w-9 rounded-full object-cover border border-white/10"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[#faf0e6] truncate">
+                                    <span className="font-semibold">{actorName}</span>{" "}
+                                    <span className="text-[#b9b4c7]">{actionText}</span>
+                                  </p>
+                                  {timeAgo && (
+                                    <p className="text-[11px] text-[#b9b4c7]">{timeAgo}</p>
+                                  )}
+                                </div>
+                                {isUnread && (
+                                  <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })
                       )}
                     </div>
                   </Motion.div>
