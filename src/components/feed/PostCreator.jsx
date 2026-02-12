@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -6,6 +6,8 @@ import { createPost, searchColleges } from "../../services/api";
 import { compressImageFile } from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const THOUGHT_MIN_LENGTH = 3;
+const THOUGHT_MAX_LENGTH = 2000;
 
 const normalizeCollege = (item) => {
   if (!item) return null;
@@ -55,13 +57,15 @@ const normalizeCollegeList = (data) => {
 export default function PostCreator() {
   const { currentUser } = useAuth();
   const { loadPosts } = useApp();
+  const [postMode, setPostMode] = useState("post");
+  const [visibility, setVisibility] = useState("universal");
   const [text, setText] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [mediaFile, setMediaFile] = useState(null);
   const [mediaPreview, setMediaPreview] = useState(null);
   const [imageLoading, setImageLoading] = useState(false);
   const [collegeInput, setCollegeInput] = useState("");
-  const [collegeTagId, setCollegeTagId] = useState("");
+  const [selectedColleges, setSelectedColleges] = useState([]);
   const [colleges, setColleges] = useState([]);
   const [collegeLoading, setCollegeLoading] = useState(false);
   const [collegeError, setCollegeError] = useState("");
@@ -70,13 +74,33 @@ export default function PostCreator() {
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const isThought = postMode === "thought";
+  const defaultCollege = useMemo(() => {
+    if (!currentUser) return null;
+    const name =
+      currentUser.collegeTagName ||
+      currentUser.collegeTag ||
+      currentUser.university ||
+      currentUser.college ||
+      currentUser.school ||
+      "";
+    const id =
+      currentUser.collegeTagId ||
+      currentUser.college_tag_id ||
+      currentUser.collegeTag?._id ||
+      currentUser.collegeId ||
+      currentUser.college_id ||
+      "";
+    if (!name) return null;
+    return { name: String(name).trim(), id: id ? String(id) : "" };
+  }, [currentUser]);
 
   useEffect(() => {
-    if (!collegeInput && currentUser?.university) {
-      setCollegeInput(currentUser.university);
-      setCollegeTagId("");
+    if (selectedColleges.length > 0) return;
+    if (defaultCollege) {
+      setSelectedColleges([defaultCollege]);
     }
-  }, [currentUser?.university, collegeInput]);
+  }, [selectedColleges.length, defaultCollege]);
 
   useEffect(() => {
     const handleOutside = (event) => {
@@ -130,7 +154,35 @@ export default function PostCreator() {
     };
   }, [mediaPreview]);
 
+  useEffect(() => {
+    if (!isThought) return;
+    if (mediaFile || mediaPreview) {
+      setMediaFile(null);
+      if (mediaPreview) {
+        URL.revokeObjectURL(mediaPreview);
+      }
+      setMediaPreview(null);
+      setImageLoading(false);
+      setMediaError("");
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  }, [isThought, mediaFile, mediaPreview]);
+
+  useEffect(() => {
+    if (!isThought || !mediaError) return;
+    const length = text.trim().length;
+    if (length >= THOUGHT_MIN_LENGTH && length <= THOUGHT_MAX_LENGTH) {
+      setMediaError("");
+    }
+  }, [isThought, mediaError, text]);
+
   const handleMediaSelect = async (e) => {
+    if (isThought) {
+      setMediaError("Media uploads are disabled for Thought posts.");
+      return;
+    }
     const file = e.target.files[0];
     if (!file) return;
     const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
@@ -153,20 +205,49 @@ export default function PostCreator() {
   };
 
   const submitPost = async () => {
-    if (!text.trim() && !mediaFile) return;
+    const trimmedText = text.trim();
+    if (isThought) {
+      if (trimmedText.length < THOUGHT_MIN_LENGTH) {
+        setMediaError(`Thought posts need at least ${THOUGHT_MIN_LENGTH} characters.`);
+        return;
+      }
+      if (trimmedText.length > THOUGHT_MAX_LENGTH) {
+        setMediaError(`Keep thoughts under ${THOUGHT_MAX_LENGTH} characters.`);
+        return;
+      }
+    } else if (!trimmedText && !mediaFile) {
+      return;
+    }
     if (!currentUser) return;
-    const collegeTagName = collegeInput.trim();
+    const trimmedCollegeInput = collegeInput.trim();
+    const finalColleges =
+      trimmedCollegeInput && !selectedColleges.some((tag) => tag.name === trimmedCollegeInput)
+        ? [...selectedColleges, { name: trimmedCollegeInput, id: "" }]
+        : selectedColleges;
+    if (visibility === "college" && finalColleges.length === 0) {
+      setMediaError("College-only posts need at least one college tag.");
+      return;
+    }
+    const primaryCollege = finalColleges[0];
+    const collegeTagName = primaryCollege?.name || "";
+    const collegeTagId = primaryCollege?.id || "";
+    const collegeTags = finalColleges
+      .map((tag) => tag.id || tag.name)
+      .filter(Boolean);
 
     setLoading(true);
 
     try {
       await createPost(
         {
-          content: text,
+          content: trimmedText,
           isAnonymous,
+          contentType: isThought ? "thought" : "post",
+          visibility,
           authorId: currentUser.id,
           collegeTagName,
           collegeTagId,
+          collegeTags,
           authorCollegeId:
             currentUser.collegeGroupId ||
             currentUser.college_group_id ||
@@ -174,7 +255,7 @@ export default function PostCreator() {
             currentUser.collegeGroup ||
             "",
         },
-        mediaFile
+        isThought ? null : mediaFile
       );
 
       setText("");
@@ -185,8 +266,10 @@ export default function PostCreator() {
       setMediaPreview(null);
       setImageLoading(false);
       setIsAnonymous(false);
+      setPostMode("post");
+      setVisibility("universal");
       setCollegeInput("");
-      setCollegeTagId("");
+      setSelectedColleges([]);
       setShowCollegeDropdown(false);
       setMediaError("");
       if (fileInputRef.current) {
@@ -219,26 +302,71 @@ export default function PostCreator() {
   };
 
   const userAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
+  const isCollegeSelected = useCallback(
+    (college) => {
+      if (!college) return false;
+      const id = String(college.id || "");
+      const name = String(college.name || "").toLowerCase();
+      return selectedColleges.some((tag) => {
+        if (id && String(tag.id || "") === id) return true;
+        return name && String(tag.name || "").toLowerCase() === name;
+      });
+    },
+    [selectedColleges]
+  );
+
   const filteredColleges = useMemo(() => {
-    if (!collegeInput) return colleges;
+    if (!collegeInput) return colleges.filter((college) => !isCollegeSelected(college));
     const query = collegeInput.toLowerCase();
-    return colleges.filter((college) =>
-      String(college.name || "").toLowerCase().includes(query)
-    );
-  }, [colleges, collegeInput]);
+    return colleges.filter((college) => {
+      const name = String(college.name || "").toLowerCase();
+      return name.includes(query) && !isCollegeSelected(college);
+    });
+  }, [colleges, collegeInput, isCollegeSelected]);
 
   const topMatches = useMemo(() => filteredColleges.slice(0, 5), [filteredColleges]);
 
+  const addCollegeTag = (college) => {
+    if (!college?.name) return;
+    setSelectedColleges((prev) => {
+      const id = String(college.id || "");
+      const name = String(college.name || "").toLowerCase();
+      const exists = prev.some((tag) => {
+        if (id && String(tag.id || "") === id) return true;
+        return name && String(tag.name || "").toLowerCase() === name;
+      });
+      if (exists) return prev;
+      return [...prev, { name: college.name, id: college.id || "" }];
+    });
+    setCollegeInput("");
+    setShowCollegeDropdown(false);
+  };
+
+  const removeCollegeTag = (college) => {
+    setSelectedColleges((prev) => {
+      const next = prev.filter((tag) => {
+        if (college.id && String(tag.id || "") === String(college.id)) return false;
+        if (!college.id && tag.name === college.name) return false;
+        return true;
+      });
+      if (next.length === 0 && defaultCollege) {
+        return [defaultCollege];
+      }
+      return next;
+    });
+  };
+
   const handleCollegeChange = (value) => {
     setCollegeInput(value);
-    setCollegeTagId("");
     setShowCollegeDropdown(true);
   };
 
-  const handleCollegeSelect = (college) => {
-    setCollegeInput(college.name);
-    setCollegeTagId(college.id || "");
-    setShowCollegeDropdown(false);
+  const handleCollegeKeyDown = (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const trimmed = collegeInput.trim();
+    if (!trimmed) return;
+    addCollegeTag({ name: trimmed, id: "" });
   };
 
   return (
@@ -250,6 +378,37 @@ export default function PostCreator() {
     >
       <div className="glass-card glass-hover rounded-3xl p-4 transition-all duration-300 ease-out">
         <form onSubmit={handleSubmit}>
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setPostMode("post")}
+                className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                  postMode === "post"
+                    ? "bg-white/15 text-[#faf0e6]"
+                    : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                }`}
+              >
+                Post
+              </button>
+              <button
+                type="button"
+                onClick={() => setPostMode("thought")}
+                className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                  postMode === "thought"
+                    ? "bg-white/15 text-[#faf0e6]"
+                    : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                }`}
+              >
+                Thought
+              </button>
+            </div>
+            {isThought && (
+              <span className="text-[11px] text-[#b9b4c7]">
+                {text.trim().length}/{THOUGHT_MAX_LENGTH}
+              </span>
+            )}
+          </div>
           <div className="flex items-start space-x-3 mb-4">
             <img
               src={isAnonymous ? ANONYMOUS_AVATAR : userAvatar}
@@ -259,10 +418,44 @@ export default function PostCreator() {
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder={"What's happening on campus?\nShare updates, notes, or moments..."}
+              placeholder={
+                isThought
+                  ? "Share a thought with your campus..."
+                  : "What's happening on campus?\nShare updates, notes, or moments..."
+              }
               rows="3"
+              maxLength={isThought ? THOUGHT_MAX_LENGTH : undefined}
               className="flex-1 rounded-2xl glass-input p-3 text-sm placeholder-[#b9b4c7] resize-none"
             />
+          </div>
+          {mediaError && isThought && (
+            <p className="text-[11px] text-red-300 mb-3">{mediaError}</p>
+          )}
+
+          <div className="mb-4">
+            <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7] mb-2">
+              Visibility
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: "universal", label: "🌍 Universal" },
+                { id: "college", label: "🏫 College Only" },
+                { id: "private", label: "🔒 Friends Only" },
+              ].map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setVisibility(option.id)}
+                  className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                    visibility === option.id
+                      ? "bg-white/15 text-[#faf0e6]"
+                      : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="mb-4 relative" ref={collegeRef}>
@@ -270,7 +463,7 @@ export default function PostCreator() {
               htmlFor="post-creator-college"
               className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7] mb-2"
             >
-              College Tag (Optional)
+              College Tags
             </label>
             <input
               id="post-creator-college"
@@ -278,14 +471,25 @@ export default function PostCreator() {
               value={collegeInput}
               onChange={(e) => handleCollegeChange(e.target.value)}
               onFocus={() => setShowCollegeDropdown(true)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") setShowCollegeDropdown(false);
-              }}
+              onKeyDown={handleCollegeKeyDown}
               placeholder="Tag College (Optional)"
               className="w-full rounded-2xl glass-input px-3.5 py-2.5 text-sm"
             />
+            <div className="mt-2 flex flex-wrap gap-2">
+              {selectedColleges.map((college) => (
+                <button
+                  key={`${college.name}-${college.id || "manual"}`}
+                  type="button"
+                  onClick={() => removeCollegeTag(college)}
+                  className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1 text-[11px] text-[#faf0e6]"
+                >
+                  <span className="truncate">{college.name}</span>
+                  <i className="fa-solid fa-xmark text-[10px]"></i>
+                </button>
+              ))}
+            </div>
             <p className="text-[11px] text-[#b9b4c7] mt-1">
-              Can't find your college? Type to create.
+              Search and add multiple colleges. Press Enter to add a custom tag.
             </p>
             {showCollegeDropdown && (
               <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
@@ -306,7 +510,7 @@ export default function PostCreator() {
                       <button
                         key={`${college.name}-${college.id || "manual"}`}
                         type="button"
-                        onClick={() => handleCollegeSelect(college)}
+                        onClick={() => addCollegeTag(college)}
                         className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
                       >
                         {college.name}
@@ -315,7 +519,7 @@ export default function PostCreator() {
                   </div>
                 ) : (
                   <div className="p-3 text-sm text-[#b9b4c7]">
-                    No matches. Press Enter to use "{collegeInput}".
+                    No matches. Press Enter to add "{collegeInput}".
                   </div>
                 )}
               </div>
@@ -344,12 +548,31 @@ export default function PostCreator() {
                     </p>
                     <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
                       <span>Just now</span>
-                      {collegeInput.trim() && (
+                      {isThought && (
+                        <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                          Thought
+                        </span>
+                      )}
+                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
+                        {visibility === "college"
+                          ? "College Only"
+                          : visibility === "private"
+                            ? "Friends Only"
+                            : "Universal"}
+                      </span>
+                      {selectedColleges.length > 0 && (
                         <>
                           <span className="text-[#b9b4c7]">|</span>
-                          <span className="inline-flex items-center gap-1 max-w-[220px] truncate">
-                            <i className="fa-solid fa-school text-[10px]"></i>
-                            <span className="truncate">{collegeInput.trim()}</span>
+                          <span className="inline-flex items-center gap-2 flex-wrap max-w-[320px]">
+                            {selectedColleges.map((college) => (
+                              <span
+                                key={`${college.name}-${college.id || "manual"}`}
+                                className="inline-flex items-center gap-1"
+                              >
+                                <i className="fa-solid fa-school text-[10px]"></i>
+                                <span className="truncate">{college.name}</span>
+                              </span>
+                            ))}
                           </span>
                         </>
                       )}
@@ -385,25 +608,27 @@ export default function PostCreator() {
           </AnimatePresence>
 
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center pt-4 border-t border-white/10 space-y-3 sm:space-y-0">
-            <div className="flex flex-col items-start space-y-1">
-              <label
-                htmlFor="photo-upload"
-                className="cursor-pointer text-[#b9b4c7] hover:text-[#faf0e6] transition-colors p-2 rounded-full hover:bg-white/5"
-              >
-                <i className="fa-solid fa-image text-lg"></i>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  id="photo-upload"
-                  className="hidden"
-                  accept="image/jpeg,image/png,image/webp"
-                  onChange={handleMediaSelect}
-                />
-              </label>
-              {mediaError && (
-                <span className="text-[11px] text-red-300">{mediaError}</span>
-              )}
-            </div>
+            {!isThought && (
+              <div className="flex flex-col items-start space-y-1">
+                <label
+                  htmlFor="photo-upload"
+                  className="cursor-pointer text-[#b9b4c7] hover:text-[#faf0e6] transition-colors p-2 rounded-full hover:bg-white/5"
+                >
+                  <i className="fa-solid fa-image text-lg"></i>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    id="photo-upload"
+                    className="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={handleMediaSelect}
+                  />
+                </label>
+                {mediaError && (
+                  <span className="text-[11px] text-red-300">{mediaError}</span>
+                )}
+              </div>
+            )}
 
             <div className="flex items-center space-x-4 w-full sm:w-auto justify-between sm:justify-end">
               <label className="flex items-center cursor-pointer">
@@ -423,7 +648,13 @@ export default function PostCreator() {
               </label>
               <Motion.button
                 type="submit"
-                disabled={loading || (!text.trim() && !mediaFile)}
+                disabled={
+                  loading ||
+                  (visibility === "college" && selectedColleges.length === 0) ||
+                  (isThought
+                    ? text.trim().length < THOUGHT_MIN_LENGTH
+                    : !text.trim() && !mediaFile)
+                }
                 className="liquid-button text-[#faf0e6] px-5 py-2 rounded-full font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}

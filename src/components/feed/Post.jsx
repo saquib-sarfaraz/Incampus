@@ -2,13 +2,67 @@ import { useState, useEffect, useRef } from "react";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { likePost, getUserById, reportPost, blockUser } from "../../services/api";
+import {
+  likePost,
+  getUserById,
+  reportPost,
+  blockUser,
+  recordPostView,
+} from "../../services/api";
 import CommentModal from "./CommentModal";
 import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const VIEW_RATIO_THRESHOLD = 0.5;
+const VIEW_MIN_MS = 1200;
+const VIEW_COOLDOWN_MS = 5 * 60 * 1000;
+const VIEW_STORAGE_PREFIX = "incampus:post:view:";
+const viewedPostsSession = new Set();
+
+const resolvePostViewsCount = (post) => {
+  if (!post) return 0;
+  if (Array.isArray(post.views)) return post.views.length;
+  const raw =
+    post.viewsCount ??
+    post.viewCount ??
+    post.views ??
+    post.viewersCount ??
+    0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const getStoredViewTimestamp = (postId) => {
+  if (!postId || typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(`${VIEW_STORAGE_PREFIX}${postId}`);
+    const ts = Number(raw);
+    return Number.isFinite(ts) ? ts : null;
+  } catch {
+    return null;
+  }
+};
+
+const canRecordView = (postId) => {
+  if (!postId) return false;
+  if (viewedPostsSession.has(postId)) return false;
+  const lastViewed = getStoredViewTimestamp(postId);
+  if (lastViewed && Date.now() - lastViewed < VIEW_COOLDOWN_MS) return false;
+  return true;
+};
+
+const markViewRecorded = (postId) => {
+  if (!postId) return;
+  viewedPostsSession.add(postId);
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(`${VIEW_STORAGE_PREFIX}${postId}`, `${Date.now()}`);
+  } catch {
+    // Ignore storage errors.
+  }
+};
 
 const resolvePostPrivacy = (post) => {
   const raw = String(
@@ -45,7 +99,7 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
-export default function Post({ post, onOpen }) {
+export default function Post({ post, onOpen, badge }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
   const [author, setAuthor] = useState(null);
@@ -57,6 +111,10 @@ export default function Post({ post, onOpen }) {
   const [showReport, setShowReport] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
+  const cardRef = useRef(null);
+  const viewTimerRef = useRef(null);
+  const viewSentRef = useRef(false);
+  const postRef = useRef(post);
   const authorId = post.author?._id || post.authorId || post.author || "";
   const authorName =
     post.author?.displayName ||
@@ -244,6 +302,78 @@ export default function Post({ post, onOpen }) {
       (Array.isArray(post.comments) ? post.comments.length : 0)
   );
   const isOwner = String(authorId) === String(currentUser?.id);
+  const badgeLabel = typeof badge === "string" ? badge : badge?.text;
+  const badgeTone = typeof badge === "object" && badge?.tone ? badge.tone : "";
+
+  useEffect(() => {
+    postRef.current = post;
+  }, [post]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    if (!postId) return;
+    if (!cardRef.current) return;
+    if (typeof IntersectionObserver === "undefined") return;
+
+    const node = cardRef.current;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+
+        if (entry.isIntersecting && entry.intersectionRatio >= VIEW_RATIO_THRESHOLD) {
+          if (viewTimerRef.current || viewSentRef.current) return;
+          if (!canRecordView(postId)) return;
+
+          viewTimerRef.current = setTimeout(async () => {
+            viewTimerRef.current = null;
+            if (viewSentRef.current) return;
+            if (!canRecordView(postId)) return;
+
+            viewSentRef.current = true;
+            markViewRecorded(postId);
+
+            const baseViews = resolvePostViewsCount(postRef.current);
+            const optimisticViews = baseViews + 1;
+            updatePost(postId, {
+              viewsCount: optimisticViews,
+              viewCount: optimisticViews,
+            });
+
+            try {
+              const response = await recordPostView(postId);
+              const nextViews = resolvePostViewsCount(
+                response?.post || response?.data || response || null
+              );
+              if (Number.isFinite(nextViews) && nextViews > 0) {
+                updatePost(postId, {
+                  viewsCount: nextViews,
+                  viewCount: nextViews,
+                });
+              }
+            } catch {
+              // Ignore view recording errors to avoid blocking UX.
+            }
+          }, VIEW_MIN_MS);
+        } else if (viewTimerRef.current) {
+          clearTimeout(viewTimerRef.current);
+          viewTimerRef.current = null;
+        }
+      },
+      { threshold: [VIEW_RATIO_THRESHOLD] }
+    );
+
+    observer.observe(node);
+
+    return () => {
+      if (viewTimerRef.current) {
+        clearTimeout(viewTimerRef.current);
+        viewTimerRef.current = null;
+      }
+      observer.disconnect();
+    };
+  }, [currentUser?.id, postId, updatePost]);
 
   return (
     <>
@@ -251,6 +381,7 @@ export default function Post({ post, onOpen }) {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className="glass-card glass-hover rounded-3xl p-5 transition-all duration-300 ease-out relative"
+        ref={cardRef}
       >
         {showMenu && (
           <div className="absolute inset-0 rounded-3xl bg-black/25 backdrop-blur-sm z-10 pointer-events-none" />
@@ -267,6 +398,13 @@ export default function Post({ post, onOpen }) {
             </p>
             <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
               <span>{formatTime(post.createdAt)}</span>
+              {badgeLabel && (
+                <span
+                  className={`inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6] ${badgeTone}`}
+                >
+                  {badgeLabel}
+                </span>
+              )}
               {collegeTagName && (
                 <>
                   <span className="text-[#b9b4c7]">|</span>
