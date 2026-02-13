@@ -43,7 +43,8 @@ import {
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
-const SEARCH_DEBOUNCE_MS = 150;
+const SEARCH_DEBOUNCE_MS = 200;
+const SEARCH_CACHE_LIMIT = 5;
 const TRENDING_WINDOW_OPTIONS = [
   { id: "48h", label: "Last 48 Hours", hours: 48 },
   { id: "7d", label: "Last 7 Days", hours: 168 },
@@ -257,6 +258,64 @@ const normalizeSearchPayload = (payload) => {
   return { users, posts, communities, topResult };
 };
 
+const normalizeSearchTerm = (value) => String(value || "").trim().toLowerCase();
+
+const getUserSearchFields = (user) => {
+  if (!user || typeof user !== "object") return [];
+  const communityName = resolveCommunityName(user);
+  return [
+    user.username,
+    user.displayName,
+    user.fullName,
+    communityName,
+  ]
+    .filter(Boolean)
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+};
+
+const getMatchRank = (value, query) => {
+  if (!value || !query) return null;
+  const text = String(value).toLowerCase();
+  if (text === query) return 0;
+  if (text.startsWith(query)) return 1;
+  if (text.includes(query)) return 2;
+  return null;
+};
+
+const rankUsersByQuery = (users, query) => {
+  if (!query || !Array.isArray(users)) return [];
+  return users
+    .map((user) => {
+      const match = resolveUserMatch(user, query);
+      if (!match) return null;
+      return { user, rank: match.rank, label: match.label };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return a.label.localeCompare(b.label);
+    })
+    .map((entry) => entry.user);
+};
+
+const resolveUserMatch = (user, query) => {
+  const fields = getUserSearchFields(user);
+  if (!fields.length) return null;
+  let bestRank = null;
+  let bestField = "";
+  fields.forEach((field) => {
+    const rank = getMatchRank(field, query);
+    if (rank === null) return;
+    if (bestRank === null || rank < bestRank) {
+      bestRank = rank;
+      bestField = field;
+    }
+  });
+  if (bestRank === null) return null;
+  return { rank: bestRank, label: bestField.toLowerCase() };
+};
+
 export default function Trending() {
   const {
     posts,
@@ -283,7 +342,7 @@ export default function Trending() {
   const [searchError, setSearchError] = useState("");
   const [trendingTab, setTrendingTab] = useState("all");
   const [trendingWindow, setTrendingWindow] = useState("48h");
-  const [trendingView, setTrendingView] = useState("doom");
+  const [trendingView, setTrendingView] = useState("grid");
   const [trendingVisibleCount, setTrendingVisibleCount] = useState(12);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -297,6 +356,7 @@ export default function Trending() {
   const trendingLoadMoreRef = useRef(null);
   const searchAbortRef = useRef(null);
   const searchRequestRef = useRef(0);
+  const searchCacheRef = useRef(new Map());
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
@@ -349,17 +409,20 @@ export default function Trending() {
   );
 
   const trimmedSearchQuery = searchQuery.trim();
-  const hasSearchQuery = trimmedSearchQuery.length >= 2;
+  const normalizedSearchQuery = normalizeSearchTerm(trimmedSearchQuery);
+  const hasSearchQuery = trimmedSearchQuery.length >= 1;
 
   const searchUsersResults = useMemo(() => {
     const list = Array.isArray(searchData.users) ? searchData.users : [];
-    return list.filter((user) => {
+    const filtered = list.filter((user) => {
       const userId = user?._id || user?.id;
       if (userId && isUserBlocked(userId)) return false;
       if (isUserAnonymous(user)) return false;
-      return true;
+      if (!normalizedSearchQuery) return false;
+      return Boolean(resolveUserMatch(user, normalizedSearchQuery));
     });
-  }, [searchData.users, isUserBlocked]);
+    return rankUsersByQuery(filtered, normalizedSearchQuery);
+  }, [searchData.users, isUserBlocked, normalizedSearchQuery]);
 
   const searchCommunities = useMemo(() => {
     return searchUsersResults.filter(
@@ -490,6 +553,42 @@ export default function Trending() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  const updateSearchCache = useCallback((query, data) => {
+    if (!query) return;
+    const cache = searchCacheRef.current;
+    if (cache.has(query)) cache.delete(query);
+    cache.set(query, data);
+    if (cache.size > SEARCH_CACHE_LIMIT) {
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+  }, []);
+
+  const getCachedPrefixResults = useCallback(
+    (query) => {
+      if (!query) return null;
+      const cache = searchCacheRef.current;
+      if (!cache.size) return null;
+      let bestKey = "";
+      cache.forEach((_, key) => {
+        if (query.startsWith(key) && key.length > bestKey.length) {
+          bestKey = key;
+        }
+      });
+      if (!bestKey) return null;
+      const base = cache.get(bestKey);
+      const baseUsers = Array.isArray(base?.users) ? base.users : [];
+      const filteredUsers = rankUsersByQuery(baseUsers, query);
+      if (filteredUsers.length === 0) return null;
+      return {
+        ...DEFAULT_SEARCH_RESULTS,
+        users: filteredUsers,
+        topResult: filteredUsers[0] || null,
+      };
+    },
+    []
+  );
+
   useEffect(() => {
     if (!hasSearchQuery) {
       if (searchAbortRef.current) {
@@ -504,51 +603,103 @@ export default function Trending() {
 
     setShowSearchResults(true);
     setSearchError("");
-    setSearchLoading(true);
 
     if (searchAbortRef.current) {
       searchAbortRef.current.abort();
     }
-    const controller = new AbortController();
-    searchAbortRef.current = controller;
     const requestId = ++searchRequestRef.current;
 
+    const cached = searchCacheRef.current.get(normalizedSearchQuery);
+    if (cached) {
+      setSearchData(cached);
+      setSearchLoading(false);
+      return;
+    }
+
+    const prefixCached = getCachedPrefixResults(normalizedSearchQuery);
+    if (prefixCached) {
+      setSearchData(prefixCached);
+    }
+
+    setSearchLoading(true);
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
     const timeoutId = setTimeout(async () => {
-      try {
-        const data = await searchAll(trimmedSearchQuery, {
-          type: "all",
-          signal: controller.signal,
-        });
+      let usersDone = false;
+      let allDone = false;
+      let usersSucceeded = false;
+      let allSucceeded = false;
+      let lastError = null;
+
+      const finalize = () => {
         if (requestId !== searchRequestRef.current) return;
-        setSearchData(normalizeSearchPayload(data));
-      } catch (error) {
-        if (error?.name === "AbortError") return;
-        try {
-          const fallbackUsers = await searchUsers(trimmedSearchQuery, {
-            signal: controller.signal,
-          });
-          if (requestId !== searchRequestRef.current) return;
-          setSearchData({ ...DEFAULT_SEARCH_RESULTS, users: fallbackUsers });
-        } catch (fallbackError) {
-          if (fallbackError?.name === "AbortError") return;
-          if (requestId !== searchRequestRef.current) return;
-          setSearchData(DEFAULT_SEARCH_RESULTS);
-          setSearchError(
-            fallbackError?.message || error?.message || "Search unavailable."
-          );
-        }
-      } finally {
-        if (requestId === searchRequestRef.current) {
+        if (usersDone && allDone) {
           setSearchLoading(false);
+          if (!usersSucceeded && !allSucceeded) {
+            setSearchData(DEFAULT_SEARCH_RESULTS);
+            setSearchError(lastError?.message || "Search unavailable.");
+          }
         }
-      }
+      };
+
+      searchUsers(trimmedSearchQuery, { signal: controller.signal })
+        .then((users) => {
+          if (requestId !== searchRequestRef.current) return;
+          usersSucceeded = true;
+          setSearchData((prev) => {
+            if (allSucceeded) return prev;
+            const nextUsers = Array.isArray(users) ? users : [];
+            return {
+              ...prev,
+              users: nextUsers,
+              topResult: prev.topResult || nextUsers[0] || null,
+            };
+          });
+          updateSearchCache(normalizedSearchQuery, {
+            ...DEFAULT_SEARCH_RESULTS,
+            users,
+            topResult: users?.[0] || null,
+          });
+        })
+        .catch((error) => {
+          if (error?.name === "AbortError") return;
+          lastError = error;
+        })
+        .finally(() => {
+          usersDone = true;
+          finalize();
+        });
+
+      searchAll(trimmedSearchQuery, { type: "all", signal: controller.signal })
+        .then((data) => {
+          if (requestId !== searchRequestRef.current) return;
+          allSucceeded = true;
+          const normalized = normalizeSearchPayload(data);
+          setSearchData(normalized);
+          updateSearchCache(normalizedSearchQuery, normalized);
+        })
+        .catch((error) => {
+          if (error?.name === "AbortError") return;
+          lastError = error;
+        })
+        .finally(() => {
+          allDone = true;
+          finalize();
+        });
     }, SEARCH_DEBOUNCE_MS);
 
     return () => {
       clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [hasSearchQuery, trimmedSearchQuery]);
+  }, [
+    getCachedPrefixResults,
+    hasSearchQuery,
+    normalizedSearchQuery,
+    trimmedSearchQuery,
+    updateSearchCache,
+  ]);
 
   useEffect(() => {
     if (!searchUsersResults || searchUsersResults.length === 0) return;
@@ -1352,8 +1503,9 @@ export default function Trending() {
                 ) : (
                   <>
                     {searchLoading && searchHasResults && (
-                      <div className="text-[11px] text-[#b9b4c7]">
-                        Updating results...
+                      <div className="flex items-center gap-2">
+                        <div className="h-2 w-2 rounded-full bg-white/20 animate-pulse"></div>
+                        <div className="h-2 w-28 rounded-full bg-white/10 animate-pulse"></div>
                       </div>
                     )}
 
