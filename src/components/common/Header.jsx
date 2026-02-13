@@ -4,6 +4,7 @@ import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
+import { preloadChatPage } from "../../utils/preloadRoutes";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -210,6 +211,9 @@ export default function Header() {
 
             <Motion.button
               onClick={() => navigate("/chat")}
+              onMouseEnter={preloadChatPage}
+              onFocus={preloadChatPage}
+              onTouchStart={preloadChatPage}
               className={`relative hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/chat")
                   ? "bg-white/10 text-[#faf0e6]"

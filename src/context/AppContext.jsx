@@ -507,7 +507,7 @@ export const AppProvider = ({ children }) => {
         return next;
       });
     },
-    [blockedUsers]
+    [blockedUsers, setPendingSentOverride]
   );
 
   const getFriendStatus = useCallback(

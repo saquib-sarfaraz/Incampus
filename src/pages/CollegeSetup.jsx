@@ -87,7 +87,7 @@ export default function CollegeSetup() {
         if (!isMounted) return;
         const list = extractCollegeList(results);
         setColleges(list);
-      } catch (error) {
+      } catch {
         if (isMounted) {
           setColleges([]);
           setCollegeError("Unable to load colleges. You can type manually.");

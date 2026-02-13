@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "./context/AuthProvider";
 import { AppProvider } from "./context/AppContext";
@@ -10,12 +10,26 @@ import Landing from "./pages/Landing";
 import AuthSuccess from "./pages/AuthSuccess";
 import CollegeSetup from "./pages/CollegeSetup";
 import Feed from "./pages/Feed";
+import { preloadChatPage } from "./utils/preloadRoutes";
 
-const Chat = lazy(() => import("./pages/Chat"));
+const Chat = lazy(preloadChatPage);
 const Profile = lazy(() => import("./pages/Profile"));
 const Trending = lazy(() => import("./pages/Trending"));
 
 export default function App() {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const prefetch = () => {
+      preloadChatPage().catch(() => {});
+    };
+    if ("requestIdleCallback" in window) {
+      const id = window.requestIdleCallback(prefetch, { timeout: 1500 });
+      return () => window.cancelIdleCallback?.(id);
+    }
+    const id = window.setTimeout(prefetch, 800);
+    return () => window.clearTimeout(id);
+  }, []);
+
   return (
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>

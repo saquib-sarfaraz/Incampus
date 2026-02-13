@@ -53,6 +53,33 @@ body {
   display: inline-block;
 }
 
+.nav-link {
+  position: relative;
+}
+
+.nav-link.active-link {
+  color: #faf0e6;
+  text-shadow: 0 0 10px rgba(185, 180, 199, 0.55);
+}
+
+.nav-link.active-link .fa-solid {
+  color: #faf0e6;
+  filter: drop-shadow(0 0 8px rgba(185, 180, 199, 0.55));
+}
+
+.nav-link.active-link::after {
+  content: "";
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  width: 20px;
+  height: 3px;
+  border-radius: 999px;
+  transform: translateX(-50%);
+  background: linear-gradient(135deg, #5c5470, #b9b4c7);
+  box-shadow: 0 0 12px rgba(185, 180, 199, 0.6);
+}
+
 /* ================= REMOVE WHITE WASH ================= */
 body,
 #app-view,
