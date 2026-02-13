@@ -489,45 +489,111 @@ export default function Chat() {
 
   const loadRequests = useCallback(async () => {
     try {
-      const requestsData = await getPendingRequests();
+      const requestsData = await getPendingRequests(
+        currentUser?.id
+          ? {
+              userId: currentUser.id,
+              receiverId: currentUser.id,
+              toUserId: currentUser.id,
+              recipientId: currentUser.id,
+              targetUserId: currentUser.id,
+            }
+          : {}
+      );
+      if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
+        console.log("[Requests] raw response:", requestsData);
+      }
       const resolveRequestUsers = (req) => {
         if (!req || typeof req !== "object") return { fromId: "", toId: "", user: null };
-        const fromRaw =
-          req.fromUserId ||
-          req.fromUser ||
-          req.from ||
-          req.requester ||
-          req.requestedBy ||
-          req.sender ||
-          req.user;
-        const toRaw =
-          req.toUserId ||
-          req.toUser ||
-          req.to ||
-          req.recipient ||
-          req.targetUserId ||
-          req.targetUser ||
-          req.userId ||
-          req.target;
-        const fromId = resolveFriendId(fromRaw);
-        const toId = resolveFriendId(toRaw);
-        const fromUser =
-          (fromRaw && typeof fromRaw === "object" ? fromRaw : null) ||
+        const embeddedUser =
           (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
-          (req.fromUserId && typeof req.fromUserId === "object" ? req.fromUserId : null) ||
+          (req.user && typeof req.user === "object" ? req.user : null) ||
           (req.requester && typeof req.requester === "object" ? req.requester : null) ||
           (req.sender && typeof req.sender === "object" ? req.sender : null) ||
           null;
+        let fromRaw =
+          req.senderId ||
+          req.sender ||
+          req.requesterId ||
+          req.requester ||
+          req.fromUserId ||
+          req.fromUser ||
+          req.from ||
+          req.requestedBy ||
+          req.pendingBy ||
+          req.userA ||
+          null;
+        let toRaw =
+          req.receiverId ||
+          req.recipientId ||
+          req.recipient ||
+          req.toUserId ||
+          req.toUser ||
+          req.to ||
+          req.targetUserId ||
+          req.targetUser ||
+          req.target ||
+          req.userB ||
+          req.userId ||
+          null;
+
+        const embeddedUserId = resolveFriendId(embeddedUser);
+        if (!fromRaw && embeddedUser && (!currentUser?.id || embeddedUserId !== String(currentUser.id))) {
+          fromRaw = embeddedUser;
+        }
+        if (!toRaw && embeddedUser && currentUser?.id && embeddedUserId === String(currentUser.id)) {
+          toRaw = embeddedUser;
+        }
+        if (!fromRaw && !toRaw && embeddedUser) {
+          fromRaw = embeddedUser;
+        }
+
+        const fromId = resolveFriendId(fromRaw);
+        const toId = resolveFriendId(toRaw);
+
+        const fromUser =
+          (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+          (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+          (req.requester && typeof req.requester === "object" ? req.requester : null) ||
+          (req.fromUserId && typeof req.fromUserId === "object" ? req.fromUserId : null) ||
+          (fromRaw && typeof fromRaw === "object" ? fromRaw : null) ||
+          null;
         const toUser =
-          (toRaw && typeof toRaw === "object" ? toRaw : null) ||
+          (req.recipient && typeof req.recipient === "object" ? req.recipient : null) ||
           (req.toUser && typeof req.toUser === "object" ? req.toUser : null) ||
           (req.toUserId && typeof req.toUserId === "object" ? req.toUserId : null) ||
-          (req.recipient && typeof req.recipient === "object" ? req.recipient : null) ||
+          (toRaw && typeof toRaw === "object" ? toRaw : null) ||
           null;
-        return { fromId, toId, user: fromUser || toUser };
+
+        const currentId = currentUser?.id ? String(currentUser.id) : "";
+        const otherId =
+          currentId && fromId && fromId !== currentId
+            ? fromId
+            : currentId && toId && toId !== currentId
+              ? toId
+              : fromId || toId;
+
+        let user = null;
+        if (fromUser && otherId && resolveFriendId(fromUser) === otherId) {
+          user = fromUser;
+        } else if (toUser && otherId && resolveFriendId(toUser) === otherId) {
+          user = toUser;
+        } else {
+          user = fromUser || toUser || embeddedUser;
+        }
+
+        return { fromId, toId, user };
       };
       const formattedRequests = await Promise.all(
         requestsData.map(async (req) => {
+          const statusRaw = String(
+            req?.status || req?.state || req?.requestStatus || ""
+          )
+            .trim()
+            .toLowerCase();
+          if (statusRaw && statusRaw !== "pending") {
+            return null;
+          }
           const { fromId, toId, user: embeddedUser } = resolveRequestUsers(req);
           const isOutgoing =
             currentUser?.id && fromId && String(fromId) === String(currentUser.id);
@@ -538,19 +604,24 @@ export default function Chat() {
           if (userId && isUserBlocked(userId)) {
             return null;
           }
-          let user = embeddedUser && typeof embeddedUser === "object"
-            ? {
-                id: embeddedUser._id || embeddedUser.id || userId,
-                displayName:
-                  embeddedUser.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
-                  embeddedUser.displayName ||
-                  embeddedUser.username ||
-                  "User",
-                profilePicUrl: embeddedUser.profilePicUrl || ANONYMOUS_AVATAR,
-                friends: embeddedUser.friends || [],
-                isVerified: Boolean(embeddedUser.isVerified),
-              }
-            : null;
+          let user =
+            embeddedUser && typeof embeddedUser === "object"
+              ? {
+                  id: embeddedUser._id || embeddedUser.id || userId,
+                  displayName:
+                    embeddedUser.displayName ||
+                    embeddedUser.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                    embeddedUser.username ||
+                    "User",
+                  profilePicUrl:
+                    embeddedUser.profilePicUrl ||
+                    embeddedUser.profilePic ||
+                    embeddedUser.profile_pic ||
+                    ANONYMOUS_AVATAR,
+                  friends: embeddedUser.friends || [],
+                  isVerified: Boolean(embeddedUser.isVerified),
+                }
+              : null;
           if (!user && userId) {
             user = getUserFromCache(userId);
           }
@@ -561,9 +632,15 @@ export default function Chat() {
                 user = {
                   id: userData._id,
                   displayName:
+                    userData.displayName ||
                     userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                    userData.username ||
                     "User",
-                  profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+                  profilePicUrl:
+                    userData.profilePicUrl ||
+                    userData.profilePic ||
+                    userData.profile_pic ||
+                    ANONYMOUS_AVATAR,
                   friends: userData.friends || [],
                   isVerified: Boolean(userData.isVerified),
                 };
@@ -571,6 +648,7 @@ export default function Chat() {
           }
           return {
             ...req,
+            status: statusRaw || "pending",
             user:
               user || {
                 id: userId || toId,
@@ -580,6 +658,9 @@ export default function Chat() {
           };
         })
       );
+      if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
+        console.log("[Requests] normalized:", formattedRequests.filter(Boolean));
+      }
       return formattedRequests.filter(Boolean);
     } catch (error) {
       console.error("Failed to load requests:", error);
@@ -698,6 +779,9 @@ export default function Chat() {
       resolveFriendId(request?.requesterId) ||
       resolveFriendId(request?.senderId) ||
       resolveFriendId(request?.fromUserId) ||
+      resolveFriendId(request?.requester) ||
+      resolveFriendId(request?.sender) ||
+      resolveFriendId(request?.fromUser) ||
       resolveFriendId(request?.user?.id) ||
       resolveFriendId(request?.user?._id) ||
       resolveFriendId(request?.userId);
@@ -714,6 +798,9 @@ export default function Chat() {
             resolveFriendId(req?.requesterId) ||
             resolveFriendId(req?.senderId) ||
             resolveFriendId(req?.fromUserId) ||
+            resolveFriendId(req?.requester) ||
+            resolveFriendId(req?.sender) ||
+            resolveFriendId(req?.fromUser) ||
             resolveFriendId(req?.user?.id) ||
             resolveFriendId(req?.user?._id) ||
             resolveFriendId(req?.userId);
@@ -727,7 +814,20 @@ export default function Chat() {
   };
 
   const handleIgnoreRequest = async (requesterId) => {
-    setRequests((prev) => prev.filter((req) => (req.user?.id || req.fromUserId) !== requesterId));
+    setRequests((prev) =>
+      prev.filter((req) => {
+        const id =
+          resolveFriendId(req?.requesterId) ||
+          resolveFriendId(req?.senderId) ||
+          resolveFriendId(req?.fromUserId) ||
+          resolveFriendId(req?.requester) ||
+          resolveFriendId(req?.sender) ||
+          resolveFriendId(req?.fromUser) ||
+          resolveFriendId(req?.user) ||
+          resolveFriendId(req?.userId);
+        return requesterId ? String(id) !== String(requesterId) : true;
+      })
+    );
     try {
       await rejectFriend(requesterId);
     } catch (error) {
@@ -943,7 +1043,9 @@ export default function Chat() {
     const socket = getSocket();
     if (!socket || !currentUser?.id) return;
 
-    const handleMessage = (msg) => {
+    const handleMessage = (payload) => {
+      const msg = payload?.message || payload;
+      if (!msg) return;
       const target = String(msg?.to || "");
       const isGroupMessage = target.startsWith("group:");
       const chatId = isGroupMessage ? target : msg.from === currentUser.id ? msg.to : msg.from;
@@ -960,9 +1062,17 @@ export default function Chat() {
     };
 
     socket.off("chat-message", handleMessage);
+    socket.off("chat:newMessage", handleMessage);
+    socket.off("chat:messageSent", handleMessage);
     socket.on("chat-message", handleMessage);
+    socket.on("chat:newMessage", handleMessage);
+    socket.on("chat:messageSent", handleMessage);
 
-    return () => socket.off("chat-message", handleMessage);
+    return () => {
+      socket.off("chat-message", handleMessage);
+      socket.off("chat:newMessage", handleMessage);
+      socket.off("chat:messageSent", handleMessage);
+    };
   }, [
     currentUser?.id,
     markChatRead,
@@ -1333,7 +1443,15 @@ export default function Chat() {
                 <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
               ) : (
                 requests.map((req, index) => {
-                  const requesterId = req.user?.id || req.fromUserId;
+                  const requesterId =
+                    resolveFriendId(req?.requesterId) ||
+                    resolveFriendId(req?.senderId) ||
+                    resolveFriendId(req?.fromUserId) ||
+                    resolveFriendId(req?.requester) ||
+                    resolveFriendId(req?.sender) ||
+                    resolveFriendId(req?.fromUser) ||
+                    resolveFriendId(req?.user) ||
+                    resolveFriendId(req?.userId);
                   const requestKey = req._id || req.id || requesterId || "req";
                   const requesterFriends = req.user?.friends || [];
                   const mutualCount = requesterFriends.filter((id) =>

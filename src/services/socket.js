@@ -29,6 +29,7 @@ export const initSocket = (userId, rooms = []) => {
     isConnected = true;
     if (userId) {
       socket.emit("join", userId);
+      socket.emit("join", `user:${userId}`);
     }
     if (Array.isArray(rooms)) {
       rooms.forEach((room) => {

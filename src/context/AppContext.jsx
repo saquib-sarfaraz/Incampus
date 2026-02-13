@@ -139,18 +139,24 @@ const resolvePendingRequestUsers = (request) => {
     request.fromUserId ||
     request.fromUser ||
     request.from ||
+    request.senderId ||
     request.sender ||
+    request.requesterId ||
     request.requester ||
     request.requestedBy ||
     request.pendingBy ||
+    request.userA ||
     request.user;
   const toRaw =
     request.toUserId ||
     request.toUser ||
     request.to ||
+    request.receiverId ||
+    request.recipientId ||
     request.recipient ||
     request.targetUserId ||
     request.targetUser ||
+    request.userB ||
     request.userId ||
     request.target;
   return {
@@ -247,6 +253,7 @@ export const AppProvider = ({ children }) => {
   const [friendMap, setFriendMap] = useState({});
   const [friendMapLoading, setFriendMapLoading] = useState(false);
   const [friendMapLoaded, setFriendMapLoaded] = useState(false);
+  const [pendingSentLocal, setPendingSentLocal] = useState({});
   const [usersCache, setUsersCache] = useState({});
   const [chatMeta, setChatMeta] = useState({});
   const [chatToasts, setChatToasts] = useState([]);
@@ -262,6 +269,7 @@ export const AppProvider = ({ children }) => {
   const friendStatusRequestRef = useRef(new Map());
   const activeChatIdRef = useRef(null);
   const chatViewActiveRef = useRef(false);
+  const seenChatMessagesRef = useRef(new Map());
   const [feedScope, setFeedScope] = useState(() => {
     if (typeof window === "undefined") return "universal";
     return localStorage.getItem("feedScope") || "universal";
@@ -426,12 +434,31 @@ export const AppProvider = ({ children }) => {
     [blockedUsers]
   );
 
+  const setPendingSentOverride = useCallback((userId, value) => {
+    if (!userId) return;
+    const id = String(userId);
+    setPendingSentLocal((prev) => {
+      const next = { ...prev };
+      if (!value) {
+        delete next[id];
+      } else {
+        next[id] = true;
+      }
+      return next;
+    });
+  }, []);
+
   const setFriendStatus = useCallback(
     (userId, status, options = {}) => {
       if (!userId) return;
       const resolvedStatus = status || "none";
       const force = options.force === true;
       const id = String(userId);
+      if (resolvedStatus === "pending_sent") {
+        setPendingSentOverride(id, true);
+      } else {
+        setPendingSentOverride(id, false);
+      }
       setFriendMap((prev) => {
         const current = prev[id];
         const isBlocked = blockedUsers.some((blockedId) => String(blockedId) === id);
@@ -459,19 +486,18 @@ export const AppProvider = ({ children }) => {
       const id = String(userId);
       if (blockedUsers.some((blockedId) => String(blockedId) === id)) return "blocked";
       const hasFriendMap = friendMapLoaded || Object.keys(friendMap || {}).length > 0;
-      if (hasFriendMap) {
-        if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
-          return friendMap[id] || "none";
-        }
-        return "none";
+      if (hasFriendMap && Object.prototype.hasOwnProperty.call(friendMap, id)) {
+        return friendMap[id] || "none";
       }
+      if (pendingSentLocal[id]) return "pending_sent";
+      if (hasFriendMap) return "none";
       const fallbackFriends = currentUser?.friends || [];
       if (fallbackFriends.some((friendId) => String(friendId) === id)) {
         return "friends";
       }
       return "none";
     },
-    [blockedUsers, friendMap, friendMapLoaded, currentUser?.friends]
+    [blockedUsers, friendMap, friendMapLoaded, pendingSentLocal, currentUser?.friends]
   );
 
   const friendIds = useMemo(() => {
@@ -594,9 +620,14 @@ export const AppProvider = ({ children }) => {
   const sendFriendRequest = useCallback(
     async (targetUserId) => {
       if (!targetUserId) return null;
-      const res = await apiSendFriendRequest(targetUserId);
       setFriendStatus(targetUserId, "pending_sent", { force: true });
-      return res;
+      try {
+        const res = await apiSendFriendRequest(targetUserId);
+        return res;
+      } catch (error) {
+        setFriendStatus(targetUserId, "none", { force: true });
+        throw error;
+      }
     },
     [setFriendStatus]
   );
@@ -1007,6 +1038,25 @@ export const AppProvider = ({ children }) => {
       if (!message) return;
       const chatId = resolveChatIdFromMessage(message);
       if (!chatId) return;
+      const dedupeKey =
+        message._id ||
+        message.id ||
+        `${chatId}-${message.createdAt || message.timestamp || ""}-${resolveEntityId(
+          message.from || message.senderId || message.userId || message.sender
+        )}-${message.text || message.postId || message.messageType || ""}`;
+      if (dedupeKey) {
+        const now = Date.now();
+        const seenAt = seenChatMessagesRef.current.get(dedupeKey);
+        if (seenAt && now - seenAt < 5000) return;
+        seenChatMessagesRef.current.set(dedupeKey, now);
+        if (seenChatMessagesRef.current.size > 500) {
+          const entries = Array.from(seenChatMessagesRef.current.entries());
+          entries
+            .sort((a, b) => a[1] - b[1])
+            .slice(0, 200)
+            .forEach(([key]) => seenChatMessagesRef.current.delete(key));
+        }
+      }
 
       const senderId = resolveEntityId(
         message.from || message.senderId || message.userId || message.sender
@@ -1334,6 +1384,8 @@ export const AppProvider = ({ children }) => {
     };
 
     socket.on("chat-message", handleChatMessage);
+    socket.on("chat:newMessage", handleChatMessage);
+    socket.on("chat:messageSent", handleChatMessage);
     socket.on("notification", handleNotification);
     socket.on("comment-added", handleCommentAdded);
     socket.on("post-liked", handlePostLiked);
@@ -1356,6 +1408,8 @@ export const AppProvider = ({ children }) => {
 
     return () => {
       socket.off("chat-message", handleChatMessage);
+      socket.off("chat:newMessage", handleChatMessage);
+      socket.off("chat:messageSent", handleChatMessage);
       socket.off("notification", handleNotification);
       socket.off("comment-added", handleCommentAdded);
       socket.off("post-liked", handlePostLiked);
@@ -1425,6 +1479,7 @@ export const AppProvider = ({ children }) => {
     } else {
       setFriendMap({});
       setFriendMapLoaded(false);
+      setPendingSentLocal({});
     }
   }, [
     authToken,
