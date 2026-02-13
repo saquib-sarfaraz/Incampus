@@ -6,9 +6,18 @@ const normalizeBaseUrl = (base) => {
 const isAbsoluteUrl = (value) => /^https?:\/\//i.test(value);
 
 const API_PREFIX = "/api";
+const IS_DEV = import.meta.env.DEV;
 const RAW_API_BASE_URL = import.meta.env.VITE_API_URL || "";
 const API_BASE_URL = normalizeBaseUrl(RAW_API_BASE_URL) || API_PREFIX;
 const API_BASE_HAS_PREFIX = API_BASE_URL.endsWith(API_PREFIX);
+const RAW_COLLEGES_API_URL =
+  import.meta.env.VITE_COLLEGES_API_URL || import.meta.env.COLLEGES_API_URL || "";
+const RAW_COLLEGE_SEARCH_URL =
+  import.meta.env.VITE_COLLEGE_SEARCH_URL || import.meta.env.COLLEGE_SEARCH_URL || "";
+const DEFAULT_COLLEGE_SEARCH_URL = "https://incampus-api.onrender.com/api/search-tags";
+const COLLEGE_SEARCH_URL =
+  normalizeBaseUrl(RAW_COLLEGE_SEARCH_URL) || DEFAULT_COLLEGE_SEARCH_URL;
+const COLLEGES_API_BASE_URL = normalizeBaseUrl(RAW_COLLEGES_API_URL);
 
 const resolveApiPath = (path) => {
   if (!path) {
@@ -383,6 +392,37 @@ export const searchColleges = async (query, params = {}) => {
   if (!query) return [];
   const resolvedParams =
     typeof params === "number" ? { limit: params } : { ...params };
+  const searchParams = { q: query, search: query, ...resolvedParams };
+  const collegeBase = COLLEGES_API_BASE_URL;
+  const externalPaths = [];
+  if (COLLEGE_SEARCH_URL) {
+    externalPaths.push(COLLEGE_SEARCH_URL);
+  } else if (collegeBase) {
+    externalPaths.push(`${collegeBase}/api/search-tags`);
+  }
+
+  for (const path of externalPaths) {
+    try {
+      const data = await apiFetch(path, {
+        params: searchParams,
+        auth: false,
+      });
+      const list = normalizeList(data, [
+        "colleges",
+        "items",
+        "data",
+        "results",
+        "tags",
+      ]);
+      if (list.length) return list;
+    } catch (error) {
+      if (error?.status && error.status !== 404) {
+        throw error;
+      }
+    }
+  }
+
+  // Fallback to existing backend paths if external search doesn't return results.
   try {
     const data = await apiFetch("/colleges", {
       params: { search: query, ...resolvedParams },
