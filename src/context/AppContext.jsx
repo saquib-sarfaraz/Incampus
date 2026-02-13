@@ -623,6 +623,7 @@ export const AppProvider = ({ children }) => {
         displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
         profilePicUrl: userData.profilePicUrl,
         username: userData.username,
+        isVerified: Boolean(userData?.isVerified),
       },
     }));
   }, []);
@@ -649,6 +650,9 @@ export const AppProvider = ({ children }) => {
           ...(updates.fullName ? { name: updates.fullName, fullName: updates.fullName } : {}),
           ...(updates.profilePicUrl ? { profilePicUrl: updates.profilePicUrl } : {}),
           ...(updates.bio !== undefined ? { bio: updates.bio } : {}),
+          ...(updates.isVerified !== undefined
+            ? { isVerified: Boolean(updates.isVerified) }
+            : {}),
           ...(updates.communityDescription !== undefined
             ? { communityDescription: updates.communityDescription }
             : {}),

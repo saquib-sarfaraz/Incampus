@@ -18,6 +18,7 @@ import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import ReportModal from "../components/moderation/ReportModal";
 import PostModal from "../components/profile/PostModal";
+import BlueTick from "../components/common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -414,6 +415,7 @@ export default function Chat() {
               profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
               isOnline: userData.isOnline,
               lastSeen: userData.lastSeen || userData.last_seen || "",
+              isVerified: Boolean(userData.isVerified),
             };
           }
         }
@@ -548,6 +550,7 @@ export default function Chat() {
                   "User",
                 profilePicUrl: embeddedUser.profilePicUrl || ANONYMOUS_AVATAR,
                 friends: embeddedUser.friends || [],
+                isVerified: Boolean(embeddedUser.isVerified),
               }
             : null;
           if (!user && userId) {
@@ -564,6 +567,7 @@ export default function Chat() {
                     "User",
                   profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
                   friends: userData.friends || [],
+                  isVerified: Boolean(userData.isVerified),
                 };
               }
           }
@@ -1044,6 +1048,8 @@ export default function Chat() {
     ? true
     : canChat(activeChatUser?.id || activeChatId);
   const activeChatName = resolveContactName(activeChatUser);
+  const activeChatVerified =
+    !activeChatUser?.isGroup && Boolean(activeChatUser?.isVerified);
   const activePresence = activeChatUser?.isGroup
     ? { isOnline: false, lastSeen: "" }
     : getPresence(activeChatUser?.id, activeChatUser);
@@ -1346,7 +1352,10 @@ export default function Chat() {
                   />
                   <div>
                     <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
-                      {activeChatName || "Chat"}
+                      <span className="flex items-center">
+                        {activeChatName || "Chat"}
+                        {activeChatVerified && <BlueTick className="text-[12px]" />}
+                      </span>
                       {!activeChatUser?.isGroup && activePresence.isOnline && (
                         <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
                       )}

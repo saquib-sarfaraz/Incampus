@@ -5,6 +5,7 @@ import { useApp } from "../../context/useApp";
 import { addComment, deleteComment, getUserById, reportComment, blockUser } from "../../services/api";
 import { getSocket } from "../../services/socket";
 import ReportModal from "../moderation/ReportModal";
+import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const toIdString = (value) => {
@@ -55,6 +56,7 @@ const resolveCommentUser = (comment, fallbackId) => {
         candidate.avatarUrl ||
         candidate.avatar ||
         ANONYMOUS_AVATAR,
+      isVerified: Boolean(candidate.isVerified),
     };
   }
   return null;
@@ -116,6 +118,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
               id: userData._id,
               displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
               profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+              isVerified: Boolean(userData.isVerified),
             };
           }
         }
@@ -169,6 +172,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
       : {
           displayName: currentUser?.displayName || "You",
           profilePicUrl: currentUser?.profilePicUrl || ANONYMOUS_AVATAR,
+          isVerified: Boolean(currentUser?.isVerified),
         };
     const optimisticComment = {
       _id: tempId,
@@ -376,8 +380,9 @@ export default function CommentModal({ post, isOpen, onClose }) {
                         className="w-8 h-8 rounded-full object-cover"
                       />
                       <div className="flex-1">
-                        <p className="font-semibold text-sm text-[#faf0e6]">
+                        <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
                           {comment.user?.displayName || "User"}
+                          {comment.user?.isVerified && <BlueTick className="text-[12px]" />}
                         </p>
                         <p className="text-sm text-[#b9b4c7]">
                           {comment.content || comment.text || comment.body || ""}

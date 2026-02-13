@@ -14,6 +14,7 @@ import {
 } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import BlueTick from "../components/common/BlueTick";
 import PostModal from "../components/profile/PostModal";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import UserProfileModal from "../components/profile/UserProfileModal";
@@ -102,6 +103,10 @@ export default function Profile() {
   const communityTypeLabel = formatCommunityType(resolveCommunityType(currentUser));
   const collegeLabel = resolveCollegeName(currentUser) || (isCommunity ? "" : "Verified Campus");
   const communityName = resolveCommunityName(currentUser) || currentUser?.fullName || "";
+  const profileDisplayName = isCommunity
+    ? communityName || "Community"
+    : currentUser?.displayName || currentUser?.fullName || "User";
+  const showVerifiedTick = Boolean(currentUser?.isVerified);
   const memberCount = Number(resolveMemberCount(currentUser) || 0);
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded || Object.keys(friendMap || {}).length > 0) return friendIds;
@@ -592,10 +597,9 @@ export default function Profile() {
                 className="w-24 h-24 rounded-full object-cover mx-auto border border-[#b9b4c7]"
               />
             </div>
-            <h2 className="text-2xl font-semibold text-[#faf0e6] mb-1">
-              {isCommunity
-                ? communityName || "Community"
-                : currentUser?.displayName || currentUser?.fullName || "User"}
+            <h2 className="text-2xl font-semibold text-[#faf0e6] mb-1 flex items-center justify-center">
+              {profileDisplayName}
+              {showVerifiedTick && <BlueTick />}
             </h2>
             <p className="text-sm text-[#b9b4c7] mb-2">
               @{currentUser?.username || "unknown"}

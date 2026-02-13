@@ -13,6 +13,7 @@ import {
   isStoryRecent,
   resolveStoryPrivacyType,
 } from "../../utils/storyMedia";
+import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -133,6 +134,16 @@ export default function StoryBar() {
     );
   }, []);
 
+  const resolveStoryVerified = useCallback((story, cachedUser) => {
+    if (story?.author?.isVerified !== undefined) {
+      return Boolean(story.author.isVerified);
+    }
+    if (cachedUser?.isVerified !== undefined) {
+      return Boolean(cachedUser.isVerified);
+    }
+    return Boolean(story?.isVerified);
+  }, []);
+
   const resolveStoryCampus = useCallback((story, cachedUser) => {
     return (
       story.collegeTagName ||
@@ -249,21 +260,26 @@ export default function StoryBar() {
       const cachedUser = rawAuthorId ? getUserFromCache(rawAuthorId) : null;
       const displayName = resolveStoryName(story, cachedUser);
       const profilePicUrl = resolveStoryAvatar(story, cachedUser);
+      const isVerified = resolveStoryVerified(story, cachedUser);
       if (!grouped[authorId]) {
         grouped[authorId] = {
           authorId,
           authorDisplayName: displayName,
           authorProfilePic: profilePicUrl,
+          authorIsVerified: isVerified,
           stories: [],
         };
       }
       grouped[authorId].authorDisplayName = displayName;
       grouped[authorId].authorProfilePic = profilePicUrl;
+      grouped[authorId].authorIsVerified =
+        grouped[authorId].authorIsVerified || isVerified;
       grouped[authorId].stories.push({
         ...story,
         authorId,
         authorDisplayName: displayName,
         authorProfilePic: profilePicUrl,
+        authorIsVerified: isVerified,
         storyId: resolveStoryId(story),
       });
     });
@@ -277,6 +293,7 @@ export default function StoryBar() {
     getUserFromCache,
     resolveStoryName,
     resolveStoryAvatar,
+    resolveStoryVerified,
     getStoryTimestamp,
   ]);
 
@@ -571,8 +588,9 @@ export default function StoryBar() {
                     className="w-full h-full object-cover"
                   />
                 </div>
-                <p className="text-[11px] font-medium text-center truncate w-14 mt-1 text-[#faf0e6]">
+                <p className="text-[11px] font-medium text-center truncate w-14 mt-1 text-[#faf0e6] flex items-center justify-center">
                   {group.authorDisplayName || "User"}
+                  {group.authorIsVerified && <BlueTick className="text-[10px]" />}
                 </p>
               </Motion.div>
               );

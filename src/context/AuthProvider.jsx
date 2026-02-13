@@ -40,6 +40,7 @@ export const AuthProvider = ({ children }) => {
         displayNameBase ||
         "User",
       profilePicUrl: user?.profilePicUrl,
+      isVerified: Boolean(user?.isVerified),
       friends: user?.friends || [],
       bio: user?.bio || "",
       university: user?.university || user?.college || user?.school || "",
