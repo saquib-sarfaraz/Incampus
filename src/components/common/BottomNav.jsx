@@ -1,6 +1,7 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useApp } from "../../context/useApp";
+import { preloadChatPage } from "../../utils/preloadRoutes";
 
 export default function BottomNav({ hidden = false, onCreate, overlay = false }) {
   const navigate = useNavigate();
@@ -85,6 +86,9 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
 
         <Motion.button
           onClick={() => navigate(navItems[2].path)}
+          onMouseEnter={preloadChatPage}
+          onFocus={preloadChatPage}
+          onTouchStart={preloadChatPage}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[2].path)
               ? "active-link text-[#faf0e6]"

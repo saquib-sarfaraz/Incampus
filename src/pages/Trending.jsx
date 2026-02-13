@@ -44,7 +44,7 @@ import {
 import { getOptimizedMediaUrl, getMediaSrcSet } from "../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
-const SEARCH_DEBOUNCE_MS = 200;
+const SEARCH_DEBOUNCE_MS = 0;
 const SEARCH_CACHE_LIMIT = 5;
 const TRENDING_WINDOW_OPTIONS = [
   { id: "48h", label: "Last 48 Hours", hours: 48 },
@@ -291,6 +291,17 @@ const getUserSearchFields = (user) => {
     .filter(Boolean);
 };
 
+const isUserVerified = (user) => {
+  if (!user || typeof user !== "object") return false;
+  return Boolean(
+    user.isVerified ||
+      user.verified ||
+      user.is_verified ||
+      user.verifiedBadge ||
+      user.verifiedAt
+  );
+};
+
 const getMatchRank = (value, query) => {
   if (!value || !query) return null;
   const text = String(value).toLowerCase();
@@ -306,11 +317,19 @@ const rankUsersByQuery = (users, query) => {
     .map((user) => {
       const match = resolveUserMatch(user, query);
       if (!match) return null;
-      return { user, rank: match.rank, label: match.label };
+      return {
+        user,
+        rank: match.rank,
+        label: match.label,
+        verified: isUserVerified(user),
+      };
     })
     .filter(Boolean)
     .sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
+      if (a.label === b.label && a.verified !== b.verified) {
+        return a.verified ? -1 : 1;
+      }
       return a.label.localeCompare(b.label);
     })
     .map((entry) => entry.user);
@@ -647,7 +666,7 @@ export default function Trending() {
     const controller = new AbortController();
     searchAbortRef.current = controller;
 
-    const timeoutId = setTimeout(async () => {
+    const runSearch = () => {
       let usersDone = false;
       let allDone = false;
       let usersSucceeded = false;
@@ -709,7 +728,16 @@ export default function Trending() {
           allDone = true;
           finalize();
         });
-    }, SEARCH_DEBOUNCE_MS);
+    };
+
+    if (SEARCH_DEBOUNCE_MS <= 0) {
+      runSearch();
+      return () => {
+        controller.abort();
+      };
+    }
+
+    const timeoutId = setTimeout(runSearch, SEARCH_DEBOUNCE_MS);
 
     return () => {
       clearTimeout(timeoutId);
@@ -1562,7 +1590,10 @@ export default function Trending() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setShowSearchResults(true);
+              }}
               onFocus={() => hasSearchQuery && setShowSearchResults(true)}
               placeholder="Search students, posts, and campus signals..."
               className="w-full pl-11 pr-4 py-3 rounded-full glass-input"
