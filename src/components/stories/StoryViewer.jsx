@@ -13,6 +13,7 @@ import {
 import { useApp } from "../../context/useApp";
 import StoryViewersPanel from "./StoryViewersPanel";
 import ReportModal from "../moderation/ReportModal";
+import BlueTick from "../common/BlueTick";
 import {
   resolveStoryId,
   resolveStoryMediaType,
@@ -54,6 +55,9 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
 
   const currentGroup = stories[currentGroupIndex];
   const currentStory = currentGroup?.stories[currentStoryIndex];
+  const authorIsVerified = Boolean(
+    currentGroup?.authorIsVerified || currentGroup?.author?.isVerified
+  );
   const storyId = resolveStoryId(currentStory);
   const mediaUrl = resolveStoryMediaUrl(currentStory);
   const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
@@ -465,8 +469,9 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
                   alt={currentGroup.authorDisplayName}
                   className="w-8 h-8 rounded-full border border-[#b9b4c7] object-cover"
                 />
-                <span className="text-[#faf0e6] text-sm font-semibold">
+                <span className="text-[#faf0e6] text-sm font-semibold flex items-center">
                   {currentGroup.authorDisplayName || "User"}
+                  {authorIsVerified && <BlueTick className="text-[12px]" />}
                 </span>
               </div>
               <div className="flex items-center gap-2">

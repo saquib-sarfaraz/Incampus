@@ -4,6 +4,7 @@ import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
 import { getUserById, reportUser, blockUser } from "../../services/api";
 import ReportModal from "../moderation/ReportModal";
+import BlueTick from "../common/BlueTick";
 import PostModal from "./PostModal";
 import { isVideoUrl } from "../../utils/storyMedia";
 import {
@@ -104,6 +105,7 @@ const UserProfileModalContent = ({
 
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
+  const isVerified = Boolean(resolvedUser?.isVerified);
 
   const publicPosts = useMemo(() => {
     if (!resolvedUserId) return [];
@@ -212,12 +214,13 @@ const UserProfileModalContent = ({
                 className="h-14 w-14 rounded-full object-cover"
               />
               <div>
-                <h3 className="text-lg font-semibold text-[#faf0e6]">
+                <h3 className="text-lg font-semibold text-[#faf0e6] flex items-center">
                   {communityName ||
                     resolvedUser.fullName ||
                     resolvedUser.displayName ||
                     resolvedUser.username ||
                     "User"}
+                  {isVerified && <BlueTick />}
                 </h3>
                 <div className="flex flex-wrap items-center gap-2 mt-1">
                   <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[11px] text-[#faf0e6]">

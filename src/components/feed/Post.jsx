@@ -13,6 +13,7 @@ import CommentModal from "./CommentModal";
 import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
+import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const VIEW_RATIO_THRESHOLD = 0.5;
@@ -196,6 +197,10 @@ export default function Post({ post, onOpen, badge }) {
     post.author?.fullName ||
     post.author?.username ||
     "";
+  const authorIsVerified = !post.isAnonymous && Boolean(author?.isVerified ?? post.author?.isVerified);
+  const authorDisplayName = post.isAnonymous
+    ? "Anonymous Student"
+    : author?.displayName || "User";
 
   useEffect(() => {
     const loadAuthor = async () => {
@@ -218,6 +223,7 @@ export default function Post({ post, onOpen, badge }) {
           displayName:
             authorName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
           profilePicUrl: authorPic || ANONYMOUS_AVATAR,
+          isVerified: Boolean(post.author?.isVerified),
         });
         return;
       }
@@ -230,10 +236,17 @@ export default function Post({ post, onOpen, badge }) {
             id: userData._id,
             displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
             profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+            isVerified: Boolean(userData.isVerified),
           };
         }
       }
-      setAuthor(user || { displayName: "User", profilePicUrl: ANONYMOUS_AVATAR });
+      setAuthor(
+        user || {
+          displayName: "User",
+          profilePicUrl: ANONYMOUS_AVATAR,
+          isVerified: Boolean(post.author?.isVerified),
+        }
+      );
     };
 
     loadAuthor();
@@ -462,8 +475,9 @@ export default function Post({ post, onOpen, badge }) {
             className="w-10 h-10 rounded-full mr-3 object-cover"
           />
           <div>
-            <p className="font-semibold text-[#faf0e6]">
-              {post.isAnonymous ? "Anonymous Student" : author?.displayName || "User"}
+            <p className="font-semibold text-[#faf0e6] flex items-center">
+              {authorDisplayName}
+              {authorIsVerified && <BlueTick />}
             </p>
             <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
               <span>{formatTime(post.createdAt)}</span>
