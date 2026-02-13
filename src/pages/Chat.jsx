@@ -22,6 +22,36 @@ import BlueTick from "../components/common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const CONTACTS_CACHE_KEY = "incampus:chat:contacts";
+const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
+
+const readContactsCache = (userId) => {
+  if (!userId || typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(CONTACTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.userId !== String(userId)) return null;
+    if (!parsed.ts || Date.now() - parsed.ts > CONTACTS_CACHE_TTL) return null;
+    return Array.isArray(parsed.contacts) ? parsed.contacts : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeContactsCache = (userId, contacts) => {
+  if (!userId || typeof window === "undefined") return;
+  try {
+    const payload = {
+      userId: String(userId),
+      ts: Date.now(),
+      contacts: Array.isArray(contacts) ? contacts : [],
+    };
+    sessionStorage.setItem(CONTACTS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
 
 const isGroupChatId = (chatId) => String(chatId || "").startsWith("group:");
 
@@ -135,7 +165,14 @@ export default function Chat() {
     rejectFriend,
   } = useApp();
   const [activeTab, setActiveTab] = useState("contacts");
-  const [contacts, setContacts] = useState([]);
+  const [contacts, setContacts] = useState(() => {
+    if (typeof window === "undefined") return [];
+    return readContactsCache(currentUser?.id) || [];
+  });
+  const [contactsLoading, setContactsLoading] = useState(() => {
+    if (typeof window === "undefined") return true;
+    return !(readContactsCache(currentUser?.id) || []).length;
+  });
   const [requests, setRequests] = useState([]);
   const [messagesByChat, setMessagesByChat] = useState({});
   const [messageText, setMessageText] = useState("");
@@ -165,6 +202,15 @@ export default function Chat() {
     () => (resolvedFriendIds || []).map((id) => String(id)).sort().join("|"),
     [resolvedFriendIds]
   );
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const cached = readContactsCache(currentUser.id);
+    if (cached && cached.length) {
+      setContacts(cached);
+      setContactsLoading(false);
+    }
+  }, [currentUser?.id]);
 
   const handleReportMessage = (msg) => {
     setReportTarget(msg);
@@ -409,8 +455,13 @@ export default function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
-  const loadContacts = useCallback(async () => {
-    if (!resolvedFriendIds || resolvedFriendIds.length === 0) return [];
+  const loadContacts = useCallback(
+    async ({ force = false } = {}) => {
+      if (!resolvedFriendIds || resolvedFriendIds.length === 0) return [];
+      if (!force) {
+        const cached = readContactsCache(currentUser?.id);
+        if (cached && cached.length) return cached;
+      }
     const friendsData = await Promise.all(
       resolvedFriendIds.map(async (friendId) => {
         if (isUserBlocked(friendId)) {
@@ -441,8 +492,14 @@ export default function Chat() {
         return user;
       })
     );
-    return friendsData.filter(Boolean);
-  }, [cacheUser, getUserFromCache, isUserBlocked, resolvedFriendIds]);
+      const filtered = friendsData.filter(Boolean);
+      if (filtered.length) {
+        writeContactsCache(currentUser?.id, filtered);
+      }
+      return filtered;
+    },
+    [cacheUser, getUserFromCache, isUserBlocked, resolvedFriendIds, currentUser?.id]
+  );
 
   const resolveUnreadCount = useCallback(
     (messages = [], chatId) => {
@@ -687,10 +744,11 @@ export default function Chat() {
 
   const refreshLists = useCallback(async () => {
     const [contactsData, requestsData] = await Promise.all([
-      loadContacts(),
+      loadContacts({ force: true }),
       loadRequests(),
     ]);
     setContacts(contactsData);
+    setContactsLoading(false);
     setRequests(requestsData);
   }, [loadContacts, loadRequests]);
 
@@ -909,13 +967,28 @@ export default function Chat() {
 
   useEffect(() => {
     let cancelled = false;
+    const cached = readContactsCache(currentUser?.id);
+    if (cached && cached.length) {
+      setContacts(cached);
+      setContactsLoading(false);
+      cached.forEach((contact) => {
+        updatePresence(contact.id, {
+          isOnline: contact.isOnline || false,
+          lastSeen: contact.lastSeen || "",
+        });
+      });
+    } else {
+      setContactsLoading(true);
+    }
+
     const run = async () => {
       const [contactsData, requestsData] = await Promise.all([
-        loadContacts(),
+        loadContacts({ force: true }),
         loadRequests(),
       ]);
       if (cancelled) return;
       setContacts(contactsData);
+      setContactsLoading(false);
       contactsData.forEach((contact) => {
         updatePresence(contact.id, {
           isOnline: contact.isOnline || false,
@@ -924,11 +997,28 @@ export default function Chat() {
       });
       setRequests(requestsData);
     };
-    run();
+
+    let idleId = null;
+    if (cached && cached.length && typeof window !== "undefined") {
+      if ("requestIdleCallback" in window) {
+        idleId = window.requestIdleCallback(run, { timeout: 1200 });
+      } else {
+        idleId = window.setTimeout(run, 200);
+      }
+    } else {
+      run();
+    }
     return () => {
       cancelled = true;
+      if (idleId && typeof window !== "undefined") {
+        if ("cancelIdleCallback" in window) {
+          window.cancelIdleCallback(idleId);
+        } else {
+          window.clearTimeout(idleId);
+        }
+      }
     };
-  }, [friendIdsKey, loadContacts, loadRequests, updatePresence]);
+  }, [friendIdsKey, loadContacts, loadRequests, updatePresence, currentUser?.id]);
 
   useEffect(() => {
     if (activeTab !== "requests") return;
@@ -1341,7 +1431,16 @@ export default function Chat() {
                 className="h-full overflow-y-auto p-4 space-y-2"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
-                {contactsList.length === 0 ? (
+                {contactsLoading ? (
+                  <div className="space-y-2">
+                    {[1, 2, 3, 4].map((item) => (
+                      <div
+                        key={`contact-skeleton-${item}`}
+                        className="h-16 rounded-2xl bg-white/10 animate-pulse"
+                      ></div>
+                    ))}
+                  </div>
+                ) : contactsList.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
                 ) : (
                   contactsList.map((contact) => {
@@ -1816,7 +1915,7 @@ export default function Chat() {
         title="Report Message"
       />
       <BottomNav
-        hidden={isMobile && activeChatId}
+        hidden={false}
         onCreate={() => setShowCreateModal(true)}
         overlay={showCreateModal}
       />

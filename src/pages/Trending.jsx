@@ -26,6 +26,7 @@ import {
   getTimestamp,
   resolveContentType,
   shouldExcludeContent,
+  isContentUnderReview,
   isMutedByUser,
 } from "../utils/feedRanking";
 import {
@@ -1062,10 +1063,67 @@ export default function Trending() {
     [maxTrendingScore]
   );
 
+  const renderUnderReviewMediaCard = ({
+    key,
+    aspectClass = "aspect-square",
+    highlight = false,
+    className = "",
+  } = {}) => {
+    return (
+      <div
+        key={key}
+        className={`relative overflow-hidden rounded-2xl glass-card border border-amber-200/20 bg-amber-200/5 ${
+          highlight ? "glow-border" : ""
+        } ${className}`}
+      >
+        <div className={`relative w-full ${aspectClass}`}>
+          <div className="absolute inset-0 bg-gradient-to-br from-amber-400/10 via-black/30 to-black/70"></div>
+          <div className="relative z-10 h-full w-full flex flex-col items-center justify-center gap-2 p-4 text-center">
+            <div className="h-10 w-10 rounded-full border border-amber-200/40 bg-amber-200/10 flex items-center justify-center text-amber-100">
+              <i className="fa-solid fa-shield-halved text-sm"></i>
+            </div>
+            <p className="text-sm font-semibold text-amber-100">Under review</p>
+            <p className="text-[11px] text-[#b9b4c7]">
+              This post is being checked.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderUnderReviewWideCard = ({ key, className = "" } = {}) => {
+    return (
+      <div
+        key={key}
+        className={`relative w-full overflow-hidden rounded-3xl glass-card border border-amber-200/20 bg-amber-200/5 ${className}`}
+      >
+        <div className="absolute inset-0 bg-gradient-to-br from-amber-400/10 via-black/30 to-black/60"></div>
+        <div className="relative z-10 flex items-center gap-4 p-6">
+          <div className="h-12 w-12 rounded-full border border-amber-200/40 bg-amber-200/10 flex items-center justify-center text-amber-100">
+            <i className="fa-solid fa-shield-halved text-base"></i>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-amber-100">Post under review</p>
+            <p className="text-xs text-[#b9b4c7]">
+              We’re reviewing this post. It will return if approved.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderTrendingCard = (entry, index) => {
     if (!entry) return null;
     const isStory = entry.type === "story";
     const item = entry.item;
+    if (isContentUnderReview(item)) {
+      return renderUnderReviewMediaCard({
+        key: `review-${entry.type}-${item?._id || item?.id || index}`,
+        highlight: index === 0,
+      });
+    }
     const contentType = entry.type;
     const mediaUrl = isStory ? resolveStoryMediaUrl(item) : resolvePostMediaUrl(item);
     const storyType = isStory ? resolveStoryMediaType(item, mediaUrl) : "image";
@@ -1227,8 +1285,13 @@ export default function Trending() {
 
   const renderDoomItem = (entry, index) => {
     if (!entry) return null;
+    const item = entry.item;
+    if (isContentUnderReview(item)) {
+      return renderUnderReviewWideCard({
+        key: `review-doom-${entry.type}-${item?._id || item?.id || index}`,
+      });
+    }
     if (entry.type === "story") {
-      const item = entry.item;
       const mediaUrl = resolveStoryMediaUrl(item);
       const storyType = resolveStoryMediaType(item, mediaUrl);
       const isVideo = storyType === "video";
@@ -1486,6 +1549,14 @@ export default function Trending() {
   const renderPostCard = (post, { variant = "grid" } = {}) => {
     if (!post) return null;
     const postId = post._id || post.id || post.postId;
+    if (isContentUnderReview(post)) {
+      const aspectClass = variant === "featured" ? "aspect-[16/9]" : "aspect-square";
+      return renderUnderReviewMediaCard({
+        key: `review-post-${postId || variant}`,
+        aspectClass,
+        className: variant === "featured" ? "w-full" : "",
+      });
+    }
     const mediaUrl = resolvePostMediaUrl(post);
     const optimizedMediaUrl = getOptimizedMediaUrl(mediaUrl, {
       width: variant === "featured" ? 1200 : 720,
