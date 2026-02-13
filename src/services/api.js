@@ -98,6 +98,7 @@ const apiFetch = async (path, options = {}) => {
     auth = true,
     isFormData = false,
     signal,
+    cache,
   } = options;
 
   if (!API_BASE_URL) {
@@ -128,6 +129,7 @@ const apiFetch = async (path, options = {}) => {
             ? body
             : JSON.stringify(body),
       signal,
+      cache,
     });
 
     const data = await parseResponse(res);
@@ -804,10 +806,24 @@ export const getChatGroups = async (params = {}) => {
 
 export const sendChatMessage = async (payload) => {
   if (!payload) return null;
+  const body = { ...payload };
+  if (body.senderId && !body.from) body.from = body.senderId;
+  if (body.from && !body.senderId) body.senderId = body.from;
+  if (body.senderId && !body.fromUserId) body.fromUserId = body.senderId;
+  if (body.to && !body.receiverId) body.receiverId = body.to;
+  if (body.receiverId && !body.to) body.to = body.receiverId;
+  if (body.receiverId && !body.toUserId) body.toUserId = body.receiverId;
+  if (body.receiverId && !body.recipientId) body.recipientId = body.receiverId;
+  if (body.receiverId && !body.targetUserId) body.targetUserId = body.receiverId;
+  if (body.to && !body.chatId) body.chatId = body.to;
+  if (typeof body.text === "string") {
+    body.text = body.text.trim();
+  }
+  if (!body.messageType) body.messageType = body.type || "text";
   try {
     return await apiFetch("/chat/send", {
       method: "POST",
-      body: payload,
+      body,
     });
   } catch (error) {
     if (error?.status && error.status !== 404) {
@@ -834,7 +850,12 @@ export const markChatSeen = async (payload) => {
 
 // Friend APIs
 export const sendFriendRequest = async (recipientId) => {
-  const payload = { recipientId, targetUserId: recipientId };
+  const payload = {
+    recipientId,
+    targetUserId: recipientId,
+    toUserId: recipientId,
+    receiverId: recipientId,
+  };
   return apiFetchWithFallback(
     ["/friend-requests/send", "/friend/request", "/friends/send"],
     {
@@ -845,17 +866,58 @@ export const sendFriendRequest = async (recipientId) => {
 };
 
 export const getPendingRequests = async (params = {}) => {
-  const data = await apiFetchWithFallback(
-    [
-      "/friends/pending",
-      "/friend-requests/pending",
-      "/friend-requests",
-      "/friends/requests/pending",
-      "/friends/requests",
-    ],
-    { params }
-  );
-  return normalizeList(data, ["requests", "items", "data"]);
+  const hasStatus = params.status != null || params.state != null;
+  const normalizeRequestsList = (data) => {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== "object") return [];
+    const candidates = [
+      data.requests,
+      data.pendingRequests,
+      data.friendRequests,
+      data.friend_requests,
+      data.items,
+      data.data,
+      data.result,
+      data.payload,
+      data.response,
+      data.requests?.items,
+      data.data?.requests,
+      data.data?.pendingRequests,
+      data.data?.friendRequests,
+      data.data?.friend_requests,
+      data.data?.items,
+      data.data?.data,
+      data.result?.requests,
+      data.result?.items,
+      data.result?.data,
+    ];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) return candidate;
+    }
+    const single =
+      data.request ||
+      data.friendRequest ||
+      data.friend_request ||
+      data.pendingRequest ||
+      data.data?.request ||
+      data.data?.friendRequest ||
+      data.data?.pendingRequest ||
+      null;
+    return single ? [single] : [];
+  };
+  const fetchRequests = async (query) => {
+    const data = await apiFetch("/friend-requests/incoming", {
+      params: query,
+      cache: "no-store",
+    });
+    return normalizeRequestsList(data);
+  };
+
+  let resolvedParams = { ...params };
+  if (!hasStatus) {
+    resolvedParams = { ...resolvedParams, status: "pending" };
+  }
+  return fetchRequests(resolvedParams);
 };
 
 export const acceptFriendRequest = async (requestInput) => {
@@ -887,8 +949,14 @@ export const acceptFriendRequest = async (requestInput) => {
 
   if (!payload.requestId) delete payload.requestId;
 
+  const acceptPaths = [];
+  if (requestId) {
+    acceptPaths.push(`/friend-requests/${encodeURIComponent(requestId)}/accept`);
+  }
+
   return apiFetchWithFallback(
     [
+      ...acceptPaths,
       "/friends/accept-request",
       "/friend-requests/accept",
       "/friend/accept",
@@ -954,7 +1022,11 @@ export const removeFriend = async (friendId) => {
 export const getFriendStatus = async (targetUserId) => {
   if (!targetUserId) throw new Error("Missing target user id.");
   const encodedId = encodeURIComponent(targetUserId);
-  return apiFetchWithFallback([`/friend/status/${encodedId}`, `/friends/status/${encodedId}`]);
+  return apiFetchWithFallback([
+    `/friend/status/${encodedId}`,
+    `/friends/status/${encodedId}`,
+    `/friends/check/${encodedId}`,
+  ]);
 };
 
 // Notification APIs
