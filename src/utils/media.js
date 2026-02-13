@@ -54,3 +54,38 @@ export const compressImageFile = (file, options = {}) => {
     reader.readAsDataURL(file);
   });
 };
+
+const CLOUDINARY_HOST = "res.cloudinary.com";
+const CLOUDINARY_UPLOAD_SEGMENT = "/upload/";
+
+const isCloudinaryUrl = (url = "") =>
+  typeof url === "string" &&
+  url.includes(CLOUDINARY_HOST) &&
+  url.includes(CLOUDINARY_UPLOAD_SEGMENT);
+
+const hasCloudinaryTransform = (url = "") =>
+  /\/upload\/[^/]*(?:f_|q_|w_|h_|c_)/.test(url);
+
+const buildCloudinaryTransform = ({ width, height, quality = "auto", format = "auto" } = {}) => {
+  const parts = [];
+  if (format) parts.push(`f_${format}`);
+  if (quality) parts.push(`q_${quality}`);
+  if (width) parts.push(`w_${width}`);
+  if (height) parts.push(`h_${height}`);
+  parts.push("c_limit");
+  return parts.join(",");
+};
+
+export const getOptimizedMediaUrl = (url, options = {}) => {
+  if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;
+  const transform = buildCloudinaryTransform(options);
+  if (!transform) return url;
+  return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
+};
+
+export const getMediaSrcSet = (url, widths = [320, 480, 640, 768, 1024]) => {
+  if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return null;
+  return widths
+    .map((width) => `${getOptimizedMediaUrl(url, { width })} ${width}w`)
+    .join(", ");
+};

@@ -14,6 +14,7 @@ import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
+import { getOptimizedMediaUrl, getMediaSrcSet } from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const VIEW_RATIO_THRESHOLD = 0.5;
@@ -184,7 +185,11 @@ export default function Post({ post, onOpen, badge }) {
     (optimisticLiked === null ? 0 : (optimisticLiked ? 1 : 0) - (baseIsLiked ? 1 : 0));
   const postId = post._id || post.id;
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
-  const postThumbnail = resolvePostMediaUrl(post);
+  const postMediaUrl = resolvePostMediaUrl(post);
+  const postThumbnail = postMediaUrl;
+  const optimizedPostMedia = getOptimizedMediaUrl(postMediaUrl, { width: 1200 });
+  const postSrcSet = getMediaSrcSet(postMediaUrl, [480, 720, 1024, 1400]);
+  const avatarUrl = getOptimizedMediaUrl(author?.profilePicUrl, { width: 80, height: 80 });
   const postPreviewText =
     post.content && post.content.length > 0
       ? post.content.slice(0, 80)
@@ -470,9 +475,11 @@ export default function Post({ post, onOpen, badge }) {
         )}
         <div className="flex items-center mb-3">
           <img
-            src={author?.profilePicUrl || ANONYMOUS_AVATAR}
+            src={avatarUrl || ANONYMOUS_AVATAR}
             alt={author?.displayName}
             className="w-10 h-10 rounded-full mr-3 object-cover"
+            loading="lazy"
+            decoding="async"
           />
           <div>
             <p className="font-semibold text-[#faf0e6] flex items-center">
@@ -546,12 +553,16 @@ export default function Post({ post, onOpen, badge }) {
           <p className="text-[#faf0e6] mb-4 whitespace-pre-wrap">{post.content}</p>
         )}
 
-        {post.mediaUrl && (
+        {postMediaUrl && (
           <div className="mb-4 rounded-2xl overflow-hidden border border-white/10">
             <img
-              src={post.mediaUrl}
+              src={optimizedPostMedia || postMediaUrl}
+              srcSet={postSrcSet || undefined}
+              sizes="(max-width: 640px) 90vw, (max-width: 1024px) 70vw, 800px"
               alt="Post media"
               className="w-full max-h-96 object-cover"
+              loading="lazy"
+              decoding="async"
             />
           </div>
         )}

@@ -13,6 +13,7 @@ import {
   isStoryRecent,
   resolveStoryPrivacyType,
 } from "../../utils/storyMedia";
+import { getOptimizedMediaUrl } from "../../utils/media";
 import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
@@ -548,12 +549,16 @@ export default function StoryBar() {
                 >
                   <img
                     src={
-                      orderedGroups[currentUserGroupIndex]?.authorProfilePic ||
-                      currentUser?.profilePicUrl ||
-                      ANONYMOUS_AVATAR
+                      getOptimizedMediaUrl(
+                        orderedGroups[currentUserGroupIndex]?.authorProfilePic ||
+                          currentUser?.profilePicUrl,
+                        { width: 96, height: 96 }
+                      ) || ANONYMOUS_AVATAR
                     }
                     alt={currentUser?.fullName || currentUser?.username || "Your Story"}
                     className="w-full h-full object-cover"
+                    loading="lazy"
+                    decoding="async"
                   />
                 </Motion.button>
               ) : (
@@ -583,9 +588,16 @@ export default function StoryBar() {
               >
                 <div className="w-12 h-12 rounded-full border border-[#b9b4c7] overflow-hidden flex items-center justify-center bg-white/10">
                   <img
-                    src={group.authorProfilePic || ANONYMOUS_AVATAR}
+                    src={
+                      getOptimizedMediaUrl(group.authorProfilePic, {
+                        width: 96,
+                        height: 96,
+                      }) || ANONYMOUS_AVATAR
+                    }
                     alt={group.authorDisplayName}
                     className="w-full h-full object-cover"
+                    loading="lazy"
+                    decoding="async"
                   />
                 </div>
                 <div className="mt-1 w-12 min-w-0 flex items-center gap-1 text-[11px] font-medium text-[#faf0e6]">

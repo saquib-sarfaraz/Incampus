@@ -20,6 +20,7 @@ import {
   resolveStoryMediaUrl,
   isStoryViewRecent,
 } from "../../utils/storyMedia";
+import { getOptimizedMediaUrl, getMediaSrcSet } from "../../utils/media";
 
 const FALLBACK_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
 const IMAGE_DURATION_MS = 5000;
@@ -58,9 +59,15 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const authorIsVerified = Boolean(
     currentGroup?.authorIsVerified || currentGroup?.author?.isVerified
   );
+  const authorAvatar = getOptimizedMediaUrl(currentGroup?.authorProfilePic, {
+    width: 64,
+    height: 64,
+  });
   const storyId = resolveStoryId(currentStory);
   const mediaUrl = resolveStoryMediaUrl(currentStory);
   const mediaType = resolveStoryMediaType(currentStory, mediaUrl);
+  const optimizedMediaUrl = getOptimizedMediaUrl(mediaUrl, { width: 1080 });
+  const mediaSrcSet = getMediaSrcSet(mediaUrl, [480, 720, 1080, 1440]);
   const isVideo = mediaType === "video";
 
   const handleNext = useCallback(() => {
@@ -465,9 +472,11 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center space-x-2 glass-surface rounded-full px-2 py-1">
                 <img
-                  src={currentGroup.authorProfilePic || FALLBACK_AVATAR}
+                  src={authorAvatar || FALLBACK_AVATAR}
                   alt={currentGroup.authorDisplayName}
                   className="w-8 h-8 rounded-full border border-[#b9b4c7] object-cover"
+                  loading="lazy"
+                  decoding="async"
                 />
                 <span className="text-[#faf0e6] text-sm font-semibold flex items-center">
                   {currentGroup.authorDisplayName || "User"}
@@ -591,9 +600,13 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
                 />
               ) : (
                 <img
-                  src={mediaUrl}
+                  src={optimizedMediaUrl || mediaUrl}
+                  srcSet={mediaSrcSet || undefined}
+                  sizes="100vw"
                   alt="Story"
                   className="w-full h-full object-cover"
+                  loading="lazy"
+                  decoding="async"
                 />
               )
             ) : (
