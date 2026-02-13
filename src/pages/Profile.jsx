@@ -204,6 +204,8 @@ export default function Profile() {
     if (typeof item === "object") {
       return (
         item.name ||
+        item.tagName ||
+        item.tag ||
         item.collegeTagName ||
         item.collegeName ||
         item.college ||

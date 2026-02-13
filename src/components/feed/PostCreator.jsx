@@ -19,6 +19,8 @@ const normalizeCollege = (item) => {
   if (typeof item === "object") {
     const name =
       item.name ||
+      item.tagName ||
+      item.tag ||
       item.college ||
       item.university ||
       item.institution ||

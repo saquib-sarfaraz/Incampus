@@ -2,12 +2,68 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { createPost } from "../../services/api";
+import { createPost, searchColleges } from "../../services/api";
 import { compressImageFile } from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 const THOUGHT_MIN_LENGTH = 3;
 const THOUGHT_MAX_LENGTH = 2000;
+
+const normalizeCollege = (item) => {
+  if (!item) return null;
+  if (typeof item === "string") {
+    const name = item.trim();
+    return name ? { name, id: "" } : null;
+  }
+  if (typeof item === "object") {
+    const name =
+      item.name ||
+      item.tagName ||
+      item.tag ||
+      item.collegeTagName ||
+      item.collegeName ||
+      item.college ||
+      item.university ||
+      item.institution ||
+      item.school ||
+      item.title ||
+      item.value ||
+      item.label ||
+      item.displayName ||
+      "";
+    const id =
+      item.id ||
+      item._id ||
+      item.collegeId ||
+      item.universityId ||
+      item.code ||
+      "";
+    if (!name) return null;
+    return { name: String(name).trim(), id: id ? String(id) : "" };
+  }
+  return null;
+};
+
+const normalizeCollegeList = (data) => {
+  if (!data) return [];
+  if (Array.isArray(data)) {
+    return data.map(normalizeCollege).filter(Boolean);
+  }
+  if (Array.isArray(data.colleges)) {
+    return data.colleges.map(normalizeCollege).filter(Boolean);
+  }
+  if (Array.isArray(data.data)) {
+    return data.data.map(normalizeCollege).filter(Boolean);
+  }
+  if (Array.isArray(data.items)) {
+    return data.items.map(normalizeCollege).filter(Boolean);
+  }
+  if (Array.isArray(data.results)) {
+    return data.results.map(normalizeCollege).filter(Boolean);
+  }
+  return [];
+};
 
 export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const { currentUser } = useAuth();
@@ -107,118 +163,39 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, []);
 
   useEffect(() => {
-    if (!isOpen) return;
-    let isMounted = true;
-    const controller = new AbortController();
-
-    const normalizeCollege = (item) => {
-      if (!item) return null;
-      if (typeof item === "string") {
-        const name = item.trim();
-        return name ? { name, id: "" } : null;
-      }
-      if (typeof item === "object") {
-        const name =
-          item.name ||
-          item.college ||
-          item.university ||
-          item.institution ||
-          item.school ||
-          item.title ||
-          item.value ||
-          item.label ||
-          item.collegeName ||
-          "";
-        const id =
-          item.id ||
-          item._id ||
-          item.collegeId ||
-          item.universityId ||
-          item.code ||
-          "";
-        if (!name) return null;
-        return { name: String(name).trim(), id: id ? String(id) : "" };
-      }
-      return null;
-    };
-
-    const extractCollegeList = (data) => {
-      if (!data) return [];
-      if (Array.isArray(data)) {
-        return data.map(normalizeCollege).filter(Boolean);
-      }
-      if (Array.isArray(data.colleges)) {
-        return data.colleges.map(normalizeCollege).filter(Boolean);
-      }
-      if (Array.isArray(data.data)) {
-        return data.data.map(normalizeCollege).filter(Boolean);
-      }
-      return [];
-    };
-
-    const loadCollegesFromPackage = async () => {
-      try {
-        const module = await import("indian-colleges");
-        const getAll =
-          module.getAllColleges ||
-          module.default?.getAllColleges ||
-          module.default?.getAll;
-        if (typeof getAll !== "function") return null;
-        const data = getAll();
-        const list = extractCollegeList(data);
-        return list.length > 0 ? list : null;
-      } catch {
-        return null;
-      }
-    };
-
-    const loadCollegesFromApi = async () => {
-      const res = await fetch("https://colleges-api.onrender.com/colleges", {
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error("Failed to load colleges.");
-      const data = await res.json();
-      return extractCollegeList(data);
-    };
-
-    const loadColleges = async () => {
-      setCollegeLoading(true);
+    if (!isOpen || !showCollegeDropdown) return;
+    const query = collegeInput.trim();
+    if (query.length < 2) {
+      setColleges([]);
+      setCollegeLoading(false);
       setCollegeError("");
+      return;
+    }
+
+    let isMounted = true;
+    setCollegeLoading(true);
+    setCollegeError("");
+    const timeoutId = setTimeout(async () => {
       try {
-        const cached = sessionStorage.getItem("incampusCollegeOptions");
-        if (cached) {
-          const list = JSON.parse(cached);
-          if (Array.isArray(list) && list.length > 0) {
-            if (isMounted) setColleges(list);
-            setCollegeLoading(false);
-            return;
-          }
-        }
-
-        let list = await loadCollegesFromPackage();
-        if (!list || list.length === 0) {
-          list = await loadCollegesFromApi();
-        }
-
-        if (isMounted) {
-          setColleges(list);
-          sessionStorage.setItem("incampusCollegeOptions", JSON.stringify(list));
-        }
+        const results = await searchColleges(query, { limit: 20 });
+        if (!isMounted) return;
+        const list = normalizeCollegeList(results);
+        setColleges(list);
       } catch {
         if (isMounted) {
+          setColleges([]);
           setCollegeError("Unable to load colleges. You can type manually.");
         }
       } finally {
         if (isMounted) setCollegeLoading(false);
       }
-    };
+    }, COLLEGE_SEARCH_DEBOUNCE_MS);
 
-    loadColleges();
     return () => {
       isMounted = false;
-      controller.abort();
+      clearTimeout(timeoutId);
     };
-  }, [isOpen]);
+  }, [isOpen, showCollegeDropdown, collegeInput]);
 
   const resetForm = () => {
     setPostMode("post");
