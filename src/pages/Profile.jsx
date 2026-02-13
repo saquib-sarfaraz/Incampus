@@ -33,6 +33,8 @@ import {
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const HELP_CENTER_URL = "https://incampus-help.netlify.app";
+const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 
 const getPasswordStrength = (value = "") => {
   const hasLetter = /[A-Za-z]/.test(value);
@@ -141,6 +143,18 @@ export default function Profile() {
     confirmPassword.length > 0 &&
     passwordsMatch;
 
+  const handleOpenHelp = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const prefersCoarse = window.matchMedia?.("(pointer: coarse)")?.matches;
+    const isSmallScreen = window.innerWidth <= 768;
+    const openInSameTab = prefersCoarse || isSmallScreen;
+    if (openInSameTab) {
+      window.location.assign(HELP_CENTER_URL);
+      return;
+    }
+    window.open(HELP_CENTER_URL, "_blank", "noopener,noreferrer");
+  }, []);
+
   useEffect(() => {
     if (currentUser && posts) {
       const filtered = posts.filter(
@@ -232,7 +246,7 @@ export default function Profile() {
       } finally {
         if (isMounted) setCollegeLoading(false);
       }
-    }, 300);
+    }, COLLEGE_SEARCH_DEBOUNCE_MS);
 
     return () => {
       isMounted = false;
@@ -1090,6 +1104,29 @@ export default function Profile() {
                   </Motion.button>
                 </div>
               </form>
+            </div>
+
+            <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <i className="fa-solid fa-circle-question text-[#b9b4c7]"></i>
+                    <h3 className="text-lg font-semibold text-[#faf0e6]">Help</h3>
+                  </div>
+                  <p className="text-xs text-[#b9b4c7]">
+                    Visit the InCampus Help Center.
+                  </p>
+                </div>
+                <Motion.button
+                  type="button"
+                  onClick={handleOpenHelp}
+                  className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full"
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                >
+                  Open Help
+                </Motion.button>
+              </div>
             </div>
 
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">

@@ -6,6 +6,7 @@ import { createPost, searchColleges } from "../../services/api";
 import { compressImageFile } from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 const THOUGHT_MIN_LENGTH = 3;
 const THOUGHT_MAX_LENGTH = 2000;
 
@@ -138,7 +139,7 @@ export default function PostCreator() {
       } finally {
         if (isMounted) setCollegeLoading(false);
       }
-    }, 300);
+    }, COLLEGE_SEARCH_DEBOUNCE_MS);
 
     return () => {
       isMounted = false;

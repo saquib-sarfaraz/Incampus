@@ -47,14 +47,37 @@ export const formatUserType = (value) => {
 };
 
 export const resolveCollegeName = (user) => {
-  return (
+  const raw =
+    user?.collegeTagName ||
+    user?.collegeTag?.name ||
+    user?.collegeTag?.collegeName ||
+    user?.collegeTag?.collegeTagName ||
+    user?.collegeTag?.university ||
+    user?.collegeTag ||
     user?.college ||
     user?.university ||
     user?.school ||
     user?.campus ||
     user?.collegeName ||
-    ""
-  );
+    user?.institution ||
+    user?.schoolName ||
+    user?.campusName ||
+    "";
+  if (typeof raw === "string") return raw.trim();
+  if (typeof raw === "object" && raw) {
+    const nested =
+      raw.name ||
+      raw.collegeTagName ||
+      raw.collegeName ||
+      raw.university ||
+      raw.college ||
+      raw.school ||
+      raw.title ||
+      raw.value ||
+      "";
+    return String(nested || "").trim();
+  }
+  return "";
 };
 
 export const resolveUserBio = (user) => {

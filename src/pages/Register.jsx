@@ -38,6 +38,7 @@ export default function Register() {
   const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
   const collegeRef = useRef(null);
   const DRAFT_KEY = "incampus_register_draft";
+  const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 
   const normalizeCollege = useCallback((item) => {
     if (!item) return "";
@@ -103,7 +104,7 @@ export default function Register() {
       } finally {
         if (isMounted) setCollegeLoading(false);
       }
-    }, 300);
+    }, COLLEGE_SEARCH_DEBOUNCE_MS);
 
     return () => {
       isMounted = false;
