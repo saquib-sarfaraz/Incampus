@@ -46,6 +46,8 @@ export default function Register() {
     if (typeof item === "object") {
       return (
         item.name ||
+        item.tagName ||
+        item.tag ||
         item.collegeTagName ||
         item.collegeName ||
         item.college ||

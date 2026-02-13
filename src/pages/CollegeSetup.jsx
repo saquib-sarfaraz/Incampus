@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
-import { setupCollege } from "../services/api";
+import { searchColleges, setupCollege } from "../services/api";
 
-const COLLEGE_API_URL = "https://colleges-api.onrender.com/colleges";
+const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 
 const normalizeCollege = (item) => {
   if (!item) return null;
@@ -16,6 +16,8 @@ const normalizeCollege = (item) => {
   if (typeof item === "object") {
     const name =
       item.name ||
+      item.tagName ||
+      item.tag ||
       item.college ||
       item.university ||
       item.institution ||
@@ -67,28 +69,39 @@ export default function CollegeSetup() {
   }, [currentUser, navigate]);
 
   useEffect(() => {
-    const controller = new AbortController();
-    const loadColleges = async () => {
-      setCollegeLoading(true);
+    if (!showDropdown) return;
+    const query = collegeInput.trim();
+    if (query.length < 2) {
+      setColleges([]);
+      setCollegeLoading(false);
       setCollegeError("");
+      return;
+    }
+
+    let isMounted = true;
+    setCollegeLoading(true);
+    setCollegeError("");
+    const timeoutId = setTimeout(async () => {
       try {
-        const res = await fetch(COLLEGE_API_URL, { signal: controller.signal });
-        if (!res.ok) throw new Error("Unable to load colleges.");
-        const data = await res.json();
-        const list = extractCollegeList(data);
+        const results = await searchColleges(query, 8);
+        if (!isMounted) return;
+        const list = extractCollegeList(results);
         setColleges(list);
       } catch (error) {
-        if (error.name !== "AbortError") {
+        if (isMounted) {
+          setColleges([]);
           setCollegeError("Unable to load colleges. You can type manually.");
         }
       } finally {
-        setCollegeLoading(false);
+        if (isMounted) setCollegeLoading(false);
       }
-    };
+    }, COLLEGE_SEARCH_DEBOUNCE_MS);
 
-    loadColleges();
-    return () => controller.abort();
-  }, []);
+    return () => {
+      isMounted = false;
+      clearTimeout(timeoutId);
+    };
+  }, [showDropdown, collegeInput]);
 
   useEffect(() => {
     const handleOutside = (event) => {
