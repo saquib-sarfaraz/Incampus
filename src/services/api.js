@@ -299,6 +299,16 @@ export const updateUser = async (updates) => {
 
 export const updateProfileInfo = async (updates) => {
   try {
+    return await apiFetch("/users/settings/profile", {
+      method: "PATCH",
+      body: updates,
+    });
+  } catch (error) {
+    if (error?.status !== 404 && error?.status !== 405) {
+      throw error;
+    }
+  }
+  try {
     return await apiFetch("/users/me", {
       method: "PATCH",
       body: updates,
@@ -311,20 +321,45 @@ export const updateProfileInfo = async (updates) => {
   }
 };
 
-export const changePassword = async ({ currentPassword, newPassword }) => {
-  if (!currentPassword || !newPassword) {
-    throw new Error("Current and new password are required.");
+export const updateEducationInfo = async (updates) => {
+  try {
+    return await apiFetch("/users/settings/education", {
+      method: "PATCH",
+      body: updates,
+    });
+  } catch (error) {
+    if (error?.status !== 404 && error?.status !== 405) {
+      throw error;
+    }
+  }
+  return updateUser(updates);
+};
+
+export const changePassword = async ({
+  currentPassword,
+  newPassword,
+  confirmPassword,
+} = {}) => {
+  if (!newPassword) {
+    throw new Error("New password is required.");
+  }
+  const payload = {
+    newPassword,
+    confirmPassword: confirmPassword || newPassword,
+  };
+  if (currentPassword) {
+    payload.currentPassword = currentPassword;
   }
   try {
-    return await apiFetch("/users/me/password", {
+    return await apiFetch("/users/settings/password", {
       method: "PATCH",
-      body: { currentPassword, newPassword },
+      body: payload,
     });
   } catch (error) {
     if (error?.status === 404 || error?.status === 405) {
       return apiFetch("/users/me/password", {
         method: "PUT",
-        body: { currentPassword, newPassword },
+        body: payload,
       });
     }
     throw error;

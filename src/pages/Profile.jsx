@@ -5,6 +5,7 @@ import { useApp } from "../context/useApp";
 import {
   updateUser,
   updateProfileInfo,
+  updateEducationInfo,
   changePassword,
   uploadProfilePic,
   deleteProfilePic,
@@ -85,7 +86,6 @@ export default function Profile() {
   const [colleges, setColleges] = useState([]);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [currentPassword, setCurrentPassword] = useState("");
   const [settingsSuccess, setSettingsSuccess] = useState("");
   const [passwordSuccess, setPasswordSuccess] = useState("");
   const [passwordError, setPasswordError] = useState("");
@@ -136,7 +136,6 @@ export default function Profile() {
     !loading;
   const canUpdatePassword =
     !loading &&
-    currentPassword.length > 0 &&
     newPassword.length >= 8 &&
     passwordStrength.hasLetter &&
     passwordStrength.hasNumber &&
@@ -190,7 +189,7 @@ export default function Profile() {
     if (passwordError) {
       setPasswordError("");
     }
-  }, [currentPassword, newPassword, confirmPassword]);
+  }, [newPassword, confirmPassword]);
 
   useEffect(() => {
     if (bioSuccess) {
@@ -426,7 +425,7 @@ export default function Profile() {
       if (isAlumniLevel) {
         payload.passoutYear = educationYear;
       }
-      const result = await updateUser(payload);
+      const result = await updateEducationInfo(payload);
       const updated = result.user || result || {};
       const newCollege = updated.university || updated.college || educationCollege.trim();
 
@@ -464,10 +463,6 @@ export default function Profile() {
   const handlePasswordChange = async () => {
     setPasswordError("");
     setPasswordSuccess("");
-    if (!currentPassword) {
-      setPasswordError("Please enter your current password.");
-      return;
-    }
     if (!newPassword) {
       setPasswordError("Please enter a new password.");
       return;
@@ -482,8 +477,7 @@ export default function Profile() {
     }
     setLoading(true);
     try {
-      await changePassword({ currentPassword, newPassword });
-      setCurrentPassword("");
+      await changePassword({ newPassword, confirmPassword });
       setNewPassword("");
       setConfirmPassword("");
       setPasswordSuccess("Password updated. Please log in again.");
@@ -1045,14 +1039,6 @@ export default function Profile() {
               </h3>
               <form onSubmit={handlePasswordChange}>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <input
-                    type="password"
-                    value={currentPassword}
-                    onChange={(e) => setCurrentPassword(e.target.value)}
-                    placeholder="Current password"
-                    autoComplete="current-password"
-                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
-                  />
                   <input
                     type="password"
                     value={newPassword}

@@ -16,6 +16,7 @@ import {
   getViewCount,
   getTimestamp,
   shouldExcludeContent,
+  isContentUnderReview,
   isMutedByUser,
 } from "../utils/feedRanking";
 import { getSocket } from "../services/socket";
@@ -23,6 +24,25 @@ import { getSocket } from "../services/socket";
 const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 90000;
 const COLLEGE_REFRESH_MS = 120000;
+const FRIEND_BADGE = {
+  text: "👥 Friend",
+  tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
+};
+const CAMPUS_BADGE = {
+  text: "🎓 Campus",
+  tone: "border-sky-400/30 bg-sky-400/10 text-sky-200",
+};
+const TRENDING_BADGE = {
+  text: "🔥 Trending",
+  tone: "border-amber-400/30 bg-amber-400/10 text-amber-200",
+};
+
+const resolveBadge = (badgeKey) => {
+  if (badgeKey === "friend") return FRIEND_BADGE;
+  if (badgeKey === "campus") return CAMPUS_BADGE;
+  if (badgeKey === "trending") return TRENDING_BADGE;
+  return null;
+};
 
 const getAuthorId = (post) => {
   return post.author?._id || post.authorId || post.author || "";
@@ -50,6 +70,27 @@ const resolvePostKey = (post, index) => {
   const createdAt = post.createdAt || post.created_at || post.timestamp || "";
   if (authorId || createdAt) return `${authorId || "post"}-${createdAt || index}`;
   return `post-${index}`;
+};
+
+const UnderReviewCard = () => {
+  return (
+    <div className="glass-card rounded-3xl border border-amber-200/20 bg-amber-200/5 p-6 min-h-[220px] flex flex-col justify-center">
+      <div className="flex items-center gap-4">
+        <div className="h-12 w-12 rounded-full border border-amber-200/40 bg-amber-200/10 flex items-center justify-center text-amber-100">
+          <i className="fa-solid fa-shield-halved text-base"></i>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-amber-100">Post under review</p>
+          <p className="text-xs text-[#b9b4c7]">
+            We’re checking this post. It will reappear if approved.
+          </p>
+        </div>
+      </div>
+      <p className="mt-4 text-[11px] text-[#b9b4c7]">
+        Thanks for helping keep the community safe.
+      </p>
+    </div>
+  );
 };
 
 const resolveUserCampus = (user) => {
@@ -515,20 +556,11 @@ export default function Feed() {
       );
       const isTrendingGlobal = trendingIds.has(entry.id) || hasTrendingFlag;
       if (entry.isFriend && !isAnonymousPost(post)) {
-        badgeMap.set(entry.id, {
-          text: "👥 Friend",
-          tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
-        });
+        badgeMap.set(entry.id, "friend");
       } else if (entry.isCollege) {
-        badgeMap.set(entry.id, {
-          text: "🎓 Campus",
-          tone: "border-sky-400/30 bg-sky-400/10 text-sky-200",
-        });
+        badgeMap.set(entry.id, "campus");
       } else if (isTrendingGlobal) {
-        badgeMap.set(entry.id, {
-          text: "🔥 Trending",
-          tone: "border-amber-400/30 bg-amber-400/10 text-amber-200",
-        });
+        badgeMap.set(entry.id, "trending");
       }
     });
 
@@ -672,30 +704,23 @@ export default function Feed() {
             <div className="space-y-6">
               {displayedPosts.map((post, index) => {
                 const postId = resolvePostId(post, index);
+                const postKey = resolvePostKey(post, index);
+                if (isContentUnderReview(post)) {
+                  return <UnderReviewCard key={`${postKey}-review`} />;
+                }
                 let badge = null;
                 if (!shouldFilterByCollege) {
-                  badge = universalFeedMeta.badgeMap.get(postId) || null;
+                  const badgeKey = universalFeedMeta.badgeMap.get(postId);
+                  badge = resolveBadge(badgeKey);
                 } else {
                   const friendBadge =
-                    isFriendPost(post) && !isAnonymousPost(post)
-                      ? {
-                          text: "👥 Friend",
-                          tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
-                        }
-                      : null;
-                  const campusBadge = friendBadge
-                    ? null
-                    : matchesCollege(post)
-                      ? {
-                          text: "🎓 Campus",
-                          tone: "border-sky-400/30 bg-sky-400/10 text-sky-200",
-                        }
-                      : null;
+                    isFriendPost(post) && !isAnonymousPost(post) ? FRIEND_BADGE : null;
+                  const campusBadge = friendBadge ? null : matchesCollege(post) ? CAMPUS_BADGE : null;
                   badge = friendBadge || campusBadge;
                 }
                 return (
                   <Post
-                    key={resolvePostKey(post, index)}
+                    key={postKey}
                     post={post}
                     badge={badge}
                   />

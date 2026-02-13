@@ -191,6 +191,14 @@ export const resolveContentType = (item) => {
 
 export const shouldExcludeContent = (item) => {
   if (!item || typeof item !== "object") return false;
+  const visibilityStatus = String(
+    item.visibility_status || item.visibilityStatus || ""
+  ).toLowerCase();
+  if (["deleted", "removed"].includes(visibilityStatus)) return true;
+  const aiReviewStatus = String(
+    item.ai_review_status || item.aiReviewStatus || item.aiReviewState || ""
+  ).toLowerCase();
+  if (aiReviewStatus === "violation") return true;
   const status = String(
     item.status || item.state || item.moderationStatus || item.moderation_state || ""
   ).toLowerCase();
@@ -217,6 +225,27 @@ export const shouldExcludeContent = (item) => {
   ) {
     return true;
   }
+  const riskScore = Number(item.reportRiskScore ?? item.reportScore ?? item.report_score ?? 0);
+  if (!Number.isNaN(riskScore) && riskScore >= 0.8) return true;
+  return false;
+};
+
+export const isContentUnderReview = (item) => {
+  if (!item || typeof item !== "object") return false;
+  const visibilityStatus = String(
+    item.visibility_status || item.visibilityStatus || ""
+  ).toLowerCase();
+  if (
+    ["temp_hidden_review", "temp_hidden", "hidden", "under_review"].includes(
+      visibilityStatus
+    )
+  ) {
+    return true;
+  }
+  const aiReviewStatus = String(
+    item.ai_review_status || item.aiReviewStatus || item.aiReviewState || ""
+  ).toLowerCase();
+  if (aiReviewStatus === "pending") return true;
   if (
     item.isReportedHighRisk ||
     item.reportedHighRisk ||

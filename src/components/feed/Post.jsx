@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -139,12 +139,14 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
-export default function Post({ post, onOpen, badge }) {
+function Post({ post, onOpen, badge }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
   const [author, setAuthor] = useState(null);
   const [optimisticLiked, setOptimisticLiked] = useState(null);
   const [likePending, setLikePending] = useState(false);
+  const [likePulse, setLikePulse] = useState(0);
+  const [likeAction, setLikeAction] = useState(null);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showShareChat, setShowShareChat] = useState(false);
@@ -272,6 +274,11 @@ export default function Post({ post, onOpen, badge }) {
     if (!postId) return;
 
     const nextLiked = !isLiked;
+    setLikeAction(nextLiked ? "like" : "unlike");
+    setLikePulse((prev) => prev + 1);
+    if (typeof navigator !== "undefined" && navigator.vibrate) {
+      navigator.vibrate(12);
+    }
     setLikePending(true);
     setOptimisticLiked(nextLiked);
     const nextLikes = nextLiked
@@ -314,6 +321,7 @@ export default function Post({ post, onOpen, badge }) {
     } finally {
       setOptimisticLiked(null);
       setLikePending(false);
+      setLikeAction(null);
     }
   };
 
@@ -570,15 +578,44 @@ export default function Post({ post, onOpen, badge }) {
         <div className="flex justify-around text-[#b9b4c7] pt-4 border-t border-white/10">
           <Motion.button
             onClick={handleLike}
-            className="flex items-center space-x-2 hover:text-red-300 transition-colors"
-            whileTap={{ scale: 0.9 }}
+            className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] px-2 ${
+              isLiked ? "text-red-300" : ""
+            }`}
+            whileTap={{ scale: 0.94 }}
           >
-            <i
-              className={`fa-${isLiked ? "solid" : "regular"} fa-heart ${
-                isLiked ? "text-red-300" : ""
-              }`}
+            <Motion.span
+              key={`like-glow-${likePulse}`}
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={
+                likeAction === "like"
+                  ? { opacity: [0, 0.7, 0], scale: [0.8, 1.4, 1.8] }
+                  : { opacity: 0, scale: 0.9 }
+              }
+              transition={{ duration: 0.3, ease: "easeOut" }}
+              className="absolute inset-0 -z-10 rounded-full bg-red-300/20 blur-xl"
+              aria-hidden="true"
             />
-            <span>{likesCount}</span>
+            <Motion.span
+              key={`like-icon-${likePulse}`}
+              initial={{ scale: 1, opacity: 0.9 }}
+              animate={
+                likeAction === "like"
+                  ? { scale: [1, 0.9, 1.1, 1], opacity: [0.9, 1, 1, 1] }
+                  : { scale: [1, 0.95, 1], opacity: [0.9, 1, 1] }
+              }
+              transition={{ duration: likeAction === "like" ? 0.18 : 0.15, ease: "easeOut" }}
+              className="flex items-center"
+            >
+              <i className={`fa-${isLiked ? "solid" : "regular"} fa-heart`} />
+            </Motion.span>
+            <Motion.span
+              key={`like-count-${likesCount}`}
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.18, ease: "easeOut" }}
+            >
+              {likesCount}
+            </Motion.span>
           </Motion.button>
           <Motion.button
             onClick={() => setShowComments(true)}
@@ -653,3 +690,8 @@ export default function Post({ post, onOpen, badge }) {
     </>
   );
 }
+
+const arePostPropsEqual = (prev, next) =>
+  prev.post === next.post && prev.badge === next.badge && prev.onOpen === next.onOpen;
+
+export default memo(Post, arePostPropsEqual);
