@@ -566,7 +566,7 @@ export default function StoryBar() {
                   <i className="fa-solid fa-plus"></i>
                 </Motion.button>
               )}
-              <p className="text-[11px] text-center mt-1 truncate w-14 text-[#b9b4c7]">
+              <p className="text-[11px] mt-1 w-12 text-left text-[#b9b4c7] truncate whitespace-nowrap">
                 Your Story
               </p>
             </div>
@@ -588,10 +588,12 @@ export default function StoryBar() {
                     className="w-full h-full object-cover"
                   />
                 </div>
-                <p className="text-[11px] font-medium text-center truncate w-14 mt-1 text-[#faf0e6] flex items-center justify-center">
-                  {group.authorDisplayName || "User"}
+                <div className="mt-1 w-12 min-w-0 flex items-center gap-1 text-[11px] font-medium text-[#faf0e6]">
+                  <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">
+                    {group.authorDisplayName || "User"}
+                  </span>
                   {group.authorIsVerified && <BlueTick className="text-[10px]" />}
-                </p>
+                </div>
               </Motion.div>
               );
             })}
