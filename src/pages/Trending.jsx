@@ -41,6 +41,7 @@ import {
   resolveCommunityDescription,
   resolveCommunityName,
 } from "../utils/userProfile";
+import { getOptimizedMediaUrl, getMediaSrcSet } from "../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const SEARCH_DEBOUNCE_MS = 200;
@@ -1216,6 +1217,7 @@ export default function Trending() {
         user.username ||
         "Community"
       : user.fullName || user.displayName || user.username || "User";
+    const avatarUrl = getOptimizedMediaUrl(user.profilePicUrl, { width: 96, height: 96 });
     const status = getFriendStatus(userId);
     const isSelf = String(userId) === String(currentUser?.id);
     const isLoading = friendActionLoading[userId];
@@ -1250,9 +1252,11 @@ export default function Trending() {
             className="flex items-start gap-3 text-left flex-1 min-w-0"
           >
             <img
-              src={user.profilePicUrl || ANONYMOUS_AVATAR}
+              src={avatarUrl || ANONYMOUS_AVATAR}
               alt={displayName}
               className="w-11 h-11 rounded-full object-cover"
+              loading="lazy"
+              decoding="async"
             />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
@@ -1367,6 +1371,10 @@ export default function Trending() {
     if (!post) return null;
     const postId = post._id || post.id || post.postId;
     const mediaUrl = resolvePostMediaUrl(post);
+    const optimizedMediaUrl = getOptimizedMediaUrl(mediaUrl, {
+      width: variant === "featured" ? 1200 : 720,
+    });
+    const mediaSrcSet = getMediaSrcSet(mediaUrl, [360, 540, 720, 1080]);
     const isVideo =
       isVideoUrl(mediaUrl) ||
       String(post.mediaType || post.type || "").toLowerCase().includes("video");
@@ -1404,10 +1412,17 @@ export default function Trending() {
               />
             ) : (
               <img
-                src={mediaUrl}
+                src={optimizedMediaUrl || mediaUrl}
+                srcSet={mediaSrcSet || undefined}
+                sizes={
+                  variant === "featured"
+                    ? "(max-width: 1024px) 90vw, 900px"
+                    : "(max-width: 1024px) 40vw, 260px"
+                }
                 alt="Search post"
                 className="h-full w-full object-cover"
                 loading="lazy"
+                decoding="async"
               />
             )
           ) : (

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "./authContext";
 import {
   fetchPosts,
@@ -238,6 +239,7 @@ const resolveFriendStatus = (payload, currentUserId, targetUserId) => {
 
 export const AppProvider = ({ children }) => {
   const { authToken, currentUser, refreshCurrentUser } = useAuth();
+  const queryClient = useQueryClient();
   const [posts, setPosts] = useState([]);
   const [stories, setStories] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -274,7 +276,11 @@ export const AppProvider = ({ children }) => {
       if (showLoading) {
         setLoading(true);
       }
-      const postsData = await fetchPosts();
+      const postsData = await queryClient.fetchQuery({
+        queryKey: ["posts", authToken],
+        queryFn: () => fetchPosts(),
+        staleTime: 30000,
+      });
       setPosts(postsData);
       postsLoadedRef.current = true;
     } catch (error) {
@@ -285,7 +291,7 @@ export const AppProvider = ({ children }) => {
         setLoading(false);
       }
     }
-  }, [authToken]);
+  }, [authToken, queryClient]);
 
   const loadStories = useCallback(async () => {
     if (!authToken || storiesRequestRef.current) return;
@@ -313,14 +319,24 @@ export const AppProvider = ({ children }) => {
         if (collegeTagName) params.collegeTagName = collegeTagName;
       }
 
-      const storiesData = await fetchStories(params);
+      const storiesData = await queryClient.fetchQuery({
+        queryKey: [
+          "stories",
+          authToken,
+          scope,
+          collegeTagId || "",
+          collegeTagName || "",
+        ],
+        queryFn: () => fetchStories(params),
+        staleTime: 30000,
+      });
       setStories(normalizeStoriesList(storiesData));
     } catch (error) {
       console.error("Failed to load stories:", error);
     } finally {
       storiesRequestRef.current = false;
     }
-  }, [authToken, feedScope, currentUser]);
+  }, [authToken, feedScope, currentUser, queryClient]);
 
   useEffect(() => {
     if (!authToken || !currentUser) return;
@@ -343,14 +359,18 @@ export const AppProvider = ({ children }) => {
     if (!authToken || notificationsRequestRef.current) return;
     notificationsRequestRef.current = true;
     try {
-      const notifs = await fetchNotifications();
+      const notifs = await queryClient.fetchQuery({
+        queryKey: ["notifications", authToken],
+        queryFn: () => fetchNotifications(),
+        staleTime: 15000,
+      });
       setNotifications(notifs);
     } catch (error) {
       console.error("Failed to load notifications:", error);
     } finally {
       notificationsRequestRef.current = false;
     }
-  }, [authToken]);
+  }, [authToken, queryClient]);
 
   const loadBlockedUsers = useCallback(async () => {
     if (!authToken || blockedUsersRequestRef.current) return;
@@ -486,8 +506,16 @@ export const AppProvider = ({ children }) => {
     setFriendMapLoading(true);
     try {
       const [friendsData, pendingData] = await Promise.all([
-        getFriendsList().catch(() => []),
-        getPendingRequests().catch(() => []),
+        queryClient.fetchQuery({
+          queryKey: ["friends", authToken],
+          queryFn: () => getFriendsList().catch(() => []),
+          staleTime: 30000,
+        }),
+        queryClient.fetchQuery({
+          queryKey: ["friend-requests", authToken],
+          queryFn: () => getPendingRequests().catch(() => []),
+          staleTime: 15000,
+        }),
       ]);
       const nextMap = {};
       (Array.isArray(friendsData) ? friendsData : []).forEach((friend) => {
@@ -532,7 +560,7 @@ export const AppProvider = ({ children }) => {
       friendMapRequestRef.current = false;
       setFriendMapLoading(false);
     }
-  }, [authToken, currentUser?.id, applyBlockedToMap]);
+  }, [authToken, currentUser?.id, applyBlockedToMap, queryClient]);
 
   const ensureFriendStatus = useCallback(
     async (userId) => {
