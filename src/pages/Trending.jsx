@@ -985,24 +985,82 @@ export default function Trending() {
     setSelectedStoryIndex(idx);
   };
 
-  const handleToggleLike = async (post) => {
-    if (!currentUser?.id) return;
-    const postId = post._id || post.id;
-    if (!postId) return;
-    const baseLikes = Array.isArray(post.likes) ? post.likes : [];
-    const hasLiked = baseLikes.includes(currentUser.id);
-    const nextLikes = hasLiked
-      ? baseLikes.filter((id) => id !== currentUser.id)
-      : [...baseLikes, currentUser.id];
+  const handleToggleLike = useCallback(
+    async (post) => {
+      if (!currentUser?.id) return;
+      const postId = post._id || post.id || post.postId || post.post_id;
+      if (!postId) return;
+      const baseLikes = Array.isArray(post.likes) ? post.likes : [];
+      const hasLiked = baseLikes.includes(currentUser.id);
+      const nextLikes = hasLiked
+        ? baseLikes.filter((id) => id !== currentUser.id)
+        : [...baseLikes, currentUser.id];
 
-    updatePost(postId, { likes: nextLikes, likeCount: nextLikes.length });
-    try {
-      await likePost(postId);
-    } catch (error) {
-      updatePost(postId, { likes: baseLikes, likeCount: baseLikes.length });
-      console.error("Failed to like post:", error);
+      updatePost(postId, { likes: nextLikes, likeCount: nextLikes.length });
+      try {
+        await likePost(postId);
+      } catch (error) {
+        updatePost(postId, { likes: baseLikes, likeCount: baseLikes.length });
+        console.error("Failed to like post:", error);
+      }
+    },
+    [currentUser?.id, updatePost]
+  );
+
+  const [mediaLikePulse, setMediaLikePulse] = useState({});
+  const lastTapRef = useRef(new Map());
+  const suppressOpenRef = useRef(new Set());
+
+  const bumpMediaLikePulse = useCallback((postId) => {
+    if (!postId) return;
+    setMediaLikePulse((prev) => ({
+      ...prev,
+      [postId]: (prev[postId] || 0) + 1,
+    }));
+  }, []);
+
+  const shouldSuppressOpen = useCallback((postId) => {
+    if (!postId) return false;
+    if (suppressOpenRef.current.has(postId)) {
+      suppressOpenRef.current.delete(postId);
+      return true;
     }
-  };
+    return false;
+  }, []);
+
+  const handleMediaDoubleTap = useCallback(
+    (post) => {
+      if (!post || !currentUser?.id) return;
+      const postId = String(
+        post._id || post.id || post.postId || post.post_id || ""
+      );
+      if (!postId) return;
+      bumpMediaLikePulse(postId);
+      const baseLikes = Array.isArray(post.likes) ? post.likes : [];
+      const hasLiked = baseLikes.includes(currentUser.id);
+      if (!hasLiked) {
+        handleToggleLike(post);
+      }
+    },
+    [currentUser?.id, handleToggleLike, bumpMediaLikePulse]
+  );
+
+  const handleMediaTouchEnd = useCallback(
+    (post) => {
+      const postId = String(
+        post?._id || post?.id || post?.postId || post?.post_id || ""
+      );
+      if (!postId) return;
+      const now = Date.now();
+      const lastTap = lastTapRef.current.get(postId) || 0;
+      if (now - lastTap < 280) {
+        suppressOpenRef.current.add(postId);
+        handleMediaDoubleTap(post);
+      }
+      lastTapRef.current.set(postId, now);
+    },
+    [handleMediaDoubleTap]
+  );
 
   const sharePostId = sharePost?._id || sharePost?.id;
   const sharePostUrl = sharePostId
@@ -1118,9 +1176,10 @@ export default function Trending() {
     if (!entry) return null;
     const isStory = entry.type === "story";
     const item = entry.item;
+    const itemId = String(item?._id || item?.id || item?.postId || item?.post_id || "");
     if (isContentUnderReview(item)) {
       return renderUnderReviewMediaCard({
-        key: `review-${entry.type}-${item?._id || item?.id || index}`,
+        key: `review-${entry.type}-${itemId || index}`,
         highlight: index === 0,
       });
     }
@@ -1162,17 +1221,34 @@ export default function Trending() {
     const snippet = isStory ? item.caption || "Story preview" : item.content || "Campus update";
     const badge = resolveTrendingBadge(entry.score);
 
+    const pulseCount = itemId ? mediaLikePulse[itemId] || 0 : 0;
+
     return (
       <Motion.div
-        key={`${entry.type}-${item._id || item.id || index}`}
+        key={`${entry.type}-${itemId || index}`}
         className={`relative aspect-square overflow-hidden rounded-2xl glass-card border border-white/10 ${
           index === 0 ? "glow-border" : ""
         }`}
         role="button"
         tabIndex={0}
         onClick={() => {
-          if (isStory) handleOpenStory(item);
-          else setSelectedPost(item);
+          if (isStory) {
+            handleOpenStory(item);
+            return;
+          }
+          if (shouldSuppressOpen(itemId)) return;
+          setSelectedPost(item);
+        }}
+        onDoubleClick={(event) => {
+          if (isStory) return;
+          event.preventDefault();
+          event.stopPropagation();
+          if (itemId) suppressOpenRef.current.add(itemId);
+          handleMediaDoubleTap(item);
+        }}
+        onTouchEnd={() => {
+          if (isStory) return;
+          handleMediaTouchEnd(item);
         }}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -1183,6 +1259,7 @@ export default function Trending() {
         }}
         whileHover={{ scale: 1.03 }}
         whileTap={{ scale: 0.97 }}
+        style={{ touchAction: "manipulation" }}
       >
         {mediaUrl ? (
           isVideo ? (
@@ -1194,6 +1271,16 @@ export default function Trending() {
           <div className="h-full w-full bg-white/5 p-4 flex items-end">
             <p className="text-sm text-[#faf0e6] line-clamp-3">{snippet}</p>
           </div>
+        )}
+        {!isStory && pulseCount > 0 && (
+          <Motion.i
+            key={`trend-like-${itemId}-${pulseCount}`}
+            className="fa-solid fa-heart text-4xl text-red-300 drop-shadow-[0_0_18px_rgba(248,113,113,0.6)] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+            initial={{ opacity: 0, scale: 0.6 }}
+            animate={{ opacity: [0, 1, 0], scale: [0.6, 1.1, 1.3] }}
+            transition={{ duration: 0.45, ease: "easeOut" }}
+            aria-hidden="true"
+          />
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
         <div className="absolute top-3 left-3 flex items-center gap-2 max-w-[75%]">
@@ -1548,7 +1635,7 @@ export default function Trending() {
 
   const renderPostCard = (post, { variant = "grid" } = {}) => {
     if (!post) return null;
-    const postId = post._id || post.id || post.postId;
+    const postId = post._id || post.id || post.postId || post.post_id;
     if (isContentUnderReview(post)) {
       const aspectClass = variant === "featured" ? "aspect-[16/9]" : "aspect-square";
       return renderUnderReviewMediaCard({
@@ -1578,14 +1665,28 @@ export default function Trending() {
         : post.content || "Campus update";
     const aspectClass = variant === "featured" ? "aspect-[16/9]" : "aspect-square";
 
+    const resolvedId = String(postId || "");
+    const pulseCount = resolvedId ? mediaLikePulse[resolvedId] || 0 : 0;
+
     return (
       <button
         key={postId}
         type="button"
-        onClick={() => setSelectedPost(post)}
+        onClick={() => {
+          if (shouldSuppressOpen(resolvedId)) return;
+          setSelectedPost(post);
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (resolvedId) suppressOpenRef.current.add(resolvedId);
+          handleMediaDoubleTap(post);
+        }}
+        onTouchEnd={() => handleMediaTouchEnd(post)}
         className={`relative overflow-hidden rounded-2xl border border-white/10 bg-white/5 text-left ${
           variant === "featured" ? "w-full" : ""
         }`}
+        style={{ touchAction: "manipulation" }}
       >
         <div className={`relative w-full ${aspectClass}`}>
           {mediaUrl ? (
@@ -1616,6 +1717,16 @@ export default function Trending() {
             <div className="h-full w-full bg-white/5 p-3 flex items-end">
               <p className="text-xs text-[#faf0e6] line-clamp-3">{caption}</p>
             </div>
+          )}
+          {pulseCount > 0 && (
+            <Motion.i
+              key={`trend-search-like-${resolvedId}-${pulseCount}`}
+              className="fa-solid fa-heart text-3xl text-red-300 drop-shadow-[0_0_16px_rgba(248,113,113,0.6)] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+              initial={{ opacity: 0, scale: 0.6 }}
+              animate={{ opacity: [0, 1, 0], scale: [0.6, 1.1, 1.3] }}
+              transition={{ duration: 0.45, ease: "easeOut" }}
+              aria-hidden="true"
+            />
           )}
           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent"></div>
           <div className="absolute bottom-2 left-2 flex items-center gap-2 text-[10px] text-[#faf0e6]">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -55,8 +55,10 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const [localIsLiked, setLocalIsLiked] = useState(false);
   const [localLikesCount, setLocalLikesCount] = useState(0);
   const [likePending, setLikePending] = useState(false);
+  const [mediaLikePulse, setMediaLikePulse] = useState(0);
   const [showReport, setShowReport] = useState(false);
-  const postId = post._id || post.id;
+  const postId = post._id || post.id || post.postId || post.post_id;
+  const lastTapRef = useRef(0);
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const collegeTagName =
     post.collegeTagName ||
@@ -204,7 +206,6 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
 
   const handleLike = async () => {
     if (!currentUser || likePending) return;
-    const postId = post._id || post.id;
     if (!postId) return;
     const nextLiked = !localIsLiked;
     setLikePending(true);
@@ -225,6 +226,21 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
       setLikePending(false);
     }
   };
+
+  const handleMediaDoubleTap = useCallback(() => {
+    setMediaLikePulse((prev) => prev + 1);
+    if (!localIsLiked && !likePending) {
+      handleLike();
+    }
+  }, [localIsLiked, likePending, handleLike]);
+
+  const handleMediaTouchEnd = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 280) {
+      handleMediaDoubleTap();
+    }
+    lastTapRef.current = now;
+  }, [handleMediaDoubleTap]);
 
   return (
     <AnimatePresence>
@@ -287,12 +303,32 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
               {post.content && (
                 <p className="text-[#faf0e6] mb-4 whitespace-pre-wrap">{post.content}</p>
               )}
-              {post.mediaUrl && (
-                <img
-                  src={post.mediaUrl}
-                  alt="Post media"
-                  className="w-full rounded-2xl mb-4 border border-white/10"
-                />
+              {postThumbnail && (
+                <div
+                  className="relative w-full rounded-2xl mb-4 border border-white/10 overflow-hidden"
+                  onDoubleClick={(event) => {
+                    event.preventDefault();
+                    handleMediaDoubleTap();
+                  }}
+                  onTouchEnd={handleMediaTouchEnd}
+                  style={{ touchAction: "manipulation" }}
+                >
+                  <img
+                    src={postThumbnail}
+                    alt="Post media"
+                    className="w-full"
+                  />
+                  {mediaLikePulse > 0 && (
+                    <Motion.i
+                      key={`modal-like-${mediaLikePulse}`}
+                      className="fa-solid fa-heart text-5xl sm:text-6xl text-red-300 drop-shadow-[0_0_18px_rgba(248,113,113,0.6)] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                      initial={{ opacity: 0, scale: 0.6 }}
+                      animate={{ opacity: [0, 1, 0], scale: [0.6, 1.1, 1.3] }}
+                      transition={{ duration: 0.45, ease: "easeOut" }}
+                      aria-hidden="true"
+                    />
+                  )}
+                </div>
               )}
 
               <div className="flex justify-around text-[#b9b4c7] pt-4 border-t border-white/10">
