@@ -133,6 +133,34 @@ const resolveEntityId = (value) => {
   );
 };
 
+const isMessageNotification = (notif) => {
+  if (!notif) return false;
+  const type = String(
+    notif.type ||
+      notif.action ||
+      notif.event ||
+      notif.kind ||
+      notif.notificationType ||
+      notif.notification_type ||
+      ""
+  ).toLowerCase();
+  const category = String(
+    notif.category || notif.channel || notif.source || ""
+  ).toLowerCase();
+  const message = String(
+    notif.message || notif.text || notif.title || notif.body || ""
+  ).toLowerCase();
+  return (
+    type.includes("message") ||
+    type.includes("chat") ||
+    category.includes("message") ||
+    category.includes("chat") ||
+    message.includes("sent you a message") ||
+    message.includes("new message") ||
+    message.includes("sent you a chat")
+  );
+};
+
 const resolvePendingRequestUsers = (request) => {
   if (!request) return { fromId: "", toId: "" };
   const fromRaw =
@@ -270,6 +298,7 @@ export const AppProvider = ({ children }) => {
   const activeChatIdRef = useRef(null);
   const chatViewActiveRef = useRef(false);
   const seenChatMessagesRef = useRef(new Map());
+  const toastDedupeRef = useRef(new Map());
   const [feedScope, setFeedScope] = useState(() => {
     if (typeof window === "undefined") return "universal";
     return localStorage.getItem("feedScope") || "universal";
@@ -372,7 +401,8 @@ export const AppProvider = ({ children }) => {
         queryFn: () => fetchNotifications(),
         staleTime: 15000,
       });
-      setNotifications(notifs);
+      const list = Array.isArray(notifs) ? notifs : [];
+      setNotifications(list.filter((notif) => !isMessageNotification(notif)));
     } catch (error) {
       console.error("Failed to load notifications:", error);
     } finally {
@@ -991,7 +1021,25 @@ export const AppProvider = ({ children }) => {
 
   const pushChatToast = useCallback((toast) => {
     if (!toast || !toast.id) return;
-    setChatToasts((prev) => [...prev, toast]);
+    const key =
+      toast.dedupeKey ||
+      `${toast.chatId || "toast"}|${toast.title || ""}|${toast.message || ""}`;
+    if (key) {
+      const now = Date.now();
+      const lastSeen = toastDedupeRef.current.get(key);
+      if (lastSeen && now - lastSeen < 8000) return;
+      toastDedupeRef.current.set(key, now);
+      if (toastDedupeRef.current.size > 300) {
+        const entries = Array.from(toastDedupeRef.current.entries());
+        entries
+          .sort((a, b) => a[1] - b[1])
+          .slice(0, 150)
+          .forEach(([oldKey]) => toastDedupeRef.current.delete(oldKey));
+      }
+    }
+    setChatToasts((prev) =>
+      prev.some((item) => item.id === toast.id) ? prev : [...prev, toast]
+    );
     setTimeout(() => {
       setChatToasts((prev) => prev.filter((item) => item.id !== toast.id));
     }, 3000);
@@ -1086,9 +1134,19 @@ export const AppProvider = ({ children }) => {
           cachedUser?.profilePicUrl ||
           CHAT_TOAST_AVATAR;
         const preview = truncateMessage(resolveMessagePreview(message));
+        const rawTime =
+          message.createdAt ||
+          message.created_at ||
+          message.timestamp ||
+          message.sentAt ||
+          Date.now();
+        const timeBucket = Math.floor(new Date(rawTime).getTime() / 5000);
+        const toastKey = `${chatId}-${senderId || "anon"}-${preview || ""}-${timeBucket}`;
         pushChatToast({
           id: `${chatId}-${message.createdAt || message.timestamp || Date.now()}`,
+          dedupeKey: toastKey,
           chatId,
+          senderId,
           title: senderName,
           message: preview || "Sent you a message",
           avatar: senderAvatar,
@@ -1149,7 +1207,9 @@ export const AppProvider = ({ children }) => {
 
     // Notification listener
     const handleNotification = (notif) => {
-      setNotifications((prev) => [notif, ...prev]);
+      if (!isMessageNotification(notif)) {
+        setNotifications((prev) => [notif, ...prev]);
+      }
     };
 
     const handleCommentAdded = (payload = {}) => {
@@ -1386,6 +1446,7 @@ export const AppProvider = ({ children }) => {
     socket.on("chat-message", handleChatMessage);
     socket.on("chat:newMessage", handleChatMessage);
     socket.on("chat:messageSent", handleChatMessage);
+    socket.on("chat:newMessagePopup", handleChatMessage);
     socket.on("notification", handleNotification);
     socket.on("comment-added", handleCommentAdded);
     socket.on("post-liked", handlePostLiked);
@@ -1410,6 +1471,7 @@ export const AppProvider = ({ children }) => {
       socket.off("chat-message", handleChatMessage);
       socket.off("chat:newMessage", handleChatMessage);
       socket.off("chat:messageSent", handleChatMessage);
+      socket.off("chat:newMessagePopup", handleChatMessage);
       socket.off("notification", handleNotification);
       socket.off("comment-added", handleCommentAdded);
       socket.off("post-liked", handlePostLiked);

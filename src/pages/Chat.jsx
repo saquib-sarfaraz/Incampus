@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { motion as Motion, AnimatePresence } from "framer-motion";
+import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
 import {
@@ -12,7 +12,7 @@ import {
   reportMessage,
   blockUser,
 } from "../services/api";
-import { getSocket } from "../services/socket";
+import { getSocket, ensureSocketConnected } from "../services/socket";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
@@ -150,6 +150,7 @@ export default function Chat() {
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
   const loadedChatsRef = useRef(new Set());
+  const lastSeenSentRef = useRef(new Map());
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -203,6 +204,9 @@ export default function Chat() {
 
   useEffect(() => {
     activeChatRef.current = activeChatId;
+    if (activeChatId && !String(activeChatId).startsWith("group:")) {
+      ensureSocketConnected();
+    }
   }, [activeChatId]);
 
   useEffect(() => {
@@ -363,8 +367,12 @@ export default function Chat() {
 
   const markMessagesSeen = useCallback(
     (chatId) => {
-      if (!chatId || String(chatId).startsWith("group:")) return;
+      if (!chatId) return;
       const seenAt = new Date().toISOString();
+      const now = Date.now();
+      const lastSent = lastSeenSentRef.current.get(chatId) || 0;
+      const shouldEmit = now - lastSent > 2000;
+
       setMessagesByChat((prev) => {
         const existing = prev[chatId] || [];
         if (existing.length === 0) return prev;
@@ -375,6 +383,10 @@ export default function Chat() {
         });
         return { ...prev, [chatId]: updated };
       });
+
+      if (!shouldEmit) return;
+      lastSeenSentRef.current.set(chatId, now);
+
       const socket = getSocket();
       if (socket && currentUser?.id) {
         socket.emit("message-seen", {
@@ -383,7 +395,12 @@ export default function Chat() {
           seenAt,
         });
       }
-      markChatSeen({ chatId, userId: currentUser?.id, seenAt }).catch(() => {});
+      markChatSeen({
+        chatId,
+        userId: currentUser?.id,
+        seenAt,
+        isGroup: String(chatId).startsWith("group:"),
+      }).catch(() => {});
     },
     [currentUser, setMessagesByChat]
   );
@@ -884,6 +901,7 @@ export default function Chat() {
 
   useEffect(() => {
     setChatViewActive(true);
+    ensureSocketConnected();
     return () => setChatViewActive(false);
   }, [setChatViewActive]);
 
@@ -1064,14 +1082,17 @@ export default function Chat() {
     socket.off("chat-message", handleMessage);
     socket.off("chat:newMessage", handleMessage);
     socket.off("chat:messageSent", handleMessage);
+    socket.off("chat:newMessagePopup", handleMessage);
     socket.on("chat-message", handleMessage);
     socket.on("chat:newMessage", handleMessage);
     socket.on("chat:messageSent", handleMessage);
+    socket.on("chat:newMessagePopup", handleMessage);
 
     return () => {
       socket.off("chat-message", handleMessage);
       socket.off("chat:newMessage", handleMessage);
       socket.off("chat:messageSent", handleMessage);
+      socket.off("chat:newMessagePopup", handleMessage);
     };
   }, [
     currentUser?.id,
@@ -1222,6 +1243,7 @@ export default function Chat() {
     });
   }, [messagesByChat, activeChatId, isUserBlocked, nowTick]);
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
+  const isChatOpen = Boolean(activeChatId);
   const friendStatus = activeChatUser?.isGroup
     ? "friends"
     : getFriendStatus(activeChatUser?.id || activeChatId);
@@ -1271,14 +1293,18 @@ export default function Chat() {
 
 
   return (
-    <div id="chat-view" className="min-h-screen flex flex-col pb-24 sm:pb-0">
+    <div id="chat-view" className="h-[100dvh] min-h-[100dvh] flex flex-col pb-24 sm:pb-0">
       <Header />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div id="chat-body" className="flex-1 flex min-h-0 overflow-hidden">
         <div
           id="chat-sidebar"
-          className={`w-full sm:w-1/3 border-r border-white/10 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col ${
-            isMobile && activeChatId ? "hidden" : "flex"
+          className={`relative z-30 w-full h-full sm:w-1/3 border-r border-white/10 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col min-h-0 transition-transform duration-300 ease-out will-change-transform ${
+            isMobile
+              ? isChatOpen
+                ? "-translate-x-full opacity-0 pointer-events-none"
+                : "translate-x-0 opacity-100"
+              : "translate-x-0 opacity-100"
           }`}
         >
           <div className="flex space-x-2 border-b border-white/10 p-4">
@@ -1302,225 +1328,266 @@ export default function Chat() {
             ))}
           </div>
 
-          <div id="chat-list-container" className="flex-grow overflow-y-auto p-4 space-y-2">
-            {activeTab === "contacts" &&
-              (contactsList.length === 0 ? (
-                <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
-              ) : (
-                contactsList.map((contact) => {
-                  const meta = chatMeta[contact.id] || {};
-                  const unreadCount = meta.unreadCount || 0;
-                  const presence = getPresence(contact.id, contact);
-                  const isOnline = presence.isOnline;
-                  const displayName = resolveContactName(contact);
-                  return (
-                    <Motion.div
-                      key={contact.id}
-                      onClick={() => handleOpenChat(contact.id)}
-                      className={`flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-                        unreadCount > 0
-                          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-                          : "border-transparent hover:bg-white/5"
-                      }`}
-                      whileHover={{ scale: 1.01 }}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      <div className="relative">
-                        <img
-                          src={contact.profilePicUrl || ANONYMOUS_AVATAR}
-                          alt={displayName}
-                          className="w-11 h-11 rounded-full object-cover"
-                        />
-                        {isOnline && (
-                          <span className="absolute bottom-0 right-0 flex h-3 w-3 items-center justify-center">
-                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-40"></span>
-                            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p
-                          className={`text-sm text-[#faf0e6] truncate ${
-                            unreadCount > 0 ? "font-bold" : "font-semibold"
-                          }`}
-                        >
-                          {displayName}
-                        </p>
-                        <p
-                          className={`text-xs truncate ${
-                            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-                          }`}
-                        >
-                          {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
-                            "Say hello to start chatting"}
-                        </p>
-                      </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-[#b9b4c7]">
-                          {formatTime(meta.lastMessageAt)}
-                        </span>
-                        {unreadCount > 0 && (
-                          <div className="flex items-center gap-1">
-                            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-                              {unreadCount}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </Motion.div>
-                  );
-                })
-              ))}
-
-            {activeTab === "groups" &&
-              (groupsSorted.length === 0 ? (
-                <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
-              ) : (
-                groupsSorted.map((group) => {
-                  const meta = chatMeta[group.id] || {};
-                  const unreadCount = meta.unreadCount || 0;
-                  const memberCount = group.memberCount ?? group.members?.length;
-                  return (
-                    <Motion.div
-                      key={group.id}
-                      onClick={() => handleOpenChat(group.id)}
-                      className={`flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-                        unreadCount > 0
-                          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-                          : "border-transparent hover:bg-white/5"
-                      }`}
-                      whileHover={{ scale: 1.01 }}
-                      whileTap={{ scale: 0.98 }}
-                    >
-                      <div className="relative">
-                        <img
-                          src={group.profilePicUrl || "/incampus-icon.svg"}
-                          alt={group.displayName}
-                          className="w-11 h-11 rounded-2xl object-cover"
-                        />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p
-                          className={`text-sm text-[#faf0e6] truncate ${
-                            unreadCount > 0 ? "font-bold" : "font-semibold"
-                          }`}
-                        >
-                          {group.displayName}
-                        </p>
-                        <p
-                          className={`text-xs truncate ${
-                            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-                          }`}
-                        >
-                          {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
-                            "Campus group channel"}
-                        </p>
-                      </div>
-                      <div className="flex flex-col items-end gap-1">
-                        <span className="text-[10px] text-[#b9b4c7]">
-                          {formatTime(meta.lastMessageAt)}
-                        </span>
-                        <span className="text-[10px] text-[#b9b4c7]">
-                          {memberCount ? `${memberCount} members` : "Members"}
-                        </span>
-                        {unreadCount > 0 && (
-                          <div className="flex items-center gap-1">
-                            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-                              {unreadCount}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </Motion.div>
-                  );
-                })
-              ))}
-
-            {activeTab === "requests" &&
-              (requests.length === 0 ? (
-                <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
-              ) : (
-                requests.map((req, index) => {
-                  const requesterId =
-                    resolveFriendId(req?.requesterId) ||
-                    resolveFriendId(req?.senderId) ||
-                    resolveFriendId(req?.fromUserId) ||
-                    resolveFriendId(req?.requester) ||
-                    resolveFriendId(req?.sender) ||
-                    resolveFriendId(req?.fromUser) ||
-                    resolveFriendId(req?.user) ||
-                    resolveFriendId(req?.userId);
-                  const requestKey = req._id || req.id || requesterId || "req";
-                  const requesterFriends = req.user?.friends || [];
-                  const mutualCount = requesterFriends.filter((id) =>
-                    resolvedFriendIdSet.has(resolveFriendId(id))
-                  ).length;
-                  return (
-                    <div
-                      key={`${requestKey}-${index}`}
-                      className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center flex-grow gap-3">
-                          <img
-                            src={req.user?.profilePicUrl || ANONYMOUS_AVATAR}
-                            alt={req.user?.displayName}
-                            className="w-10 h-10 rounded-full object-cover"
-                          />
-                          <div className="flex-grow">
-                            <p className="font-semibold text-sm text-[#faf0e6]">
-                              {req.user?.displayName || "User"}
-                            </p>
-                            <p className="text-xs text-[#b9b4c7]">
-                              {mutualCount > 0
-                                ? `${mutualCount} mutual friends`
-                                : "No mutual friends"}
-                            </p>
-                          </div>
-                        </div>
-                        <span className="text-[10px] text-[#b9b4c7]">
-                          {req.type === "group" ? "Group Request" : "Friend Request"}
-                        </span>
-                      </div>
-                      <div className="flex gap-2">
-                        <Motion.button
-                          onClick={() => handleAcceptRequest(req)}
-                          className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                        >
-                          Accept
-                        </Motion.button>
-                        <Motion.button
-                          onClick={() => handleIgnoreRequest(requesterId)}
-                          className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
-                          whileHover={{ scale: 1.05 }}
-                          whileTap={{ scale: 0.95 }}
-                        >
-                          Ignore
-                        </Motion.button>
-                      </div>
-                    </div>
-                  );
-                })
-              ))}
-          </div>
-        </div>
-
-        <AnimatePresence>
-          {activeChatId && (
-            <Motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 25, stiffness: 200 }}
-              id="active-chat-panel"
-              className={`w-full sm:w-2/3 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col min-h-0 overflow-hidden ${
-                isMobile ? "fixed inset-0 z-50 h-[100dvh] max-h-[100dvh]" : ""
+          <div id="chat-list-container" className="flex-1 min-h-0 relative overflow-hidden">
+            <div
+              aria-hidden={activeTab !== "contacts"}
+              className={`absolute inset-0 transition-all duration-200 ease-out ${
+                activeTab === "contacts"
+                  ? "opacity-100 translate-x-0 pointer-events-auto"
+                  : "opacity-0 translate-x-2 pointer-events-none"
               }`}
             >
+              <div
+                className="h-full overflow-y-auto p-4 space-y-2"
+                style={{ WebkitOverflowScrolling: "touch" }}
+              >
+                {contactsList.length === 0 ? (
+                  <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
+                ) : (
+                  contactsList.map((contact) => {
+                    const meta = chatMeta[contact.id] || {};
+                    const unreadCount = meta.unreadCount || 0;
+                    const presence = getPresence(contact.id, contact);
+                    const isOnline = presence.isOnline;
+                    const displayName = resolveContactName(contact);
+                    return (
+                      <Motion.div
+                        key={contact.id}
+                        onClick={() => handleOpenChat(contact.id)}
+                        className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
+                          unreadCount > 0
+                            ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
+                            : "border-transparent hover:bg-white/5"
+                        }`}
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
+                        <div className="relative">
+                          <img
+                            src={contact.profilePicUrl || ANONYMOUS_AVATAR}
+                            alt={displayName}
+                            className="w-11 h-11 rounded-full object-cover"
+                          />
+                          {isOnline && (
+                            <span className="absolute bottom-0 right-0 flex h-3 w-3 items-center justify-center">
+                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-40"></span>
+                              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p
+                            className={`text-sm text-[#faf0e6] truncate ${
+                              unreadCount > 0 ? "font-bold" : "font-semibold"
+                            }`}
+                          >
+                            {displayName}
+                          </p>
+                          <p
+                            className={`text-xs truncate ${
+                              unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
+                            }`}
+                          >
+                            {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+                              "Say hello to start chatting"}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-[10px] text-[#b9b4c7]">
+                            {formatTime(meta.lastMessageAt)}
+                          </span>
+                          {unreadCount > 0 && (
+                            <div className="flex items-center gap-1">
+                              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                              <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
+                                {unreadCount}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </Motion.div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div
+              aria-hidden={activeTab !== "groups"}
+              className={`absolute inset-0 transition-all duration-200 ease-out ${
+                activeTab === "groups"
+                  ? "opacity-100 translate-x-0 pointer-events-auto"
+                  : "opacity-0 translate-x-2 pointer-events-none"
+              }`}
+            >
+              <div
+                className="h-full overflow-y-auto p-4 space-y-2"
+                style={{ WebkitOverflowScrolling: "touch" }}
+              >
+                {groupsSorted.length === 0 ? (
+                  <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
+                ) : (
+                  groupsSorted.map((group) => {
+                    const meta = chatMeta[group.id] || {};
+                    const unreadCount = meta.unreadCount || 0;
+                    const memberCount = group.memberCount ?? group.members?.length;
+                    return (
+                      <Motion.div
+                        key={group.id}
+                        onClick={() => handleOpenChat(group.id)}
+                        className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
+                          unreadCount > 0
+                            ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
+                            : "border-transparent hover:bg-white/5"
+                        }`}
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
+                        <div className="relative">
+                          <img
+                            src={group.profilePicUrl || "/incampus-icon.svg"}
+                            alt={group.displayName}
+                            className="w-11 h-11 rounded-2xl object-cover"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p
+                            className={`text-sm text-[#faf0e6] truncate ${
+                              unreadCount > 0 ? "font-bold" : "font-semibold"
+                            }`}
+                          >
+                            {group.displayName}
+                          </p>
+                          <p
+                            className={`text-xs truncate ${
+                              unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
+                            }`}
+                          >
+                            {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+                              "Campus group channel"}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1">
+                          <span className="text-[10px] text-[#b9b4c7]">
+                            {formatTime(meta.lastMessageAt)}
+                          </span>
+                          <span className="text-[10px] text-[#b9b4c7]">
+                            {memberCount ? `${memberCount} members` : "Members"}
+                          </span>
+                          {unreadCount > 0 && (
+                            <div className="flex items-center gap-1">
+                              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                              <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
+                                {unreadCount}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </Motion.div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            <div
+              aria-hidden={activeTab !== "requests"}
+              className={`absolute inset-0 transition-all duration-200 ease-out ${
+                activeTab === "requests"
+                  ? "opacity-100 translate-x-0 pointer-events-auto"
+                  : "opacity-0 translate-x-2 pointer-events-none"
+              }`}
+            >
+              <div
+                className="h-full overflow-y-auto p-4 space-y-2"
+                style={{ WebkitOverflowScrolling: "touch" }}
+              >
+                {requests.length === 0 ? (
+                  <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
+                ) : (
+                  requests.map((req, index) => {
+                    const requesterId =
+                      resolveFriendId(req?.requesterId) ||
+                      resolveFriendId(req?.senderId) ||
+                      resolveFriendId(req?.fromUserId) ||
+                      resolveFriendId(req?.requester) ||
+                      resolveFriendId(req?.sender) ||
+                      resolveFriendId(req?.fromUser) ||
+                      resolveFriendId(req?.user) ||
+                      resolveFriendId(req?.userId);
+                    const requestKey = req._id || req.id || requesterId || "req";
+                    const requesterFriends = req.user?.friends || [];
+                    const mutualCount = requesterFriends.filter((id) =>
+                      resolvedFriendIdSet.has(resolveFriendId(id))
+                    ).length;
+                    return (
+                      <div
+                        key={`${requestKey}-${index}`}
+                        className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center flex-grow gap-3">
+                            <img
+                              src={req.user?.profilePicUrl || ANONYMOUS_AVATAR}
+                              alt={req.user?.displayName}
+                              className="w-10 h-10 rounded-full object-cover"
+                            />
+                            <div className="flex-grow">
+                              <p className="font-semibold text-sm text-[#faf0e6]">
+                                {req.user?.displayName || "User"}
+                              </p>
+                              <p className="text-xs text-[#b9b4c7]">
+                                {mutualCount > 0
+                                  ? `${mutualCount} mutual friends`
+                                  : "No mutual friends"}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="text-[10px] text-[#b9b4c7]">
+                            {req.type === "group" ? "Group Request" : "Friend Request"}
+                          </span>
+                        </div>
+                        <div className="flex gap-2">
+                          <Motion.button
+                            onClick={() => handleAcceptRequest(req)}
+                            className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                          >
+                            Accept
+                          </Motion.button>
+                          <Motion.button
+                            onClick={() => handleIgnoreRequest(requesterId)}
+                            className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                          >
+                            Ignore
+                          </Motion.button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+        <Motion.div
+          initial={false}
+          animate={
+            isMobile
+              ? { x: isChatOpen ? 0 : "100%", opacity: isChatOpen ? 1 : 0 }
+              : { x: 0, opacity: 1 }
+          }
+          transition={{ type: "spring", damping: 25, stiffness: 200 }}
+          id="active-chat-panel"
+          className={`relative z-20 w-full sm:w-2/3 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col min-h-0 overflow-hidden will-change-transform ${
+            isMobile ? "fixed inset-0 z-50 h-[100dvh] max-h-[100dvh]" : ""
+          } ${isMobile && !isChatOpen ? "pointer-events-none" : ""}`}
+        >
+          {isChatOpen ? (
+            <>
               <div
                 id="chat-header"
                 className="flex-shrink-0 z-20 p-4 min-h-[64px] border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
@@ -1710,15 +1777,15 @@ export default function Chat() {
                   </Motion.button>
                 </form>
               </div>
-            </Motion.div>
+            </>
+          ) : (
+            !isMobile && (
+              <div className="w-full h-full flex items-center justify-center text-[#b9b4c7]">
+                Select a chat to start messaging
+              </div>
+            )
           )}
-        </AnimatePresence>
-
-        {!activeChatId && !isMobile && (
-          <div className="w-2/3 flex items-center justify-center bg-[#1a120b]/85 backdrop-blur-xl">
-            <p className="text-[#b9b4c7]">Select a chat to start messaging</p>
-          </div>
-        )}
+        </Motion.div>
       </div>
 
       <Motion.button
