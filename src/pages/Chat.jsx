@@ -70,7 +70,6 @@ const isMessageExpired = (msg, now = Date.now()) => {
 
 const filterMessagesForChat = (chatId, messages, now = Date.now()) => {
   if (!Array.isArray(messages)) return [];
-  if (!isGroupChatId(chatId)) return messages;
   return messages.filter((msg) => !isMessageExpired(msg, now));
 };
 
@@ -130,6 +129,8 @@ export default function Chat() {
     friendIdSet: friendIdSetFromContext,
     friendMapLoaded,
     canChat,
+    getFriendStatus,
+    sendFriendRequest,
     acceptFriend,
     rejectFriend,
   } = useApp();
@@ -144,6 +145,7 @@ export default function Chat() {
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const [friendRequestLoading, setFriendRequestLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
@@ -430,9 +432,7 @@ export default function Chat() {
       if (!currentUser?.id || !Array.isArray(messages)) return 0;
       if (chatId === activeChatRef.current) return 0;
       const now = Date.now();
-      const scopedMessages = isGroupChatId(chatId)
-        ? messages.filter((msg) => !isMessageExpired(msg, now))
-        : messages;
+      const scopedMessages = messages.filter((msg) => !isMessageExpired(msg, now));
       return scopedMessages.filter((msg) => {
         const senderId = msg.from || msg.senderId || msg.userId;
         if (String(senderId) === String(currentUser.id)) return false;
@@ -451,7 +451,6 @@ export default function Chat() {
 
   const syncChatMetaFromMessages = useCallback(
     (chatId, messages) => {
-      if (!isGroupChatId(chatId)) return;
       const list = Array.isArray(messages) ? messages : [];
       if (list.length === 0) {
         setChatMetaEntry(chatId, (current) => ({
@@ -476,7 +475,6 @@ export default function Chat() {
 
   const pruneGroupMessagesInState = useCallback(
     (chatId, messages) => {
-      if (!isGroupChatId(chatId)) return { messages, changed: false };
       const filtered = filterMessagesForChat(chatId, messages);
       const changed = filtered.length !== messages.length;
       if (changed) {
@@ -695,9 +693,33 @@ export default function Chat() {
     scrollToBottom();
   };
 
-  const handleAcceptRequest = async (requesterId) => {
+  const handleAcceptRequest = async (request) => {
+    const requesterId =
+      resolveFriendId(request?.requesterId) ||
+      resolveFriendId(request?.senderId) ||
+      resolveFriendId(request?.fromUserId) ||
+      resolveFriendId(request?.user?.id) ||
+      resolveFriendId(request?.user?._id) ||
+      resolveFriendId(request?.userId);
+    const requestId = request?._id || request?.id || request?.requestId;
+    if (!requesterId && !requestId) return;
+
     try {
-      await acceptFriend(requesterId);
+      await acceptFriend(request);
+      setRequests((prev) =>
+        prev.filter((req) => {
+          const id = req?._id || req?.id || req?.requestId;
+          if (requestId && id && String(id) === String(requestId)) return false;
+          const fromId =
+            resolveFriendId(req?.requesterId) ||
+            resolveFriendId(req?.senderId) ||
+            resolveFriendId(req?.fromUserId) ||
+            resolveFriendId(req?.user?.id) ||
+            resolveFriendId(req?.user?._id) ||
+            resolveFriendId(req?.userId);
+          return requesterId ? String(fromId) !== String(requesterId) : true;
+        })
+      );
       await refreshLists();
     } catch (error) {
       alert(error.message || "Failed to accept request");
@@ -710,6 +732,27 @@ export default function Chat() {
       await rejectFriend(requesterId);
     } catch (error) {
       console.error("Failed to ignore request:", error);
+    }
+  };
+
+  const handleSendFriendRequest = async () => {
+    if (!activeChatId || friendRequestLoading) return;
+    setFriendRequestLoading(true);
+    try {
+      await sendFriendRequest(activeChatId);
+      showToast({
+        id: `friend-request-${activeChatId}`,
+        title: "Request sent",
+        message: "Your friend request was sent.",
+      });
+    } catch (error) {
+      showToast({
+        id: `friend-request-failed-${activeChatId}`,
+        title: "Request failed",
+        message: error.message || "Unable to send request.",
+      });
+    } finally {
+      setFriendRequestLoading(false);
     }
   };
 
@@ -944,8 +987,18 @@ export default function Chat() {
         message?.to ||
         "";
       const chatId = String(rawChatId || "");
-      if (!isGroupChatId(chatId)) return;
-      const expiredId = message?._id || message?.id || payload.messageId;
+      if (!chatId) return;
+
+      const expiredIds = new Set(
+        []
+          .concat(payload.messageIds || [])
+          .concat(payload.messageId ? [payload.messageId] : [])
+          .concat(message?._id ? [message._id] : [])
+          .concat(message?.id ? [message.id] : [])
+          .map((id) => String(id))
+          .filter(Boolean)
+      );
+
       let nextMeta = null;
 
       setMessagesByChat((prev) => {
@@ -954,7 +1007,7 @@ export default function Chat() {
         const now = Date.now();
         const filtered = existing.filter((msg) => {
           const msgId = msg._id || msg.id;
-          if (expiredId && msgId && String(expiredId) === String(msgId)) {
+          if (msgId && expiredIds.has(String(msgId))) {
             return false;
           }
           return !isMessageExpired(msg, now);
@@ -989,17 +1042,35 @@ export default function Chat() {
     };
     socket.off("friend-requested", handleFriendRequest);
     socket.off("friend-request-received", handleFriendRequest);
+    socket.off("friend_request_received", handleFriendRequest);
+    socket.off("friend_request_accepted", refreshLists);
     socket.off("friend-accepted", handleFriendAccepted);
     socket.off("friend-removed", handleFriendAccepted);
+    socket.off("friendRequestAccepted", handleFriendAccepted);
+    socket.off("friendRequestsUpdated", handleFriendRequest);
+    socket.off("friendsListUpdated", handleFriendAccepted);
+    socket.off("chatUnlocked", handleFriendAccepted);
     socket.on("friend-requested", handleFriendRequest);
     socket.on("friend-request-received", handleFriendRequest);
+    socket.on("friend_request_received", handleFriendRequest);
+    socket.on("friend_request_accepted", refreshLists);
     socket.on("friend-accepted", handleFriendAccepted);
     socket.on("friend-removed", handleFriendAccepted);
+    socket.on("friendRequestAccepted", handleFriendAccepted);
+    socket.on("friendRequestsUpdated", handleFriendRequest);
+    socket.on("friendsListUpdated", handleFriendAccepted);
+    socket.on("chatUnlocked", handleFriendAccepted);
     return () => {
       socket.off("friend-requested", handleFriendRequest);
       socket.off("friend-request-received", handleFriendRequest);
+      socket.off("friend_request_received", handleFriendRequest);
+      socket.off("friend_request_accepted", refreshLists);
       socket.off("friend-accepted", handleFriendAccepted);
       socket.off("friend-removed", handleFriendAccepted);
+      socket.off("friendRequestAccepted", handleFriendAccepted);
+      socket.off("friendRequestsUpdated", handleFriendRequest);
+      socket.off("friendsListUpdated", handleFriendAccepted);
+      socket.off("chatUnlocked", handleFriendAccepted);
     };
   }, [loadRequests, refreshLists]);
 
@@ -1010,7 +1081,6 @@ export default function Chat() {
         let changed = false;
         const next = { ...prev };
         Object.entries(prev).forEach(([chatId, messages]) => {
-          if (!isGroupChatId(chatId)) return;
           const { messages: filtered, changed: hasChanged } = pruneGroupMessagesInState(
             chatId,
             messages
@@ -1038,12 +1108,13 @@ export default function Chat() {
     const activeMessages = messagesByChat[activeChatId] || [];
     return activeMessages.filter((msg) => {
       const senderId = msg.from || msg.senderId || msg.userId;
-      const isVisible =
-        !isGroupChatId(activeChatId) || !isMessageExpired(msg, nowTick);
-      return isVisible && !isUserBlocked(senderId);
+      return !isMessageExpired(msg, nowTick) && !isUserBlocked(senderId);
     });
   }, [messagesByChat, activeChatId, isUserBlocked, nowTick]);
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
+  const friendStatus = activeChatUser?.isGroup
+    ? "friends"
+    : getFriendStatus(activeChatUser?.id || activeChatId);
   const canChatActive = activeChatUser?.isGroup
     ? true
     : canChat(activeChatUser?.id || activeChatId);
@@ -1297,7 +1368,7 @@ export default function Chat() {
                       </div>
                       <div className="flex gap-2">
                         <Motion.button
-                          onClick={() => handleAcceptRequest(requesterId)}
+                          onClick={() => handleAcceptRequest(req)}
                           className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
                           whileHover={{ scale: 1.05 }}
                           whileTap={{ scale: 0.95 }}
@@ -1474,6 +1545,27 @@ export default function Chat() {
               </div>
 
               <div className="flex-shrink-0 z-20 p-4 border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]">
+                {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
+                  <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
+                    <span>Only friends can message.</span>
+                    {friendStatus === "none" ? (
+                      <button
+                        type="button"
+                        onClick={handleSendFriendRequest}
+                        disabled={friendRequestLoading}
+                        className="rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60"
+                      >
+                        {friendRequestLoading ? "Sending..." : "Send Request"}
+                      </button>
+                    ) : friendStatus === "pending_sent" ? (
+                      <span className="text-[#b9b4c7]">Request sent</span>
+                    ) : friendStatus === "pending_received" ? (
+                      <span className="text-[#b9b4c7]">Request pending</span>
+                    ) : friendStatus === "blocked" ? (
+                      <span className="text-[#b9b4c7]">Blocked</span>
+                    ) : null}
+                  </div>
+                )}
                 <form onSubmit={handleSendMessage} className="flex space-x-3">
                   <input
                     type="text"
