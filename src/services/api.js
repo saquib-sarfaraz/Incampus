@@ -858,10 +858,44 @@ export const getPendingRequests = async (params = {}) => {
   return normalizeList(data, ["requests", "items", "data"]);
 };
 
-export const acceptFriendRequest = async (requesterId) => {
-  const payload = { requesterId, senderId: requesterId };
+export const acceptFriendRequest = async (requestInput) => {
+  let requesterId = requestInput;
+  let requestId = null;
+
+  if (requestInput && typeof requestInput === "object") {
+    requestId =
+      requestInput.requestId ||
+      requestInput._id ||
+      requestInput.id ||
+      requestInput.requestID ||
+      null;
+    requesterId =
+      requestInput.requesterId ||
+      requestInput.senderId ||
+      requestInput.fromUserId ||
+      requestInput.userId ||
+      requestInput.user?.id ||
+      requestInput.user?._id ||
+      requesterId;
+  }
+
+  const payload = {
+    requesterId,
+    senderId: requesterId,
+    requestId,
+  };
+
+  if (!payload.requestId) delete payload.requestId;
+
   return apiFetchWithFallback(
-    ["/friend-requests/accept", "/friend/accept", "/friends/accept"],
+    [
+      "/friends/accept-request",
+      "/friend-requests/accept",
+      "/friend/accept",
+      "/friends/accept",
+      "/friends/request/accept",
+      "/friend-requests/request/accept",
+    ],
     {
       method: "POST",
       body: payload,

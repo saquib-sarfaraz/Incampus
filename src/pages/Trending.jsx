@@ -144,6 +144,22 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
+const resolveTrendingId = (item) =>
+  item?._id ||
+  item?.id ||
+  item?.storyId ||
+  item?.story_id ||
+  item?.postId ||
+  item?.post_id ||
+  "";
+
+const resolveTrendingKey = (item, type, index = 0) => {
+  const id = resolveTrendingId(item);
+  if (id) return `${type}:${id}`;
+  const timestamp = getTimestamp(item);
+  return `${type}:${timestamp || "idx"}:${index}`;
+};
+
 const DEFAULT_SEARCH_RESULTS = {
   users: [],
   posts: [],
@@ -345,6 +361,9 @@ export default function Trending() {
   const [trendingWindow, setTrendingWindow] = useState("48h");
   const [trendingView, setTrendingView] = useState("grid");
   const [trendingVisibleCount, setTrendingVisibleCount] = useState(12);
+  const [trendingSnapshot, setTrendingSnapshot] = useState([]);
+  const [trendingNeedsRefresh, setTrendingNeedsRefresh] = useState(false);
+  const [trendingRefreshing, setTrendingRefreshing] = useState(false);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
@@ -355,6 +374,8 @@ export default function Trending() {
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
   const trendingLoadMoreRef = useRef(null);
+  const postsArrayRef = useRef([]);
+  const storiesArrayRef = useRef([]);
   const searchAbortRef = useRef(null);
   const searchRequestRef = useRef(0);
   const searchCacheRef = useRef(new Map());
@@ -713,15 +734,16 @@ export default function Trending() {
   }, [searchUsersResults, ensureFriendStatus, currentUser?.id]);
 
   useEffect(() => {
-    if (!loadPosts && !loadStories) return;
     if (loadPosts) loadPosts();
     if (loadStories) loadStories();
+  }, [loadPosts, loadStories]);
+
+  useEffect(() => {
     const interval = setInterval(() => {
-      if (loadPosts) loadPosts();
-      if (loadStories) loadStories();
+      setTrendingNeedsRefresh(true);
     }, 120000);
     return () => clearInterval(interval);
-  }, [loadPosts, loadStories]);
+  }, []);
 
   const postsArray = useMemo(() => {
     const list = Array.isArray(posts) ? posts : [];
@@ -749,28 +771,94 @@ export default function Trending() {
     });
   }, [stories, isUserBlocked, currentUser?.id]);
 
-  const scoredPosts = useMemo(() => {
-    return postsArray.map((post) => ({
-      type: resolveContentType(post),
-      item: post,
-      score: calculateTrendingScore(post),
-    }));
+  useEffect(() => {
+    postsArrayRef.current = postsArray;
   }, [postsArray]);
 
-  const scoredStories = useMemo(() => {
-    return storiesArray.map((story) => ({
-      type: "story",
-      item: story,
-      score: calculateTrendingScore(story, { isStory: true }),
-    }));
+  useEffect(() => {
+    storiesArrayRef.current = storiesArray;
   }, [storiesArray]);
 
-  const trendingItems = useMemo(() => {
-    return [...scoredPosts, ...scoredStories].sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return getTimestamp(b.item) - getTimestamp(a.item);
+  const rebuildTrendingSnapshot = useCallback(() => {
+    const entries = [];
+    const postsList = postsArrayRef.current || [];
+    const storiesList = storiesArrayRef.current || [];
+
+    postsList.forEach((post, index) => {
+      const type = resolveContentType(post);
+      entries.push({
+        type,
+        key: resolveTrendingKey(post, type, index),
+        score: calculateTrendingScore(post),
+        item: post,
+        timestamp: getTimestamp(post),
+      });
     });
-  }, [scoredPosts, scoredStories]);
+
+    storiesList.forEach((story, index) => {
+      entries.push({
+        type: "story",
+        key: resolveTrendingKey(story, "story", index),
+        score: calculateTrendingScore(story, { isStory: true }),
+        item: story,
+        timestamp: getTimestamp(story),
+      });
+    });
+
+    entries.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.timestamp - a.timestamp;
+    });
+
+    setTrendingSnapshot(entries);
+    setTrendingNeedsRefresh(false);
+  }, []);
+
+  const handleTrendingRefresh = useCallback(async () => {
+    if (trendingRefreshing) return;
+    setTrendingRefreshing(true);
+    try {
+      await Promise.all([loadPosts?.(), loadStories?.()]);
+      requestAnimationFrame(() => rebuildTrendingSnapshot());
+      setTrendingNeedsRefresh(false);
+    } finally {
+      setTrendingRefreshing(false);
+    }
+  }, [loadPosts, loadStories, rebuildTrendingSnapshot, trendingRefreshing]);
+
+  useEffect(() => {
+    if (trendingSnapshot.length > 0) return;
+    if (postsArray.length === 0 && storiesArray.length === 0) return;
+    rebuildTrendingSnapshot();
+  }, [postsArray.length, storiesArray.length, trendingSnapshot.length, rebuildTrendingSnapshot]);
+
+  useEffect(() => {
+    if (trendingWindow) {
+      rebuildTrendingSnapshot();
+    }
+  }, [trendingWindow, rebuildTrendingSnapshot]);
+
+  const trendingItems = useMemo(() => {
+    if (!trendingSnapshot.length) return [];
+    const lookup = new Map();
+    postsArray.forEach((post, index) => {
+      const type = resolveContentType(post);
+      const key = resolveTrendingKey(post, type, index);
+      lookup.set(key, post);
+    });
+    storiesArray.forEach((story, index) => {
+      const key = resolveTrendingKey(story, "story", index);
+      lookup.set(key, story);
+    });
+
+    return trendingSnapshot
+      .map((entry) => {
+        const current = lookup.get(entry.key) || entry.item;
+        if (!current) return null;
+        return { ...entry, item: current };
+      })
+      .filter(Boolean);
+  }, [trendingSnapshot, postsArray, storiesArray]);
 
   const filteredTrendingItems = useMemo(() => {
     if (trendingTab === "thoughts") {
@@ -1456,6 +1544,17 @@ export default function Trending() {
             Explore campus discovery
           </h1>
         </div>
+
+        {trendingNeedsRefresh && (
+          <button
+            type="button"
+            onClick={handleTrendingRefresh}
+            disabled={trendingRefreshing}
+            className="glass-card border border-amber-400/30 bg-amber-400/10 text-amber-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit disabled:opacity-60"
+          >
+            Trending updated ↑ Tap to refresh
+          </button>
+        )}
 
         <div ref={searchRef} className="sticky top-20 z-20">
           <div className="relative">

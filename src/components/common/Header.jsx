@@ -36,6 +36,16 @@ const formatNotificationText = (notif) => {
   if (type === "like") return "liked your post";
   if (type === "comment") return "commented on your post";
   if (type === "friend") return "accepted your friend request";
+  if (type === "friend_request") {
+    if (String(notif?.data?.action || "").toLowerCase() === "accepted") {
+      return "accepted your friend request";
+    }
+    return "sent you a friend request";
+  }
+  if (type === "friend_request_received") return "sent you a friend request";
+  if (type === "friend_accept" || type === "friend_request_accepted") {
+    return "accepted your friend request";
+  }
   if (type === "mention") return "mentioned you";
   return notif?.message || "sent you a notification";
 };

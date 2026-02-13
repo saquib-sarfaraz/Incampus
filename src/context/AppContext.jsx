@@ -602,10 +602,35 @@ export const AppProvider = ({ children }) => {
   );
 
   const acceptFriend = useCallback(
-    async (requesterId) => {
-      if (!requesterId) return null;
-      const res = await apiAcceptFriendRequest(requesterId);
-      setFriendStatus(requesterId, "friends", { force: true });
+    async (requestPayload) => {
+      if (!requestPayload) return null;
+      const requesterId = resolveEntityId(
+        typeof requestPayload === "object"
+          ? requestPayload.requesterId ||
+              requestPayload.senderId ||
+              requestPayload.fromUserId ||
+              requestPayload.userId ||
+              requestPayload.user?.id ||
+              requestPayload.user?._id ||
+              requestPayload.requester ||
+              requestPayload.fromUser
+          : requestPayload
+      );
+      const requestId =
+        typeof requestPayload === "object"
+          ? requestPayload.requestId ||
+            requestPayload._id ||
+            requestPayload.id ||
+            null
+          : null;
+      const res = await apiAcceptFriendRequest(
+        typeof requestPayload === "object"
+          ? { requesterId, requestId }
+          : requesterId
+      );
+      if (requesterId) {
+        setFriendStatus(requesterId, "friends", { force: true });
+      }
       return res;
     },
     [setFriendStatus]
@@ -901,8 +926,8 @@ export const AppProvider = ({ children }) => {
         let changed = false;
         const next = { ...prev };
         Object.entries(prev).forEach(([chatId, meta]) => {
-          if (!String(chatId).startsWith("group:")) return;
-          const lastAt = meta?.lastMessageAt;
+          const last = meta?.lastMessage;
+          const lastAt = last?.expiresAt || meta?.lastMessageAt;
           if (!lastAt) return;
           const lastTime = new Date(lastAt).getTime();
           if (Number.isNaN(lastTime)) return;
@@ -1032,10 +1057,20 @@ export const AppProvider = ({ children }) => {
         message?.to ||
         "";
       const chatId = String(rawChatId || "");
-      if (!chatId.startsWith("group:")) return;
-      const expiredId = message?._id || message?.id || payload.messageId;
+      if (!chatId) return;
+      const expiredIds = new Set(
+        []
+          .concat(payload.messageIds || [])
+          .concat(payload.messageId ? [payload.messageId] : [])
+          .concat(message?._id ? [message._id] : [])
+          .concat(message?.id ? [message.id] : [])
+          .map((id) => String(id))
+          .filter(Boolean)
+      );
       const expiredCreated =
         message?.createdAt || message?.created_at || message?.timestamp || payload.createdAt;
+      const expiredCount = expiredIds.size || (payload.messageIds?.length || 0) || 1;
+
       setChatMetaEntry(chatId, (current) => {
         if (!current) return current;
         const last = current.lastMessage;
@@ -1045,14 +1080,20 @@ export const AppProvider = ({ children }) => {
         const lastId = last._id || last.id;
         const lastCreated = last.createdAt || last.created_at || last.timestamp;
         const idMatches =
-          expiredId && lastId && String(expiredId) === String(lastId);
+          lastId && expiredIds.size > 0 && expiredIds.has(String(lastId));
         const timeMatches =
           !idMatches &&
           expiredCreated &&
           lastCreated &&
           new Date(expiredCreated).getTime() === new Date(lastCreated).getTime();
-        if (!idMatches && !timeMatches) return current;
-        return { ...current, lastMessage: null, lastMessageAt: null, unreadCount: 0 };
+        const shouldClear = idMatches || timeMatches;
+        const nextUnread = Math.max((current.unreadCount || 0) - expiredCount, 0);
+        if (!shouldClear && nextUnread === current.unreadCount) return current;
+        return {
+          ...current,
+          ...(shouldClear ? { lastMessage: null, lastMessageAt: null } : {}),
+          unreadCount: shouldClear ? 0 : nextUnread,
+        };
       });
     };
 
@@ -1186,23 +1227,24 @@ export const AppProvider = ({ children }) => {
     };
 
     const handleFriendRequested = (payload = {}) => {
+      const requestPayload = payload.request || payload;
       const fromId = resolveEntityId(
-        payload.fromUserId ||
-          payload.fromUser ||
-          payload.from ||
-          payload.requesterId ||
-          payload.senderId ||
-          payload.userA ||
-          payload.user
+        requestPayload.fromUserId ||
+          requestPayload.fromUser ||
+          requestPayload.from ||
+          requestPayload.requesterId ||
+          requestPayload.senderId ||
+          requestPayload.userA ||
+          requestPayload.user
       );
       const toId = resolveEntityId(
-        payload.toUserId ||
-          payload.toUser ||
-          payload.to ||
-          payload.targetUserId ||
-          payload.recipientId ||
-          payload.userB ||
-          payload.target
+        requestPayload.toUserId ||
+          requestPayload.toUser ||
+          requestPayload.to ||
+          requestPayload.targetUserId ||
+          requestPayload.recipientId ||
+          requestPayload.userB ||
+          requestPayload.target
       );
       if (!currentUser?.id) return;
       if (fromId && String(fromId) === String(currentUser.id) && toId) {
@@ -1213,6 +1255,14 @@ export const AppProvider = ({ children }) => {
     };
 
     const handleFriendAccepted = (payload = {}) => {
+      if (payload?.userId && currentUser?.id) {
+        const otherId = resolveEntityId(payload.userId);
+        if (otherId && String(otherId) !== String(currentUser.id)) {
+          setFriendStatus(otherId, "friends", { force: true });
+          refreshFriendMap();
+          return;
+        }
+      }
       const userA = resolveEntityId(
         payload.userA ||
           payload.userAId ||
@@ -1291,7 +1341,14 @@ export const AppProvider = ({ children }) => {
     socket.on("story-viewed", handleStoryViewed);
     socket.on("friend-requested", handleFriendRequested);
     socket.on("friend-request-received", handleFriendRequested);
+    socket.on("friend_request_received", handleFriendRequested);
     socket.on("friend-accepted", handleFriendAccepted);
+    socket.on("friend_request_accepted", handleFriendAccepted);
+    socket.on("friendRequestAccepted", handleFriendAccepted);
+    socket.on("friendRequestsUpdated", handleFriendRequested);
+    socket.on("friend_list_updated", refreshFriendMap);
+    socket.on("friendsListUpdated", refreshFriendMap);
+    socket.on("chatUnlocked", handleFriendAccepted);
     socket.on("friend-removed", handleFriendRemoved);
     socket.on("friend-blocked", handleFriendBlocked);
     socket.on("user-profile-updated", handleUserProfileUpdated);
@@ -1306,7 +1363,14 @@ export const AppProvider = ({ children }) => {
       socket.off("story-viewed", handleStoryViewed);
       socket.off("friend-requested", handleFriendRequested);
       socket.off("friend-request-received", handleFriendRequested);
+      socket.off("friend_request_received", handleFriendRequested);
       socket.off("friend-accepted", handleFriendAccepted);
+      socket.off("friend_request_accepted", handleFriendAccepted);
+      socket.off("friendRequestAccepted", handleFriendAccepted);
+      socket.off("friendRequestsUpdated", handleFriendRequested);
+      socket.off("friend_list_updated", refreshFriendMap);
+      socket.off("friendsListUpdated", refreshFriendMap);
+      socket.off("chatUnlocked", handleFriendAccepted);
       socket.off("friend-removed", handleFriendRemoved);
       socket.off("friend-blocked", handleFriendBlocked);
       socket.off("user-profile-updated", handleUserProfileUpdated);

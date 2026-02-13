@@ -14,7 +14,6 @@ import {
   getCommentCount,
   getShareCount,
   getViewCount,
-  hoursSince,
   getTimestamp,
   shouldExcludeContent,
   isMutedByUser,
@@ -22,6 +21,8 @@ import {
 import { getSocket } from "../services/socket";
 
 const FEED_PAGE_LIMIT = 20;
+const FEED_REFRESH_MS = 90000;
+const COLLEGE_REFRESH_MS = 120000;
 
 const getAuthorId = (post) => {
   return post.author?._id || post.authorId || post.author || "";
@@ -172,14 +173,6 @@ const getStoryReshareCount = (post) => {
   );
 };
 
-const getRecencyBoost = (post) => {
-  const hours = hoursSince(post);
-  if (hours <= 2) return 30;
-  if (hours <= 12) return 20;
-  if (hours <= 48) return 10;
-  return 0;
-};
-
 const getEngagementScore = (post) => {
   const likes = getLikeCount(post);
   const comments = getCommentCount(post);
@@ -188,6 +181,8 @@ const getEngagementScore = (post) => {
   const views = getViewCount(post);
   return likes * 2 + comments * 3 + shares * 4 + reshares * 3 + views * 0.2;
 };
+
+const resolveFeedOrderKey = (post) => resolvePostIdentity(post) || "";
 
 export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
@@ -200,10 +195,13 @@ export default function Feed() {
   const [rankedLoading, setRankedLoading] = useState(false);
   const [rankedError, setRankedError] = useState("");
   const [feedCursor, setFeedCursor] = useState({ key: "", page: 0 });
+  const [newPostsAvailable, setNewPostsAvailable] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const loadMoreRef = useRef(null);
   const prefetchRef = useRef({ page: null, data: null, promise: null });
   const rankedPostsRef = useRef([]);
   const rankedLoadingRef = useRef(false);
+  const latestPostRef = useRef("");
 
   const campusLabel = resolveUserCampus(currentUser);
   const campusId = resolveUserCollegeId(currentUser);
@@ -213,18 +211,32 @@ export default function Feed() {
     [feedScope, campusLabel, campusId]
   );
 
-  useEffect(() => {
-    if (!loadPosts) return;
-    const refreshMs = feedScope === "college" ? 30000 : 60000;
-    const interval = setInterval(() => {
-      loadPosts();
-      if (loadStories) {
-        loadStories();
+  const checkForNewPosts = useCallback(async () => {
+    if (shouldFilterByCollege) return false;
+    try {
+      const data = await fetchRankedFeedPage({ page: 1, limit: 1 });
+      const list = Array.isArray(data) ? data : [];
+      const latest = list[0];
+      const latestId = latest ? resolvePostIdentity(latest) : "";
+      if (!latestId) return false;
+      if (!latestPostRef.current) {
+        latestPostRef.current = latestId;
+        return false;
       }
-    }, refreshMs);
-    return () => clearInterval(interval);
-  }, [feedScope, loadPosts, loadStories]);
+      return latestId !== latestPostRef.current;
+    } catch {
+      return false;
+    }
+  }, [shouldFilterByCollege]);
 
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (refreshing) return;
+      const hasNew = await checkForNewPosts();
+      if (hasNew) setNewPostsAvailable(true);
+    }, shouldFilterByCollege ? COLLEGE_REFRESH_MS : FEED_REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [checkForNewPosts, shouldFilterByCollege, refreshing]);
 
   const consumePrefetch = useCallback((page) => {
     const cached = prefetchRef.current;
@@ -293,6 +305,23 @@ export default function Feed() {
     [consumePrefetch, prefetchPage]
   );
 
+  const handleRefreshFeed = useCallback(async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setNewPostsAvailable(false);
+    try {
+      await loadPosts?.();
+      if (loadStories) {
+        await loadStories();
+      }
+      if (!shouldFilterByCollege) {
+        await loadRankedPage(1, { replace: true });
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [loadPosts, loadStories, shouldFilterByCollege, loadRankedPage, refreshing]);
+
   const loadMoreRanked = useCallback(() => {
     if (rankedLoading || !rankedHasMore) return;
     loadRankedPage(rankedPage + 1);
@@ -302,18 +331,12 @@ export default function Feed() {
     const socket = getSocket();
     if (!socket || !loadPosts) return;
     const handleFeedUpdate = () => {
-      loadPosts();
-      if (loadStories) {
-        loadStories();
-      }
-      if (!shouldFilterByCollege) {
-        loadRankedPage(1, { replace: true });
-      }
+      setNewPostsAvailable(true);
     };
     socket.off("feed-update", handleFeedUpdate);
     socket.on("feed-update", handleFeedUpdate);
     return () => socket.off("feed-update", handleFeedUpdate);
-  }, [loadPosts, loadStories, shouldFilterByCollege, loadRankedPage]);
+  }, [loadPosts]);
 
   useEffect(() => {
     if (shouldFilterByCollege) return;
@@ -415,9 +438,6 @@ export default function Feed() {
         return matchesCollege(post);
       })
       .sort((a, b) => {
-        const aFriend = isFriendPost(a);
-        const bFriend = isFriendPost(b);
-        if (aFriend !== bFriend) return aFriend ? -1 : 1;
         return getTimestamp(b) - getTimestamp(a);
       });
   }, [
@@ -427,7 +447,6 @@ export default function Feed() {
     campusId,
     currentUser?.id,
     matchesCollege,
-    isFriendPost,
   ]);
 
   const universalFeedMeta = useMemo(() => {
@@ -443,6 +462,22 @@ export default function Feed() {
       if (isMutedByUser(post, currentUser?.id)) return false;
       const privacy = resolvePostPrivacy(post);
       return privacy === "public";
+    });
+
+    const orderMap = new Map();
+    base.forEach((post, index) => {
+      const key = resolveFeedOrderKey(post);
+      if (key) {
+        orderMap.set(key, index);
+      }
+    });
+
+    const sortedByTime = [...filtered].sort((a, b) => {
+      const diff = getTimestamp(b) - getTimestamp(a);
+      if (diff !== 0) return diff;
+      const aKey = resolveFeedOrderKey(a);
+      const bKey = resolveFeedOrderKey(b);
+      return (orderMap.get(aKey) ?? 0) - (orderMap.get(bKey) ?? 0);
     });
 
     const entries = filtered.map((post, index) => {
@@ -470,7 +505,7 @@ export default function Feed() {
     const trendingIds = new Set(sortedGlobal.slice(0, take).map((entry) => entry.id));
 
     const badgeMap = new Map();
-    const scored = entries.map((entry) => {
+    entries.forEach((entry) => {
       const post = entry.post;
       const hasTrendingFlag = Boolean(
         post?.isTrending ||
@@ -479,17 +514,6 @@ export default function Feed() {
           post?.trending_score
       );
       const isTrendingGlobal = trendingIds.has(entry.id) || hasTrendingFlag;
-      let friendBoost = entry.isFriend ? 40 : 0;
-      if (entry.isFriend && isTrendingGlobal) {
-        friendBoost *= 2;
-      }
-      const collegeBoost = entry.isCollege ? 20 : 0;
-      const globalBoost =
-        !entry.isFriend && !entry.isCollege && isTrendingGlobal ? 10 : 0;
-      const recencyBoost = getRecencyBoost(post);
-      const finalScore =
-        entry.baseScore + friendBoost + collegeBoost + recencyBoost + globalBoost;
-
       if (entry.isFriend && !isAnonymousPost(post)) {
         badgeMap.set(entry.id, {
           text: "👥 Friend",
@@ -506,21 +530,10 @@ export default function Feed() {
           tone: "border-amber-400/30 bg-amber-400/10 text-amber-200",
         });
       }
-
-      return {
-        ...entry,
-        isTrendingGlobal,
-        finalScore,
-      };
-    });
-
-    scored.sort((a, b) => {
-      if (a.finalScore !== b.finalScore) return b.finalScore - a.finalScore;
-      return b.timestamp - a.timestamp;
     });
 
     return {
-      posts: scored.map((entry) => entry.post),
+      posts: sortedByTime,
       badgeMap,
       trendingIds,
     };
@@ -549,6 +562,19 @@ export default function Feed() {
     : finalFeedPosts;
   const showRankedError =
     !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0;
+
+  useEffect(() => {
+    const latestId = finalFeedPosts.length
+      ? resolvePostIdentity(finalFeedPosts[0]) || ""
+      : "";
+    if (latestId) {
+      latestPostRef.current = latestId;
+    }
+  }, [finalFeedPosts]);
+
+  useEffect(() => {
+    setNewPostsAvailable(false);
+  }, [feedKey]);
 
   useEffect(() => {
     if (!loadMoreRef.current) return;
@@ -600,6 +626,15 @@ export default function Feed() {
               </p>
             )}
           </div>
+          {newPostsAvailable && (
+            <button
+              type="button"
+              onClick={handleRefreshFeed}
+              className="glass-card border border-sky-400/30 bg-sky-400/10 text-sky-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit"
+            >
+              New posts available ↑ Tap to refresh
+            </button>
+          )}
         </div>
 
         <section className="space-y-6">
