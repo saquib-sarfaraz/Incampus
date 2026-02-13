@@ -1508,8 +1508,16 @@ export const AppProvider = ({ children }) => {
   ]);
 
   const updatePost = useCallback((postId, updates) => {
+    if (!postId) return;
+    const targetId = String(postId);
     setPosts((prev) =>
-      prev.map((p) => (p._id === postId ? { ...p, ...updates } : p))
+      prev.map((p) => {
+        const resolvedId = String(p?._id || p?.id || p?.postId || p?.post_id || "");
+        if (resolvedId && resolvedId === targetId) {
+          return { ...p, ...updates };
+        }
+        return p;
+      })
     );
   }, []);
 

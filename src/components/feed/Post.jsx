@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, useCallback, memo } from "react";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -147,6 +147,7 @@ function Post({ post, onOpen, badge }) {
   const [likePending, setLikePending] = useState(false);
   const [likePulse, setLikePulse] = useState(0);
   const [likeAction, setLikeAction] = useState(null);
+  const [mediaLikePulse, setMediaLikePulse] = useState(0);
   const [showComments, setShowComments] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showShareChat, setShowShareChat] = useState(false);
@@ -157,6 +158,7 @@ function Post({ post, onOpen, badge }) {
   const viewTimerRef = useRef(null);
   const viewSentRef = useRef(false);
   const postRef = useRef(post);
+  const lastTapRef = useRef(0);
   const authorId = post.author?._id || post.authorId || post.author || "";
   const authorName =
     post.author?.displayName ||
@@ -185,7 +187,7 @@ function Post({ post, onOpen, badge }) {
   const likesCount =
     baseLikesCount +
     (optimisticLiked === null ? 0 : (optimisticLiked ? 1 : 0) - (baseIsLiked ? 1 : 0));
-  const postId = post._id || post.id;
+  const postId = post._id || post.id || post.postId || post.post_id;
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const postMediaUrl = resolvePostMediaUrl(post);
   const postThumbnail = postMediaUrl;
@@ -328,6 +330,21 @@ function Post({ post, onOpen, badge }) {
   const handleReport = () => {
     setShowReport(true);
   };
+
+  const handleMediaDoubleTap = useCallback(() => {
+    setMediaLikePulse((prev) => prev + 1);
+    if (!isLiked && !likePending) {
+      handleLike();
+    }
+  }, [isLiked, likePending, handleLike]);
+
+  const handleMediaTouchEnd = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 280) {
+      handleMediaDoubleTap();
+    }
+    lastTapRef.current = now;
+  }, [handleMediaDoubleTap]);
 
   const submitReport = async ({ reason, details }) => {
     if (!currentUser) {
@@ -562,7 +579,15 @@ function Post({ post, onOpen, badge }) {
         )}
 
         {postMediaUrl && (
-          <div className="mb-4 rounded-2xl overflow-hidden border border-white/10">
+          <div
+            className="mb-4 rounded-2xl overflow-hidden border border-white/10 relative"
+            onDoubleClick={(event) => {
+              event.preventDefault();
+              handleMediaDoubleTap();
+            }}
+            onTouchEnd={handleMediaTouchEnd}
+            style={{ touchAction: "manipulation" }}
+          >
             <img
               src={optimizedPostMedia || postMediaUrl}
               srcSet={postSrcSet || undefined}
@@ -572,6 +597,16 @@ function Post({ post, onOpen, badge }) {
               loading="lazy"
               decoding="async"
             />
+            {mediaLikePulse > 0 && (
+              <Motion.i
+                key={`media-like-${mediaLikePulse}`}
+                className="fa-solid fa-heart text-5xl sm:text-6xl text-red-300 drop-shadow-[0_0_18px_rgba(248,113,113,0.6)] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+                initial={{ opacity: 0, scale: 0.6 }}
+                animate={{ opacity: [0, 1, 0], scale: [0.6, 1.1, 1.3] }}
+                transition={{ duration: 0.45, ease: "easeOut" }}
+                aria-hidden="true"
+              />
+            )}
           </div>
         )}
 
