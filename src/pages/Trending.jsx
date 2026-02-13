@@ -43,6 +43,7 @@ import {
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const SEARCH_DEBOUNCE_MS = 150;
 const TRENDING_WINDOW_OPTIONS = [
   { id: "48h", label: "Last 48 Hours", hours: 48 },
   { id: "7d", label: "Last 7 Days", hours: 168 },
@@ -541,7 +542,7 @@ export default function Trending() {
           setSearchLoading(false);
         }
       }
-    }, 300);
+    }, SEARCH_DEBOUNCE_MS);
 
     return () => {
       clearTimeout(timeoutId);
@@ -1091,7 +1092,7 @@ export default function Trending() {
           variant === "top" ? "glow-border" : ""
         }`}
       >
-        <div className="flex items-start gap-3">
+        <div className="flex flex-col sm:flex-row items-start gap-3">
           <button
             type="button"
             onClick={() => setSelectedUser(user)}
@@ -1111,7 +1112,7 @@ export default function Trending() {
                   {userTypeBadge}
                 </span>
               </div>
-              <p className="text-xs text-[#b9b4c7]">{secondaryLine}</p>
+              <p className="text-xs text-[#b9b4c7] break-words">{secondaryLine}</p>
               <p className="text-[11px] text-[#b9b4c7] line-clamp-2">
                 {bioPreview}
               </p>
@@ -1129,11 +1130,11 @@ export default function Trending() {
               )}
             </div>
           </button>
-          <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="flex w-full sm:w-auto flex-col items-start sm:items-end gap-2 shrink-0">
             {isSelf ? (
               <span className="text-[10px] text-[#b9b4c7]">You</span>
             ) : (
-              <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex flex-wrap items-center justify-start sm:justify-end gap-2">
                 {status !== "pending_received" && (
                   <button
                     type="button"
