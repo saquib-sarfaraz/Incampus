@@ -940,6 +940,81 @@ export const sendFriendRequest = async (recipientId) => {
   );
 };
 
+const RAW_FRIEND_REQUESTS_PATHS =
+  import.meta.env.VITE_FRIEND_REQUESTS_PATHS ||
+  import.meta.env.FRIEND_REQUESTS_PATHS ||
+  import.meta.env.VITE_FRIEND_REQUESTS_PATH ||
+  import.meta.env.FRIEND_REQUESTS_PATH ||
+  "";
+
+const DEFAULT_FRIEND_REQUEST_PATHS = [
+  "/friend-requests/incoming",
+  "/friend-requests",
+  "/friend-requests/pending",
+  "/friend-requests/received",
+  "/friend-requests/requests",
+  "/friend/requests",
+  "/friends/requests",
+  "/friends/requests/incoming",
+  "/friend/request/incoming",
+  "/friend-request/incoming",
+];
+
+const FRIEND_REQUEST_PATHS = RAW_FRIEND_REQUESTS_PATHS
+  ? RAW_FRIEND_REQUESTS_PATHS.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : DEFAULT_FRIEND_REQUEST_PATHS;
+
+let cachedFriendRequestPath = null;
+let cachedFriendRequestPathAt = 0;
+const FRIEND_REQUEST_PATH_CACHE_TTL = 5 * 60 * 1000;
+
+const resolveFriendRequestPath = async (probeParams) => {
+  const now = Date.now();
+  if (cachedFriendRequestPathAt && now - cachedFriendRequestPathAt < FRIEND_REQUEST_PATH_CACHE_TTL) {
+    return cachedFriendRequestPath;
+  }
+
+  if (!FRIEND_REQUEST_PATHS.length) {
+    cachedFriendRequestPath = null;
+    cachedFriendRequestPathAt = now;
+    return null;
+  }
+
+  if (RAW_FRIEND_REQUESTS_PATHS && FRIEND_REQUEST_PATHS.length === 1) {
+    cachedFriendRequestPath = FRIEND_REQUEST_PATHS[0];
+    cachedFriendRequestPathAt = now;
+    return cachedFriendRequestPath;
+  }
+
+  for (const path of FRIEND_REQUEST_PATHS) {
+    try {
+      await apiFetch(path, {
+        params: probeParams,
+        cache: "no-store",
+      });
+      cachedFriendRequestPath = path;
+      cachedFriendRequestPathAt = now;
+      return path;
+    } catch (error) {
+      const status = error?.status;
+      if (status && status !== 404 && status !== 405) {
+        cachedFriendRequestPath = path;
+        cachedFriendRequestPathAt = now;
+        return path;
+      }
+      if (!status) {
+        throw error;
+      }
+    }
+  }
+
+  cachedFriendRequestPath = null;
+  cachedFriendRequestPathAt = now;
+  return null;
+};
+
 export const getPendingRequests = async (params = {}) => {
   const hasStatus = params.status != null || params.state != null;
   const normalizeRequestsList = (data) => {
@@ -1039,21 +1114,9 @@ export const getPendingRequests = async (params = {}) => {
       null;
     return single ? [single] : [];
   };
-  const REQUEST_PATHS = [
-    "/friend-requests/incoming",
-    "/friend-requests",
-    "/friend-requests/pending",
-    "/friend-requests/received",
-    "/friend-requests/requests",
-    "/friend/requests",
-    "/friends/requests",
-    "/friends/requests/incoming",
-    "/friend/request/incoming",
-    "/friend-request/incoming",
-  ];
-  const fetchRequests = async (query) => {
+  const fetchRequests = async (paths, query) => {
     let lastList = [];
-    for (const path of REQUEST_PATHS) {
+    for (const path of paths) {
       try {
         const data = await apiFetch(path, {
           params: query,
@@ -1126,10 +1189,30 @@ export const getPendingRequests = async (params = {}) => {
     pushQuery({ status: resolvedStatus });
   }
 
+  const probeParams = {};
+  if (resolvedStatus) probeParams.status = resolvedStatus;
+  if (rawUserId) probeParams.userId = rawUserId;
+
+  const resolvedPath = await resolveFriendRequestPath(probeParams);
+  const now = Date.now();
+  const shouldSkipPaths =
+    !resolvedPath &&
+    cachedFriendRequestPathAt &&
+    now - cachedFriendRequestPathAt < FRIEND_REQUEST_PATH_CACHE_TTL;
+  const pathsToTry = shouldSkipPaths
+    ? []
+    : resolvedPath
+      ? [resolvedPath]
+      : FRIEND_REQUEST_PATHS;
+
+  if (!pathsToTry.length) {
+    return [];
+  }
+
   let lastList = [];
   for (const query of queries) {
     try {
-      const list = await fetchRequests(query);
+      const list = await fetchRequests(pathsToTry, query);
       if (Array.isArray(list) && list.length > 0) {
         return list;
       }
