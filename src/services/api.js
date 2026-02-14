@@ -946,53 +946,202 @@ export const getPendingRequests = async (params = {}) => {
     if (Array.isArray(data)) return data;
     if (!data || typeof data !== "object") return [];
     const candidates = [
-      data.requests,
+      data.incomingRequests,
+      data.incoming,
+      data.pending,
       data.pendingRequests,
+      data.pending_requests,
       data.friendRequests,
       data.friend_requests,
+      data.invitations,
+      data.invites,
+      data.requests,
+      data.requests?.items,
+      data.requests?.data,
+      data.requests?.rows,
+      data.requests?.docs,
+      data.requests?.results,
+      data.pendingRequests?.items,
+      data.pendingRequests?.data,
+      data.pendingRequests?.rows,
+      data.pendingRequests?.docs,
+      data.pendingRequests?.results,
+      data.friendRequests?.items,
+      data.friendRequests?.data,
+      data.friendRequests?.rows,
+      data.friendRequests?.docs,
+      data.friendRequests?.results,
+      data.friend_requests?.items,
+      data.friend_requests?.data,
+      data.friend_requests?.rows,
+      data.friend_requests?.docs,
+      data.friend_requests?.results,
       data.items,
       data.data,
       data.result,
       data.payload,
       data.response,
       data.requests?.items,
+      data.requests?.incoming,
+      data.requests?.pending,
       data.data?.requests,
+      data.data?.incoming,
+      data.data?.incomingRequests,
       data.data?.pendingRequests,
       data.data?.friendRequests,
       data.data?.friend_requests,
       data.data?.items,
       data.data?.data,
+      data.data?.rows,
+      data.data?.docs,
+      data.data?.results,
       data.result?.requests,
+      data.result?.incoming,
       data.result?.items,
       data.result?.data,
     ];
     for (const candidate of candidates) {
       if (Array.isArray(candidate)) return candidate;
     }
+    const nestedData = data.data && typeof data.data === "object" ? data.data : null;
+    if (nestedData) {
+      const nestedArray = Object.values(nestedData).find(Array.isArray);
+      if (nestedArray) return nestedArray;
+    }
+    const fallbackArray = Object.values(data).find(Array.isArray);
+    if (fallbackArray) return fallbackArray;
+    const findFirstArray = (value, depth = 2) => {
+      if (!value || depth < 0) return null;
+      if (Array.isArray(value)) {
+        if (value.length === 0) return value;
+        if (typeof value[0] === "object") return value;
+        return null;
+      }
+      if (typeof value !== "object") return null;
+      for (const entry of Object.values(value)) {
+        const found = findFirstArray(entry, depth - 1);
+        if (found) return found;
+      }
+      return null;
+    };
+    const deepArray = findFirstArray(data, 3);
+    if (deepArray) return deepArray;
     const single =
       data.request ||
       data.friendRequest ||
       data.friend_request ||
       data.pendingRequest ||
+      data.incomingRequest ||
+      data.invite ||
       data.data?.request ||
       data.data?.friendRequest ||
       data.data?.pendingRequest ||
       null;
     return single ? [single] : [];
   };
+  const REQUEST_PATHS = [
+    "/friend-requests/incoming",
+    "/friend-requests",
+    "/friend-requests/pending",
+    "/friend-requests/received",
+    "/friend-requests/requests",
+    "/friend/requests",
+    "/friends/requests",
+    "/friends/requests/incoming",
+    "/friend/request/incoming",
+    "/friend-request/incoming",
+  ];
   const fetchRequests = async (query) => {
-    const data = await apiFetch("/friend-requests/incoming", {
-      params: query,
-      cache: "no-store",
-    });
-    return normalizeRequestsList(data);
+    let lastList = [];
+    for (const path of REQUEST_PATHS) {
+      try {
+        const data = await apiFetch(path, {
+          params: query,
+          cache: "no-store",
+        });
+        const list = normalizeRequestsList(data);
+        if (Array.isArray(list) && list.length > 0) {
+          return list;
+        }
+        lastList = Array.isArray(list) ? list : [];
+      } catch (error) {
+        if (error?.status && error.status !== 404 && error.status !== 405) {
+          throw error;
+        }
+      }
+    }
+    return lastList;
   };
 
-  let resolvedParams = { ...params };
-  if (!hasStatus) {
-    resolvedParams = { ...resolvedParams, status: "pending" };
+  const resolvedStatus = hasStatus ? params.status ?? params.state : "pending";
+  const rawUserId =
+    params.userId ||
+    params.receiverId ||
+    params.recipientId ||
+    params.targetUserId ||
+    params.toUserId ||
+    params.id ||
+    params.user_id ||
+    params.receiver_id;
+
+  const queries = [];
+  const seen = new Set();
+  const pushQuery = (query) => {
+    if (!query || typeof query !== "object") return;
+    const orderedKeys = Object.keys(query).sort();
+    const signature = orderedKeys.map((key) => `${key}:${query[key]}`).join("|");
+    if (seen.has(signature)) return;
+    seen.add(signature);
+    queries.push(query);
+  };
+
+  const baseParams = { ...params };
+  const shouldAddStatus = !hasStatus && resolvedStatus;
+  if (shouldAddStatus) {
+    baseParams.status = resolvedStatus;
   }
-  return fetchRequests(resolvedParams);
+  pushQuery(baseParams);
+  if (shouldAddStatus) {
+    const withoutStatus = { ...baseParams };
+    delete withoutStatus.status;
+    pushQuery(withoutStatus);
+  }
+
+  if (rawUserId) {
+    const statusPayload = resolvedStatus ? { status: resolvedStatus } : {};
+    const statusVariants = [statusPayload];
+    if (shouldAddStatus) {
+      statusVariants.push({});
+    }
+    statusVariants.forEach((variant) => {
+      pushQuery({ userId: rawUserId, ...variant });
+      pushQuery({ receiverId: rawUserId, ...variant });
+      pushQuery({ recipientId: rawUserId, ...variant });
+      pushQuery({ toUserId: rawUserId, ...variant });
+      pushQuery({ targetUserId: rawUserId, ...variant });
+    });
+  }
+
+  if (!rawUserId && resolvedStatus) {
+    pushQuery({ status: resolvedStatus });
+  }
+
+  let lastList = [];
+  for (const query of queries) {
+    try {
+      const list = await fetchRequests(query);
+      if (Array.isArray(list) && list.length > 0) {
+        return list;
+      }
+      lastList = Array.isArray(list) ? list : [];
+    } catch (error) {
+      if (error?.status && error.status !== 404) {
+        throw error;
+      }
+      lastList = [];
+    }
+  }
+  return lastList;
 };
 
 export const acceptFriendRequest = async (requestInput) => {
