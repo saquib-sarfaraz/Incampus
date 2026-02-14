@@ -578,9 +578,17 @@ export default function StoryBar() {
 
             {/* Other Stories */}
             {storyGroupsForBar.map(({ group, index }) => {
+              const isVerified = Boolean(
+                group.authorIsVerified ||
+                  group.author?.isVerified ||
+                  group.author?.verified ||
+                  group.author?.is_verified ||
+                  group.isVerified ||
+                  group.verified
+              );
               return (
               <Motion.div
-                key={group.authorId}
+                key={`${group.authorId || "story"}-${index}`}
                 className="w-16 flex flex-col items-center cursor-pointer flex-shrink-0"
                 onClick={() => openStory(index)}
                 whileHover={{ scale: 1.05 }}
@@ -604,7 +612,7 @@ export default function StoryBar() {
                   <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">
                     {group.authorDisplayName || "User"}
                   </span>
-                  {group.authorIsVerified && <BlueTick className="text-[10px]" />}
+                  {isVerified && <BlueTick className="text-[10px]" />}
                 </div>
               </Motion.div>
               );

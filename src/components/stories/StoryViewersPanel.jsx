@@ -43,9 +43,9 @@ export default function StoryViewersPanel({ isOpen, onClose, views, loading }) {
               ) : views.length === 0 ? (
                 <p className="text-center text-sm text-[#b9b4c7]">No views yet</p>
               ) : (
-                views.map((view) => (
+                views.map((view, index) => (
                   <div
-                    key={view.id}
+                    key={view.id || `view-${index}`}
                     className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2"
                   >
                     <img

@@ -5,6 +5,7 @@ import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 import { preloadChatPage } from "../../utils/preloadRoutes";
+import BlueTick from "./BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -29,6 +30,15 @@ const resolveActorAvatar = (actor) => {
     actor?.avatar ||
     actor?.photoUrl ||
     ANONYMOUS_AVATAR
+  );
+};
+
+const resolveActorVerified = (actor) => {
+  return Boolean(
+    actor?.isVerified ||
+      actor?.verified ||
+      actor?.is_verified ||
+      actor?.verification?.status === "verified"
   );
 };
 
@@ -267,7 +277,7 @@ export default function Header() {
                           No notifications
                         </p>
                       ) : (
-                        notifications.map((notif) => {
+                        notifications.map((notif, index) => {
                           const actor = resolveActor(notif);
                           const actorName = resolveActorName(actor);
                           const actorAvatar = resolveActorAvatar(actor);
@@ -276,9 +286,16 @@ export default function Header() {
                           const timeAgo = formatTimeAgo(
                             notif.createdAt || notif.created_at || notif.timestamp
                           );
+                          const isVerified = resolveActorVerified(actor);
+                          const notifKey =
+                            notif._id ||
+                            notif.id ||
+                            notif.notificationId ||
+                            notif.notification_id ||
+                            `notif-${index}`;
                           return (
                             <div
-                              key={notif._id || notif.id}
+                              key={String(notifKey)}
                               className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
                                 isUnread ? "bg-white/5" : ""
                               }`}
@@ -291,7 +308,10 @@ export default function Header() {
                                 />
                                 <div className="flex-1 min-w-0">
                                   <p className="text-[#faf0e6] truncate">
-                                    <span className="font-semibold">{actorName}</span>{" "}
+                                    <span className="font-semibold inline-flex items-center gap-1">
+                                      {actorName}
+                                      {isVerified && <BlueTick className="text-[11px]" />}
+                                    </span>{" "}
                                     <span className="text-[#b9b4c7]">{actionText}</span>
                                   </p>
                                   {timeAgo && (

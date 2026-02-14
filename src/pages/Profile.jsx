@@ -34,7 +34,7 @@ import {
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
-const HELP_CENTER_URL = "https://incampus-help.netlify.app";
+const HELP_CENTER_URL = "https://incampus-help.online";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 
 const getPasswordStrength = (value = "") => {
@@ -69,6 +69,7 @@ export default function Profile() {
     friendMapLoaded,
     friendMap,
     updateAuthorProfile,
+    removePost,
   } = useApp();
   const [userPosts, setUserPosts] = useState([]);
   const [selectedPost, setSelectedPost] = useState(null);
@@ -94,6 +95,7 @@ export default function Profile() {
   const [friendsLoading, setFriendsLoading] = useState(false);
   const [selectedUser, setSelectedUser] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
@@ -196,6 +198,12 @@ export default function Profile() {
       setBioSuccess("");
     }
   }, [bio]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timeout = setTimeout(() => setToast(null), 3200);
+    return () => clearTimeout(timeout);
+  }, [toast]);
 
   const normalizeCollege = (item) => {
     if (!item) return "";
@@ -540,10 +548,25 @@ export default function Profile() {
 
   const handleDeletePost = async (postId) => {
     if (!confirm("Delete this post?")) return;
+    const targetId = String(postId || "");
+    if (targetId) {
+      removePost(targetId);
+      setUserPosts((prev) =>
+        prev.filter(
+          (post) =>
+            String(
+              post?._id || post?.id || post?.postId || post?.post_id || ""
+            ) !== targetId
+        )
+      );
+    }
+    setToast({ title: "Post Deleted", message: "Your post was removed." });
     try {
       await deletePost(postId);
-      await loadPosts();
     } catch (error) {
+      if (targetId) {
+        await loadPosts();
+      }
       alert(error.message || "Failed to delete post");
     }
   };
@@ -568,6 +591,12 @@ export default function Profile() {
                 displayName:
                   userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
                 profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+                isVerified: Boolean(
+                  userData.isVerified ||
+                    userData.verified ||
+                    userData.is_verified ||
+                    userData.verification?.status === "verified"
+                ),
                 bio: userData.bio || "",
                 university: userData.university || userData.college || "",
                 friends: userData.friends || [],
@@ -580,6 +609,7 @@ export default function Profile() {
               id: friendId,
               displayName: "User",
               profilePicUrl: ANONYMOUS_AVATAR,
+              isVerified: false,
               friends: [],
             }
           );
@@ -748,7 +778,13 @@ export default function Profile() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
                   {userPosts.map((post, index) => (
                     <Motion.div
-                      key={post._id}
+                      key={
+                        post._id ||
+                        post.id ||
+                        post.postId ||
+                        post.post_id ||
+                        `post-${index}`
+                      }
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: index * 0.05 }}
@@ -804,9 +840,9 @@ export default function Profile() {
               <p className="text-center text-[#b9b4c7] py-8">No friends yet.</p>
             ) : (
               <div className="space-y-3">
-                {friendsList.map((friend) => (
+                {friendsList.map((friend, index) => (
                   <button
-                    key={friend.id}
+                    key={friend.id || `friend-${index}`}
                     type="button"
                     onClick={() => setSelectedUser(friend)}
                     className="w-full flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left transition-all hover:bg-white/10"
@@ -818,8 +854,9 @@ export default function Profile() {
                         className="w-10 h-10 rounded-full object-cover"
                       />
                       <div>
-                        <p className="text-sm font-semibold text-[#faf0e6]">
+                        <p className="text-sm font-semibold text-[#faf0e6] flex items-center gap-1">
                           {friend.displayName || "User"}
+                          {friend.isVerified && <BlueTick className="text-[11px]" />}
                         </p>
                         <p className="text-xs text-[#b9b4c7]">
                           {friend.university || "Verified Campus"}
@@ -1181,6 +1218,18 @@ export default function Profile() {
         onClose={() => setSelectedUser(null)}
         currentUser={currentUser}
       />
+      {toast && (
+        <Motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="fixed top-6 right-4 z-[70] toast-card rounded-2xl px-4 py-3 text-sm text-[#faf0e6]"
+        >
+          <p className="text-xs uppercase tracking-[0.2em] text-[#b9b4c7]">
+            {toast.title}
+          </p>
+          <p className="mt-1">{toast.message}</p>
+        </Motion.div>
+      )}
       <Motion.button
         type="button"
         onClick={() => setShowCreateModal(true)}

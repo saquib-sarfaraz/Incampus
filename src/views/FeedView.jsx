@@ -24,9 +24,11 @@ export default function FeedView({ authToken }) {
       <StoryBar />
       <PostCreator />
       <div className="space-y-6">
-        {posts.map(p => (
-          <Post key={p._id} post={p} />
-        ))}
+        {posts.map((post, index) => {
+          const postKey =
+            post?._id || post?.id || post?.postId || post?.post_id || `post-${index}`;
+          return <Post key={String(postKey)} post={post} />;
+        })}
       </div>
     </main>
   );

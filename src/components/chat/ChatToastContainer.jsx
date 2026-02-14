@@ -22,9 +22,11 @@ export default function ChatToastContainer() {
   return (
     <AnimatePresence>
       <div className="fixed top-16 right-2 left-auto z-50 w-56 max-w-[75vw] space-y-1.5">
-        {chatToasts.map((toast) => (
+        {chatToasts.map((toast, index) => {
+          const toastKey = toast?.id || `toast-${index}`;
+          return (
           <Motion.div
-            key={toast.id}
+            key={String(toastKey)}
             initial={{ opacity: 0, x: 20 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 20 }}
@@ -47,7 +49,8 @@ export default function ChatToastContainer() {
               </div>
             </div>
           </Motion.div>
-        ))}
+        );
+        })}
       </div>
     </AnimatePresence>
   );

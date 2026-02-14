@@ -7,16 +7,18 @@ const isAbsoluteUrl = (value) => /^https?:\/\//i.test(value);
 
 const API_PREFIX = "/api";
 const IS_DEV = import.meta.env.DEV;
-const RAW_API_BASE_URL = import.meta.env.VITE_API_URL || "";
+const RAW_API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || "";
 const API_BASE_URL = normalizeBaseUrl(RAW_API_BASE_URL) || API_PREFIX;
 const API_BASE_HAS_PREFIX = API_BASE_URL.endsWith(API_PREFIX);
 const RAW_COLLEGES_API_URL =
   import.meta.env.VITE_COLLEGES_API_URL || import.meta.env.COLLEGES_API_URL || "";
 const RAW_COLLEGE_SEARCH_URL =
   import.meta.env.VITE_COLLEGE_SEARCH_URL || import.meta.env.COLLEGE_SEARCH_URL || "";
-const DEFAULT_COLLEGE_SEARCH_URL = "https://incampus-api.onrender.com/api/search-tags";
+const DEFAULT_COLLEGE_SEARCH_URL = import.meta.env.VITE_DEFAULT_COLLEGE_SEARCH_URL || "";
 const COLLEGE_SEARCH_URL =
-  normalizeBaseUrl(RAW_COLLEGE_SEARCH_URL) || DEFAULT_COLLEGE_SEARCH_URL;
+  normalizeBaseUrl(RAW_COLLEGE_SEARCH_URL) ||
+  normalizeBaseUrl(DEFAULT_COLLEGE_SEARCH_URL);
 const COLLEGES_API_BASE_URL = normalizeBaseUrl(RAW_COLLEGES_API_URL);
 const RAW_POST_COMMENTS_PATHS =
   import.meta.env.VITE_POST_COMMENTS_PATHS ||

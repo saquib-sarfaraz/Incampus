@@ -4,6 +4,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App.jsx";
 import "./index.css";
 
+if (import.meta.env.PROD && typeof window !== "undefined") {
+  window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

@@ -205,13 +205,20 @@ export default function ShareToChatModal({
                   Recent
                 </p>
                 <div className="flex gap-3 overflow-x-auto pb-2">
-                  {recentTargets.map((target) => {
-                    const isSelected = selectedTargets.has(target.id);
+                  {recentTargets.map((target, index) => {
+                    const targetId =
+                      target.id ||
+                      target._id ||
+                      target.userId ||
+                      target.user_id ||
+                      "";
+                    const targetKey = targetId || `recent-${index}`;
+                    const isSelected = targetId ? selectedTargets.has(targetId) : false;
                     return (
                       <button
-                        key={`recent-${target.id}`}
+                        key={`recent-${targetKey}`}
                         type="button"
-                        onClick={() => toggleTarget(target.id)}
+                        onClick={() => targetId && toggleTarget(targetId)}
                         className={`flex flex-col items-center gap-1 min-w-[72px] rounded-2xl border ${
                           isSelected
                             ? "border-emerald-300/60 bg-emerald-400/10"
@@ -237,13 +244,20 @@ export default function ShareToChatModal({
               <p className="text-center text-[#b9b4c7] text-sm">Loading chats...</p>
             ) : (
               <div className="space-y-2 max-h-64 overflow-y-auto">
-                {filteredTargets.map((target) => {
-                  const isSelected = selectedTargets.has(target.id);
+                {filteredTargets.map((target, index) => {
+                  const targetId =
+                    target.id ||
+                    target._id ||
+                    target.userId ||
+                    target.user_id ||
+                    "";
+                  const targetKey = targetId || `target-${index}`;
+                  const isSelected = targetId ? selectedTargets.has(targetId) : false;
                   return (
                     <button
-                      key={target.id}
+                      key={String(targetKey)}
                       type="button"
-                      onClick={() => toggleTarget(target.id)}
+                      onClick={() => targetId && toggleTarget(targetId)}
                       className={`w-full flex items-center gap-3 rounded-2xl border px-3 py-2 text-left transition-colors ${
                         isSelected
                           ? "border-emerald-300/60 bg-emerald-400/10"

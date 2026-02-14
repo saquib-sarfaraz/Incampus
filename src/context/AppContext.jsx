@@ -1526,7 +1526,16 @@ export const AppProvider = ({ children }) => {
   }, []);
 
   const removePost = useCallback((postId) => {
-    setPosts((prev) => prev.filter((p) => p._id !== postId));
+    if (!postId) return;
+    const targetId = String(postId);
+    setPosts((prev) =>
+      prev.filter((p) => {
+        const resolvedId = String(
+          p?._id || p?.id || p?.postId || p?.post_id || ""
+        );
+        return resolvedId !== targetId;
+      })
+    );
   }, []);
 
   const addStory = useCallback((newStory) => {

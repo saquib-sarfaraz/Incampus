@@ -106,6 +106,7 @@ const UserProfileModalContent = ({
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
   const isVerified = Boolean(resolvedUser?.isVerified);
+  const resolvedUsername = String(resolvedUser?.username || "").trim();
 
   const publicPosts = useMemo(() => {
     if (!resolvedUserId) return [];
@@ -222,6 +223,9 @@ const UserProfileModalContent = ({
                     "User"}
                   {isVerified && <BlueTick />}
                 </h3>
+                {resolvedUsername && (
+                  <p className="text-[11px] text-[#b9b4c7]">@{resolvedUsername}</p>
+                )}
                 <div className="flex flex-wrap items-center gap-2 mt-1">
                   <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[11px] text-[#faf0e6]">
                     {userTypeBadge}
@@ -314,14 +318,14 @@ const UserProfileModalContent = ({
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-2">
-                {publicPosts.map((post) => {
+                {publicPosts.map((post, index) => {
                   const mediaUrl = resolvePostMediaUrl(post);
                   const isVideo =
                     isVideoUrl(mediaUrl) ||
                     String(post.mediaType || post.type || "").toLowerCase().includes("video");
                   return (
                     <button
-                      key={post._id || post.id}
+                      key={post._id || post.id || `public-post-${index}`}
                       type="button"
                       onClick={() => setSelectedPost(post)}
                       className="relative aspect-square overflow-hidden rounded-xl border border-white/10 bg-white/5"
