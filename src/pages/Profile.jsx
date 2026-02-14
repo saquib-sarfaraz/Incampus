@@ -477,14 +477,26 @@ export default function Profile() {
     }
     setLoading(true);
     try {
-      await changePassword({ newPassword, confirmPassword });
+      const result = await changePassword({ newPassword, confirmPassword });
       setNewPassword("");
       setConfirmPassword("");
-      setPasswordSuccess("Password updated. Please log in again.");
-      setTimeout(() => setPasswordSuccess(""), 2500);
-      setTimeout(() => {
-        logout();
-      }, 1200);
+      const shouldForceLogout = Boolean(
+        result?.forceLogout ??
+          result?.force_logout ??
+          result?.logout ??
+          result?.logoutRequired ??
+          result?.requireLogout
+      );
+      if (shouldForceLogout) {
+        setPasswordSuccess("Password updated. Please log in again.");
+        setTimeout(() => setPasswordSuccess(""), 2500);
+        setTimeout(() => {
+          logout();
+        }, 1200);
+      } else {
+        setPasswordSuccess("Password updated.");
+        setTimeout(() => setPasswordSuccess(""), 2500);
+      }
     } catch (error) {
       setPasswordError(error.message || "Failed to update password");
     } finally {
