@@ -18,6 +18,18 @@ const DEFAULT_COLLEGE_SEARCH_URL = "https://incampus-api.onrender.com/api/search
 const COLLEGE_SEARCH_URL =
   normalizeBaseUrl(RAW_COLLEGE_SEARCH_URL) || DEFAULT_COLLEGE_SEARCH_URL;
 const COLLEGES_API_BASE_URL = normalizeBaseUrl(RAW_COLLEGES_API_URL);
+const RAW_POST_COMMENTS_PATHS =
+  import.meta.env.VITE_POST_COMMENTS_PATHS ||
+  import.meta.env.POST_COMMENTS_PATHS ||
+  import.meta.env.VITE_POST_COMMENTS_PATH ||
+  import.meta.env.POST_COMMENTS_PATH ||
+  "";
+const DEFAULT_POST_COMMENTS_PATHS = ["/posts/:id/comments"];
+const POST_COMMENTS_PATHS = RAW_POST_COMMENTS_PATHS
+  ? RAW_POST_COMMENTS_PATHS.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : DEFAULT_POST_COMMENTS_PATHS;
 
 const resolveApiPath = (path) => {
   if (!path) {
@@ -194,6 +206,7 @@ const normalizeList = (data, keys = []) => {
 };
 
 const userRequestCache = new Map();
+let cachedPostCommentsEndpointMissing = false;
 
 // Auth APIs
 export const login = async (username, password) => {
@@ -621,6 +634,31 @@ export const addComment = async (postId, content, isAnonymous) => {
     method: "POST",
     body: { content, isAnonymous },
   });
+};
+
+export const fetchPostComments = async (postId, params = {}) => {
+  if (!postId) return [];
+  if (cachedPostCommentsEndpointMissing) {
+    const error = new Error("Comments endpoint unavailable.");
+    error.code = "COMMENTS_ENDPOINT_MISSING";
+    throw error;
+  }
+  const encodedId = encodeURIComponent(postId);
+  const resolvedPaths = POST_COMMENTS_PATHS.map((path) =>
+    path.replace(":id", encodedId)
+  );
+  try {
+    const data = await apiFetchWithFallback(resolvedPaths, { params });
+    return normalizeList(data, ["comments", "items", "data", "results"]);
+  } catch (error) {
+    if (error?.status === 404) {
+      cachedPostCommentsEndpointMissing = true;
+      const missing = new Error("Comments endpoint unavailable.");
+      missing.code = "COMMENTS_ENDPOINT_MISSING";
+      throw missing;
+    }
+    throw error;
+  }
 };
 
 export const deleteComment = async (postId, commentId) => {

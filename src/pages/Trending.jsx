@@ -62,10 +62,67 @@ const TRENDING_VIEWS = [
   { id: "doom", label: "Doom Scroll" },
 ];
 
-const getLikeCount = (post) => {
-  if (Array.isArray(post.likes)) return post.likes.length;
-  return Number(post.likes || post.likeCount || post.likesCount || 0);
+const resolveLikeIds = (likes = []) => {
+  if (!Array.isArray(likes)) return [];
+  return likes
+    .map((like) =>
+      String(
+        like?._id ||
+          like?.id ||
+          like?.userId ||
+          like?.user ||
+          like?.authorId ||
+          like?.author ||
+          like ||
+          ""
+      )
+    )
+    .filter(Boolean);
 };
+
+const resolvePostIsLiked = (post, currentUserId, likeIds = []) => {
+  if (!post || !currentUserId) return false;
+  const normalizedIds = Array.isArray(likeIds) ? likeIds : [];
+  const hasLikeId = normalizedIds.some(
+    (id) => String(id) === String(currentUserId)
+  );
+  const directFlag =
+    post.likedByMe ??
+    post.isLikedByMe ??
+    post.liked_by_me ??
+    post.isLiked ??
+    post.liked ??
+    post.hasLiked;
+  if (typeof directFlag === "boolean") return hasLikeId || directFlag;
+  return hasLikeId;
+};
+
+const resolveLikesMeta = (post) => {
+  if (!post) return { ids: [], count: 0, shouldUseList: false };
+  const rawList = Array.isArray(post.likes)
+    ? post.likes
+    : Array.isArray(post.likedBy)
+      ? post.likedBy
+      : Array.isArray(post.liked_by)
+        ? post.liked_by
+        : null;
+  const ids = resolveLikeIds(rawList);
+  const listCount = rawList ? rawList.length : null;
+  const numeric = Number(post.likesCount ?? post.likeCount ?? post.likes ?? 0);
+  const count =
+    listCount !== null
+      ? Number.isFinite(numeric) && numeric > listCount
+        ? numeric
+        : listCount
+      : Number.isFinite(numeric)
+        ? numeric
+        : 0;
+  const shouldUseList =
+    Array.isArray(rawList) && (!Number.isFinite(numeric) || numeric <= listCount);
+  return { ids, count, shouldUseList };
+};
+
+const getLikeCount = (post) => resolveLikesMeta(post).count;
 
 const getCommentCount = (post) => {
   if (Array.isArray(post.comments)) return post.comments.length;
@@ -985,31 +1042,23 @@ export default function Trending() {
     setSelectedStoryIndex(idx);
   };
 
-  const handleToggleLike = useCallback(
-    async (post) => {
-      if (!currentUser?.id) return;
-      const postId = post._id || post.id || post.postId || post.post_id;
-      if (!postId) return;
-      const baseLikes = Array.isArray(post.likes) ? post.likes : [];
-      const hasLiked = baseLikes.includes(currentUser.id);
-      const nextLikes = hasLiked
-        ? baseLikes.filter((id) => id !== currentUser.id)
-        : [...baseLikes, currentUser.id];
-
-      updatePost(postId, { likes: nextLikes, likeCount: nextLikes.length });
-      try {
-        await likePost(postId);
-      } catch (error) {
-        updatePost(postId, { likes: baseLikes, likeCount: baseLikes.length });
-        console.error("Failed to like post:", error);
-      }
-    },
-    [currentUser?.id, updatePost]
-  );
-
   const [mediaLikePulse, setMediaLikePulse] = useState({});
+  const [likeIconPulse, setLikeIconPulse] = useState({});
   const lastTapRef = useRef(new Map());
   const suppressOpenRef = useRef(new Set());
+  const likeCommitTimersRef = useRef(new Map());
+  const likeDesiredRef = useRef(new Map());
+  const likeCommitInFlightRef = useRef(new Map());
+  const committedLikedRef = useRef(new Map());
+  const committedCountRef = useRef(new Map());
+  const optimisticCountRef = useRef(new Map());
+
+  useEffect(() => {
+    return () => {
+      likeCommitTimersRef.current.forEach((timer) => clearTimeout(timer));
+      likeCommitTimersRef.current.clear();
+    };
+  }, []);
 
   const bumpMediaLikePulse = useCallback((postId) => {
     if (!postId) return;
@@ -1018,6 +1067,162 @@ export default function Trending() {
       [postId]: (prev[postId] || 0) + 1,
     }));
   }, []);
+
+  const bumpLikeIconPulse = useCallback((postId) => {
+    if (!postId) return;
+    setLikeIconPulse((prev) => ({
+      ...prev,
+      [postId]: (prev[postId] || 0) + 1,
+    }));
+  }, []);
+
+  const commitLike = useCallback(
+    async (rawPostId) => {
+      const postId = String(rawPostId || "");
+      if (!postId || !currentUser?.id) return;
+      const timers = likeCommitTimersRef.current;
+      if (timers.has(postId)) {
+        clearTimeout(timers.get(postId));
+        timers.delete(postId);
+      }
+      if (likeCommitInFlightRef.current.get(postId)) {
+        timers.set(
+          postId,
+          setTimeout(() => {
+            commitLike(postId);
+          }, 250)
+        );
+        return;
+      }
+      if (!likeDesiredRef.current.has(postId)) return;
+
+      const desired = likeDesiredRef.current.get(postId);
+      const committed = committedLikedRef.current.get(postId);
+      if (committed !== undefined && desired === committed) {
+        const committedCount = committedCountRef.current.get(postId) ?? 0;
+        updatePost(postId, {
+          likeCount: committedCount,
+          likesCount: committedCount,
+          likedByMe: committed,
+          isLikedByMe: committed,
+        });
+        likeDesiredRef.current.delete(postId);
+        optimisticCountRef.current.delete(postId);
+        return;
+      }
+
+      likeCommitInFlightRef.current.set(postId, true);
+      const desiredAtSend = desired;
+      try {
+        const response = await likePost(postId);
+        const updatedPost =
+          response?.post || response?.data?.post || response?.data || response || null;
+        const fallbackCount =
+          optimisticCountRef.current.get(postId) ??
+          committedCountRef.current.get(postId) ??
+          0;
+        const updatedCount = updatedPost ? resolveLikesMeta(updatedPost).count : fallbackCount;
+        const updatedLikesRaw =
+          updatedPost && Array.isArray(updatedPost.likes)
+            ? updatedPost.likes
+            : updatedPost && Array.isArray(updatedPost.likedBy)
+              ? updatedPost.likedBy
+              : updatedPost && Array.isArray(updatedPost.liked_by)
+                ? updatedPost.liked_by
+                : null;
+        const updates = {
+          likeCount: updatedCount,
+          likesCount: updatedCount,
+          likedByMe: desiredAtSend,
+          isLikedByMe: desiredAtSend,
+        };
+        if (updatedLikesRaw) {
+          const updatedLikeIds = resolveLikeIds(updatedLikesRaw);
+          updates.likes = updatedLikeIds;
+          updates.likedBy = updatedLikeIds;
+        }
+        updatePost(postId, updates);
+        committedLikedRef.current.set(postId, desiredAtSend);
+        committedCountRef.current.set(postId, updatedCount);
+      } catch (error) {
+        const rollbackLiked = committedLikedRef.current.get(postId);
+        const rollbackCount = committedCountRef.current.get(postId);
+        if (rollbackLiked !== undefined && rollbackCount !== undefined) {
+          updatePost(postId, {
+            likeCount: rollbackCount,
+            likesCount: rollbackCount,
+            likedByMe: rollbackLiked,
+            isLikedByMe: rollbackLiked,
+          });
+        }
+        console.error("Failed to like post:", error);
+      } finally {
+        likeCommitInFlightRef.current.set(postId, false);
+        if (likeDesiredRef.current.get(postId) === desiredAtSend) {
+          likeDesiredRef.current.delete(postId);
+          optimisticCountRef.current.delete(postId);
+        }
+      }
+    },
+    [currentUser?.id, updatePost, likePost]
+  );
+
+  const scheduleLikeCommit = useCallback(
+    (postId) => {
+      const timers = likeCommitTimersRef.current;
+      if (timers.has(postId)) {
+        clearTimeout(timers.get(postId));
+      }
+      timers.set(
+        postId,
+        setTimeout(() => {
+          commitLike(postId);
+        }, 2000)
+      );
+    },
+    [commitLike]
+  );
+
+  const handleToggleLike = useCallback(
+    async (post) => {
+      if (!currentUser?.id) return;
+      const postId = String(
+        post._id || post.id || post.postId || post.post_id || ""
+      );
+      if (!postId) return;
+      bumpLikeIconPulse(String(postId));
+      const { ids: baseLikes, count: baseCount, shouldUseList } = resolveLikesMeta(post);
+      const hasLiked = resolvePostIsLiked(post, currentUser.id, baseLikes);
+      const hasPending =
+        likeDesiredRef.current.has(postId) || likeCommitInFlightRef.current.get(postId);
+      if (!hasPending) {
+        committedLikedRef.current.set(postId, hasLiked);
+        committedCountRef.current.set(postId, baseCount);
+      }
+      const nextLiked = !hasLiked;
+      const currentCount = optimisticCountRef.current.get(postId) ?? baseCount;
+      const nextCount = Math.max(0, currentCount + (nextLiked ? 1 : -1));
+      const nextLikes = shouldUseList
+        ? nextLiked
+          ? Array.from(new Set([...baseLikes, currentUser.id]))
+          : baseLikes.filter((id) => String(id) !== String(currentUser.id))
+        : null;
+      const optimisticUpdates = {
+        likeCount: nextCount,
+        likesCount: nextCount,
+        likedByMe: nextLiked,
+        isLikedByMe: nextLiked,
+      };
+      if (shouldUseList && nextLikes) {
+        optimisticUpdates.likes = nextLikes;
+      }
+      updatePost(postId, optimisticUpdates);
+      optimisticCountRef.current.set(postId, nextCount);
+      likeDesiredRef.current.set(postId, nextLiked);
+      scheduleLikeCommit(postId);
+    },
+    [currentUser?.id, updatePost, bumpLikeIconPulse, scheduleLikeCommit]
+  );
 
   const shouldSuppressOpen = useCallback((postId) => {
     if (!postId) return false;
@@ -1036,8 +1241,8 @@ export default function Trending() {
       );
       if (!postId) return;
       bumpMediaLikePulse(postId);
-      const baseLikes = Array.isArray(post.likes) ? post.likes : [];
-      const hasLiked = baseLikes.includes(currentUser.id);
+      const { ids: baseLikes } = resolveLikesMeta(post);
+      const hasLiked = resolvePostIsLiked(post, currentUser.id, baseLikes);
       if (!hasLiked) {
         handleToggleLike(post);
       }
@@ -1222,6 +1427,7 @@ export default function Trending() {
     const badge = resolveTrendingBadge(entry.score);
 
     const pulseCount = itemId ? mediaLikePulse[itemId] || 0 : 0;
+    const likePulse = itemId ? likeIconPulse[itemId] || 0 : 0;
 
     return (
       <Motion.div
@@ -1342,7 +1548,15 @@ export default function Trending() {
               }}
               className="rounded-full bg-black/40 px-2 py-1 hover:bg-black/60"
             >
-              <i className="fa-solid fa-heart"></i>
+              <Motion.span
+                key={`trend-like-icon-${itemId || index}-${likePulse}`}
+                initial={{ scale: 1 }}
+                animate={{ scale: [1, 1.15, 1] }}
+                transition={{ duration: 0.15, ease: "easeOut" }}
+                className="flex items-center"
+              >
+                <i className="fa-solid fa-heart"></i>
+              </Motion.span>
             </button>
             <button
               type="button"

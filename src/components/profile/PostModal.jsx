@@ -10,6 +10,65 @@ import ReportModal from "../moderation/ReportModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
+const toNumber = (value) => {
+  if (Array.isArray(value)) return value.length;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const resolveLikeIds = (likes = []) => {
+  if (!Array.isArray(likes)) return [];
+  return likes
+    .map((like) =>
+      String(
+        like?._id ||
+          like?.id ||
+          like?.userId ||
+          like?.user ||
+          like?.authorId ||
+          like?.author ||
+          like ||
+          ""
+      )
+    )
+    .filter(Boolean);
+};
+
+const resolvePostLikesCount = (post) => {
+  if (!post) return 0;
+  const list = Array.isArray(post.likes)
+    ? post.likes
+    : Array.isArray(post.likedBy)
+      ? post.likedBy
+      : Array.isArray(post.liked_by)
+        ? post.liked_by
+        : null;
+  const listCount = list ? list.length : null;
+  const numeric = toNumber(post.likesCount ?? post.likeCount ?? post.likes ?? 0);
+  if (listCount !== null) {
+    if (Number.isFinite(numeric) && numeric > listCount) return numeric;
+    return listCount;
+  }
+  return numeric;
+};
+
+const resolvePostIsLiked = (post, currentUserId, likeIds = []) => {
+  if (!post || !currentUserId) return false;
+  const normalizedIds = Array.isArray(likeIds) ? likeIds : [];
+  const hasLikeId = normalizedIds.some(
+    (id) => String(id) === String(currentUserId)
+  );
+  const directFlag =
+    post.likedByMe ??
+    post.isLikedByMe ??
+    post.liked_by_me ??
+    post.isLiked ??
+    post.liked ??
+    post.hasLiked;
+  if (typeof directFlag === "boolean") return hasLikeId || directFlag;
+  return hasLikeId;
+};
+
 const resolvePostPrivacy = (post) => {
   const raw = String(
     post.visibility ||
@@ -57,6 +116,12 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const [likePending, setLikePending] = useState(false);
   const [mediaLikePulse, setMediaLikePulse] = useState(0);
   const [showReport, setShowReport] = useState(false);
+  const likeCommitTimerRef = useRef(null);
+  const likeDesiredRef = useRef(null);
+  const likeCommitInFlightRef = useRef(false);
+  const committedLikedRef = useRef(null);
+  const committedCountRef = useRef(null);
+  const optimisticCountRef = useRef(null);
   const postId = post._id || post.id || post.postId || post.post_id;
   const lastTapRef = useRef(0);
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
@@ -68,11 +133,20 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     post.collegeName ||
     post.collegeTag ||
     "";
-  const baseLikes = Array.isArray(post.likes) ? post.likes : [];
-  const baseLikesCount = Array.isArray(post.likes)
-    ? post.likes.length
-    : Number(post.likes || post.likeCount || post.likesCount || 0);
-  const baseIsLiked = baseLikes.includes(currentUser?.id);
+  const baseLikesRaw = Array.isArray(post.likes)
+    ? post.likes
+    : Array.isArray(post.likedBy)
+      ? post.likedBy
+      : Array.isArray(post.liked_by)
+        ? post.liked_by
+        : null;
+  const baseLikeIds = resolveLikeIds(baseLikesRaw);
+  const baseLikesRawCount = Array.isArray(baseLikesRaw) ? baseLikesRaw.length : 0;
+  const baseLikesCount = resolvePostLikesCount(post);
+  const shouldUseLikesList =
+    Array.isArray(baseLikesRaw) && baseLikesCount <= baseLikesRawCount;
+  const baseIsLiked = resolvePostIsLiked(post, currentUser?.id, baseLikeIds);
+  const baseLikes = baseLikeIds;
   const isLiked = localIsLiked;
   const likesCount = localLikesCount;
   const postThumbnail = resolvePostMediaUrl(post);
@@ -154,6 +228,21 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     setLocalLikesCount(baseLikesCount);
   }, [post?._id, baseIsLiked, baseLikesCount]);
 
+  useEffect(() => {
+    if (likeDesiredRef.current !== null || likeCommitInFlightRef.current) return;
+    committedLikedRef.current = baseIsLiked;
+    committedCountRef.current = baseLikesCount;
+  }, [baseIsLiked, baseLikesCount]);
+
+  useEffect(() => {
+    return () => {
+      if (likeCommitTimerRef.current) {
+        clearTimeout(likeCommitTimerRef.current);
+        likeCommitTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const formatTime = (dateString) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -204,27 +293,111 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     }
   };
 
+  const commitLike = useCallback(async () => {
+    if (!postId || !currentUser?.id) return;
+    if (likeCommitInFlightRef.current) {
+      if (likeCommitTimerRef.current) {
+        clearTimeout(likeCommitTimerRef.current);
+      }
+      likeCommitTimerRef.current = setTimeout(() => {
+        commitLike();
+      }, 250);
+      return;
+    }
+    const desired = likeDesiredRef.current;
+    if (desired === null) return;
+    const committed = committedLikedRef.current ?? baseIsLiked;
+    if (desired === committed) {
+      const committedCount = committedCountRef.current ?? baseLikesCount;
+      updatePost(postId, {
+        likeCount: committedCount,
+        likesCount: committedCount,
+        likedByMe: committed,
+        isLikedByMe: committed,
+      });
+      setLocalIsLiked(committed);
+      setLocalLikesCount(committedCount);
+      likeDesiredRef.current = null;
+      optimisticCountRef.current = null;
+      return;
+    }
+
+    likeCommitInFlightRef.current = true;
+    setLikePending(true);
+    const desiredAtSend = desired;
+    try {
+      const response = await likePost(postId);
+      const updatedPost =
+        response?.post || response?.data?.post || response?.data || response || null;
+      const fallbackCount = optimisticCountRef.current ?? baseLikesCount;
+      let updatedCount = updatedPost ? resolvePostLikesCount(updatedPost) : fallbackCount;
+      if (!Number.isFinite(updatedCount)) {
+        updatedCount = fallbackCount;
+      }
+      updatePost(postId, {
+        likeCount: updatedCount,
+        likesCount: updatedCount,
+        likedByMe: desiredAtSend,
+        isLikedByMe: desiredAtSend,
+      });
+      setLocalIsLiked(desiredAtSend);
+      setLocalLikesCount(updatedCount);
+      committedLikedRef.current = desiredAtSend;
+      committedCountRef.current = updatedCount;
+    } catch {
+      const rollbackLiked = committedLikedRef.current ?? baseIsLiked;
+      const rollbackCount = committedCountRef.current ?? baseLikesCount;
+      updatePost(postId, {
+        likeCount: rollbackCount,
+        likesCount: rollbackCount,
+        likedByMe: rollbackLiked,
+        isLikedByMe: rollbackLiked,
+      });
+      setLocalIsLiked(rollbackLiked);
+      setLocalLikesCount(rollbackCount);
+    } finally {
+      likeCommitInFlightRef.current = false;
+      setLikePending(false);
+      if (likeDesiredRef.current === desiredAtSend) {
+        likeDesiredRef.current = null;
+        optimisticCountRef.current = null;
+      }
+    }
+  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost, likePost]);
+
   const handleLike = async () => {
-    if (!currentUser || likePending) return;
+    if (!currentUser?.id) return;
     if (!postId) return;
     const nextLiked = !localIsLiked;
-    setLikePending(true);
+    const currentCount = optimisticCountRef.current ?? localLikesCount;
+    const nextCount = Math.max(0, currentCount + (nextLiked ? 1 : -1));
     setLocalIsLiked(nextLiked);
-    setLocalLikesCount((prev) => Math.max(0, prev + (nextLiked ? 1 : -1)));
-    const nextLikes = nextLiked
-      ? Array.from(new Set([...baseLikes, currentUser.id]))
-      : baseLikes.filter((id) => id !== currentUser.id);
-    updatePost(postId, { likes: nextLikes, likeCount: nextLikes.length });
-
-    try {
-      await likePost(postId);
-    } catch {
-      updatePost(postId, { likes: baseLikes, likeCount: baseLikes.length });
-      setLocalIsLiked(baseIsLiked);
-      setLocalLikesCount(baseLikesCount);
-    } finally {
-      setLikePending(false);
+    setLocalLikesCount(nextCount);
+    optimisticCountRef.current = nextCount;
+    likeDesiredRef.current = nextLiked;
+    const nextLikes = shouldUseLikesList
+      ? nextLiked
+        ? Array.from(new Set([...baseLikes, currentUser.id]))
+        : baseLikes.filter((id) => String(id) !== String(currentUser.id))
+      : null;
+    const optimisticUpdates = {
+      likeCount: nextCount,
+      likesCount: nextCount,
+      likedByMe: nextLiked,
+      isLikedByMe: nextLiked,
+    };
+    if (shouldUseLikesList && nextLikes) {
+      optimisticUpdates.likes = nextLikes;
+      optimisticUpdates.likedBy = nextLikes;
     }
+    updatePost(postId, optimisticUpdates);
+
+    if (likeCommitTimerRef.current) {
+      clearTimeout(likeCommitTimerRef.current);
+    }
+    likeCommitTimerRef.current = setTimeout(() => {
+      commitLike();
+    }, 2000);
   };
 
   const handleMediaDoubleTap = useCallback(() => {
@@ -349,7 +522,10 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
                   className="hover:text-[#b9b4c7] transition-colors"
                 >
                   <i className="fa-regular fa-comment mr-1"></i>
-                  {post.comments?.length || 0} Comments
+                  {(post.commentsCount ??
+                    post.commentCount ??
+                    (Array.isArray(post.comments) ? post.comments.length : 0)) || 0}{" "}
+                  Comments
                 </button>
                 <button
                   onClick={() => setShowShare(true)}

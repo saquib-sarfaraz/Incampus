@@ -17,7 +17,13 @@ export default function Post({ post }) {
   
         <div className="flex justify-around text-slate-500 pt-4 border-t">
           <span>❤️ {post.likesCount || 0} Likes</span>
-          <span>💬 {post.comments?.length || 0} Comments</span>
+          <span>
+            💬{" "}
+            {post.commentsCount ??
+              post.commentCount ??
+              (Array.isArray(post.comments) ? post.comments.length : 0)}{" "}
+            Comments
+          </span>
           <span>🔁 {post.repostsCount || 0} Reposts</span>
         </div>
       </div>
