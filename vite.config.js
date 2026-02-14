@@ -19,6 +19,17 @@ export default defineConfig(({ mode }) => ({
   },
   build: {
     sourcemap: false,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          reactVendor: ["react", "react-dom"],
+          router: ["react-router-dom"],
+          motion: ["framer-motion"],
+          query: ["@tanstack/react-query"],
+        },
+      },
+    },
   },
   esbuild:
     mode === "production"
