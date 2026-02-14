@@ -1,6 +1,11 @@
 import { io } from "socket.io-client";
 
 const SOCKET_BASE_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
+const HEARTBEAT_INTERVAL_MS = Number(import.meta.env.VITE_SOCKET_HEARTBEAT_MS) || 25000;
+const HEARTBEAT_EVENT =
+  import.meta.env.VITE_SOCKET_HEARTBEAT_EVENT ||
+  import.meta.env.SOCKET_HEARTBEAT_EVENT ||
+  "heartbeat";
 
 const globalScope =
   typeof window !== "undefined"
@@ -15,6 +20,8 @@ const sharedState =
     socket: null,
     roomSubscriptions: new Set(),
     listenersBound: false,
+    heartbeatId: null,
+    heartbeatBound: false,
   });
 
 const getSharedSocket = () => sharedState.socket;
@@ -25,6 +32,10 @@ const getRoomSubscriptions = () => sharedState.roomSubscriptions;
 const isListenersBound = () => sharedState.listenersBound;
 const setListenersBound = (value) => {
   sharedState.listenersBound = value;
+};
+const isHeartbeatBound = () => sharedState.heartbeatBound;
+const setHeartbeatBound = (value) => {
+  sharedState.heartbeatBound = value;
 };
 
 const shouldLog = () => {
@@ -46,6 +57,32 @@ const getAuthToken = () => {
     return localStorage.getItem("authToken");
   } catch {
     return null;
+  }
+};
+
+const startHeartbeat = (socket) => {
+  if (!socket || HEARTBEAT_INTERVAL_MS <= 0) return;
+  if (sharedState.heartbeatId) return;
+  sharedState.heartbeatId = setInterval(() => {
+    if (socket.connected) {
+      socket.emit(HEARTBEAT_EVENT);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+};
+
+const stopHeartbeat = () => {
+  if (!sharedState.heartbeatId) return;
+  clearInterval(sharedState.heartbeatId);
+  sharedState.heartbeatId = null;
+};
+
+const bindHeartbeat = (socket) => {
+  if (!socket || isHeartbeatBound()) return;
+  setHeartbeatBound(true);
+  socket.on("connect", () => startHeartbeat(socket));
+  socket.on("disconnect", () => stopHeartbeat());
+  if (socket.connected) {
+    startHeartbeat(socket);
   }
 };
 
@@ -71,6 +108,7 @@ export const initSocket = (userId, rooms = []) => {
       existingSocket.connect();
     }
     bindConnectionGuards();
+    bindHeartbeat(existingSocket);
     return existingSocket;
   }
 
@@ -109,6 +147,7 @@ export const initSocket = (userId, rooms = []) => {
 
   socket.connect();
   bindConnectionGuards();
+  bindHeartbeat(socket);
   return socket;
 };
 
@@ -123,6 +162,8 @@ export const disconnectSocket = () => {
     setSharedSocket(null);
   }
   getRoomSubscriptions().clear();
+  stopHeartbeat();
+  setHeartbeatBound(false);
 };
 
 export const joinSocket = (room) => {
