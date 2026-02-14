@@ -1,11 +1,31 @@
 import { io } from "socket.io-client";
 
-const SOCKET_BASE_URL =
-  import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
+const SOCKET_BASE_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
 
-let socket = null;
-const roomSubscriptions = new Set();
-let listenersBound = false;
+const globalScope =
+  typeof window !== "undefined"
+    ? window
+    : typeof globalThis !== "undefined"
+      ? globalThis
+      : global;
+
+const sharedState =
+  globalScope.__incampusSocketState ||
+  (globalScope.__incampusSocketState = {
+    socket: null,
+    roomSubscriptions: new Set(),
+    listenersBound: false,
+  });
+
+const getSharedSocket = () => sharedState.socket;
+const setSharedSocket = (next) => {
+  sharedState.socket = next;
+};
+const getRoomSubscriptions = () => sharedState.roomSubscriptions;
+const isListenersBound = () => sharedState.listenersBound;
+const setListenersBound = (value) => {
+  sharedState.listenersBound = value;
+};
 
 const shouldLog = () => {
   try {
@@ -32,29 +52,31 @@ const getAuthToken = () => {
 export const initSocket = (userId, rooms = []) => {
   if (Array.isArray(rooms)) {
     rooms.forEach((room) => {
-      if (room) roomSubscriptions.add(room);
+      if (room) getRoomSubscriptions().add(room);
     });
   }
 
-  if (socket) {
-    socket.auth = { token: getAuthToken() };
-    if (socket.connected) {
-      roomSubscriptions.forEach((room) => {
+  const existingSocket = getSharedSocket();
+  if (existingSocket) {
+    existingSocket.auth = { token: getAuthToken() };
+    if (existingSocket.connected) {
+      getRoomSubscriptions().forEach((room) => {
         if (room.startsWith("group:")) {
-          socket.emit("join", { groupId: room });
+          existingSocket.emit("join", { groupId: room });
         } else {
-          socket.emit("join", { chatId: room });
+          existingSocket.emit("join", { chatId: room });
         }
       });
     } else {
-      socket.connect();
+      existingSocket.connect();
     }
     bindConnectionGuards();
-    return socket;
+    return existingSocket;
   }
 
-  socket = io(SOCKET_BASE_URL, {
+  const socket = io(SOCKET_BASE_URL, {
     autoConnect: false,
+    transports: ["websocket"],
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
@@ -62,10 +84,11 @@ export const initSocket = (userId, rooms = []) => {
     timeout: 20000,
   });
   socket.auth = { token: getAuthToken() };
+  setSharedSocket(socket);
 
   socket.on("connect", () => {
     log("connected", socket.id);
-    roomSubscriptions.forEach((room) => {
+    getRoomSubscriptions().forEach((room) => {
       if (room.startsWith("group:")) {
         socket.emit("join", { groupId: room });
       } else {
@@ -90,60 +113,65 @@ export const initSocket = (userId, rooms = []) => {
 };
 
 export const getSocket = () => {
-  return socket;
+  return getSharedSocket();
 };
 
 export const disconnectSocket = () => {
-  if (socket) {
-    socket.disconnect();
-    socket = null;
+  const current = getSharedSocket();
+  if (current) {
+    current.disconnect();
+    setSharedSocket(null);
   }
-  roomSubscriptions.clear();
+  getRoomSubscriptions().clear();
 };
 
 export const joinSocket = (room) => {
   if (!room) return;
-  roomSubscriptions.add(room);
-  if (socket && socket.connected) {
+  getRoomSubscriptions().add(room);
+  const current = getSharedSocket();
+  if (current && current.connected) {
     if (room.startsWith("group:")) {
-      socket.emit("join", { groupId: room });
+      current.emit("join", { groupId: room });
     } else {
-      socket.emit("join", { chatId: room });
+      current.emit("join", { chatId: room });
     }
   }
 };
 
 export const leaveSocket = (room) => {
   if (!room) return;
-  roomSubscriptions.delete(room);
-  if (socket && socket.connected) {
+  getRoomSubscriptions().delete(room);
+  const current = getSharedSocket();
+  if (current && current.connected) {
     if (room.startsWith("group:")) {
-      socket.emit("leave", { groupId: room });
+      current.emit("leave", { groupId: room });
     } else {
-      socket.emit("leave", { chatId: room });
+      current.emit("leave", { chatId: room });
     }
   }
 };
 
 export const ensureSocketConnected = () => {
-  if (!socket) return false;
-  if (!socket.connected) {
-    socket.auth = { token: getAuthToken() };
-    socket.connect();
+  const current = getSharedSocket();
+  if (!current) return false;
+  if (!current.connected) {
+    current.auth = { token: getAuthToken() };
+    current.connect();
     log("reconnect_manual");
   }
-  return socket.connected;
+  return current.connected;
 };
 
 const bindConnectionGuards = () => {
-  if (listenersBound || typeof window === "undefined") return;
-  listenersBound = true;
+  if (isListenersBound() || typeof window === "undefined") return;
+  setListenersBound(true);
 
   const tryReconnect = () => {
-    if (!socket) return;
-    if (!socket.connected) {
-      socket.auth = { token: getAuthToken() };
-      socket.connect();
+    const current = getSharedSocket();
+    if (!current) return;
+    if (!current.connected) {
+      current.auth = { token: getAuthToken() };
+      current.connect();
       log("reconnect_attempt");
     }
   };
