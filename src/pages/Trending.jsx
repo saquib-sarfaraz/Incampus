@@ -13,6 +13,7 @@ import PostModal from "../components/profile/PostModal";
 import ShareSheet from "../components/common/ShareSheet";
 import ShareToChatModal from "../components/common/ShareToChatModal";
 import StoryViewer from "../components/stories/StoryViewer";
+import BlueTick from "../components/common/BlueTick";
 import Post from "../components/feed/Post";
 import {
   isVideoUrl,
@@ -45,7 +46,7 @@ import {
 import { getOptimizedMediaUrl, getMediaSrcSet } from "../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
-const SEARCH_DEBOUNCE_MS = 0;
+const SEARCH_DEBOUNCE_MS = 150;
 const SEARCH_CACHE_LIMIT = 5;
 const TRENDING_WINDOW_OPTIONS = [
   { id: "48h", label: "Last 48 Hours", hours: 48 },
@@ -349,6 +350,19 @@ const getUserSearchFields = (user) => {
     .filter(Boolean);
 };
 
+const getUserPrimaryName = (user) => {
+  if (!user || typeof user !== "object") return "";
+  return String(
+    resolveCommunityName(user) ||
+      user.displayName ||
+      user.fullName ||
+      user.username ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+};
+
 const isUserVerified = (user) => {
   if (!user || typeof user !== "object") return false;
   return Boolean(
@@ -356,7 +370,8 @@ const isUserVerified = (user) => {
       user.verified ||
       user.is_verified ||
       user.verifiedBadge ||
-      user.verifiedAt
+      user.verifiedAt ||
+      user.verification?.status === "verified"
   );
 };
 
@@ -380,15 +395,18 @@ const rankUsersByQuery = (users, query) => {
         rank: match.rank,
         label: match.label,
         verified: isUserVerified(user),
+        nameKey: getUserPrimaryName(user),
       };
     })
     .filter(Boolean)
     .sort((a, b) => {
       if (a.rank !== b.rank) return a.rank - b.rank;
-      if (a.label === b.label && a.verified !== b.verified) {
+      if (a.nameKey !== b.nameKey) return a.nameKey.localeCompare(b.nameKey);
+      if (a.verified !== b.verified) {
         return a.verified ? -1 : 1;
       }
-      return a.label.localeCompare(b.label);
+      if (a.label !== b.label) return a.label.localeCompare(b.label);
+      return 0;
     })
     .map((entry) => entry.user);
 };
@@ -1417,6 +1435,18 @@ export default function Trending() {
           item.authorName ||
           cachedUser?.displayName ||
           "User";
+    const authorIsVerified = !isAnonymous && Boolean(
+      item.authorIsVerified ||
+        item.authorVerified ||
+        item.author?.isVerified ||
+        item.author?.verified ||
+        item.author?.is_verified ||
+        item.author?.verification?.status === "verified" ||
+        cachedUser?.isVerified ||
+        cachedUser?.verified ||
+        cachedUser?.is_verified ||
+        cachedUser?.verification?.status === "verified"
+    );
     const avatar = isAnonymous
       ? ANONYMOUS_AVATAR
       : (isStory ? item.authorProfilePic : item.author?.profilePicUrl) ||
@@ -1496,8 +1526,9 @@ export default function Trending() {
             className="h-7 w-7 rounded-full border border-white/30 object-cover"
           />
           <div className="min-w-0">
-            <p className="text-[11px] font-semibold text-[#faf0e6] truncate">
+            <p className="text-[11px] font-semibold text-[#faf0e6] truncate flex items-center gap-1">
               {authorName}
+              {authorIsVerified && <BlueTick className="text-[10px]" />}
             </p>
             <p className="text-[9px] uppercase tracking-[0.2em] text-[#b9b4c7]">
               {label}
@@ -1609,6 +1640,18 @@ export default function Trending() {
         cachedUser?.profilePicUrl ||
         item.author?.profilePicUrl ||
         ANONYMOUS_AVATAR;
+      const authorIsVerified = Boolean(
+        item.authorIsVerified ||
+          item.authorVerified ||
+          item.author?.isVerified ||
+          item.author?.verified ||
+          item.author?.is_verified ||
+          item.author?.verification?.status === "verified" ||
+          cachedUser?.isVerified ||
+          cachedUser?.verified ||
+          cachedUser?.is_verified ||
+          cachedUser?.verification?.status === "verified"
+      );
       const badge = resolveTrendingBadge(entry.score);
       const views = getStoryViewCount(item);
 
@@ -1641,7 +1684,10 @@ export default function Trending() {
                 className="h-9 w-9 rounded-full border border-white/30 object-cover"
               />
               <div>
-                <p className="text-sm font-semibold text-[#faf0e6]">{authorName}</p>
+                <p className="text-sm font-semibold text-[#faf0e6] flex items-center gap-1">
+                  {authorName}
+                  {authorIsVerified && <BlueTick className="text-[11px]" />}
+                </p>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7]">
                   Story
                 </p>
@@ -1674,9 +1720,11 @@ export default function Trending() {
     );
   };
 
-  const renderUserCard = (user, { variant = "default" } = {}) => {
+  const renderUserCard = (user, { variant = "default", index } = {}) => {
     if (!user) return null;
     const userId = user._id || user.id;
+    const hasUserId = userId !== undefined && userId !== null && userId !== "";
+    const userKey = hasUserId ? String(userId) : `user-${variant}-${index ?? "unknown"}`;
     const userType = resolveUserType(user);
     const isCommunity = userType === "community";
     const userTypeBadge = formatUserType(userType);
@@ -1697,6 +1745,12 @@ export default function Trending() {
         user.username ||
         "Community"
       : user.fullName || user.displayName || user.username || "User";
+    const isVerified = Boolean(
+      user.isVerified ||
+        user.verified ||
+        user.is_verified ||
+        user.verification?.status === "verified"
+    );
     const avatarUrl = getOptimizedMediaUrl(user.profilePicUrl, { width: 96, height: 96 });
     const status = getFriendStatus(userId);
     const isSelf = String(userId) === String(currentUser?.id);
@@ -1720,7 +1774,7 @@ export default function Trending() {
 
     return (
       <div
-        key={userId}
+        key={userKey}
         className={`w-full rounded-2xl border border-white/10 bg-white/5 p-4 transition-colors hover:bg-white/10 ${
           variant === "top" ? "glow-border" : ""
         }`}
@@ -1740,8 +1794,9 @@ export default function Trending() {
             />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="font-semibold text-sm text-[#faf0e6] truncate">
+                <p className="font-semibold text-sm text-[#faf0e6] truncate flex items-center gap-1">
                   {displayName}
+                  {isVerified && <BlueTick className="text-[11px]" />}
                 </p>
                 <span className="rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
                   {userTypeBadge}
@@ -1825,7 +1880,7 @@ export default function Trending() {
                     type="button"
                     onClick={() => handleAddFriend(userId)}
                     disabled={isLoading}
-                    className="text-[10px] px-3 py-1 rounded-full bg-[#b9b4c7]/20 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors"
+                    className="text-[12px] px-4 py-1.5 rounded-full bg-[#b9b4c7]/20 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors"
                   >
                     Add Friend
                   </button>
@@ -1847,7 +1902,7 @@ export default function Trending() {
     );
   };
 
-  const renderPostCard = (post, { variant = "grid" } = {}) => {
+  const renderPostCard = (post, { variant = "grid", index } = {}) => {
     if (!post) return null;
     const postId = post._id || post.id || post.postId || post.post_id;
     if (isContentUnderReview(post)) {
@@ -1882,9 +1937,11 @@ export default function Trending() {
     const resolvedId = String(postId || "");
     const pulseCount = resolvedId ? mediaLikePulse[resolvedId] || 0 : 0;
 
+    const postKey = postId ? String(postId) : `post-${variant}-${index ?? "unknown"}`;
+
     return (
       <button
-        key={postId}
+        key={postKey}
         type="button"
         onClick={() => {
           if (shouldSuppressOpen(resolvedId)) return;
@@ -2058,8 +2115,11 @@ export default function Trending() {
                               Top Result
                             </h3>
                             {topResultType === "post"
-                              ? renderPostCard(topResult, { variant: "featured" })
-                              : renderUserCard(topResult, { variant: "top" })}
+                              ? renderPostCard(topResult, {
+                                  variant: "featured",
+                                  index: "top",
+                                })
+                              : renderUserCard(topResult, { variant: "top", index: "top" })}
                           </section>
                         )}
 
@@ -2069,7 +2129,9 @@ export default function Trending() {
                               People
                             </h3>
                             <div className="space-y-3">
-                              {peoplePreview.map((user) => renderUserCard(user))}
+                              {peoplePreview.map((user, index) =>
+                                renderUserCard(user, { index })
+                              )}
                             </div>
                           </section>
                         )}
@@ -2080,7 +2142,9 @@ export default function Trending() {
                               Posts
                             </h3>
                             <div className="grid grid-cols-3 gap-2">
-                              {postsPreview.map((post) => renderPostCard(post))}
+                              {postsPreview.map((post, index) =>
+                                renderPostCard(post, { index })
+                              )}
                             </div>
                           </section>
                         )}
@@ -2093,7 +2157,9 @@ export default function Trending() {
                           People
                         </h3>
                         <div className="space-y-3">
-                          {peoplePreview.map((user) => renderUserCard(user))}
+                          {peoplePreview.map((user, index) =>
+                            renderUserCard(user, { index })
+                          )}
                         </div>
                       </section>
                     )}
@@ -2104,7 +2170,9 @@ export default function Trending() {
                           Posts
                         </h3>
                         <div className="grid grid-cols-3 gap-2">
-                          {postsPreview.map((post) => renderPostCard(post))}
+                          {postsPreview.map((post, index) =>
+                            renderPostCard(post, { index })
+                          )}
                         </div>
                       </section>
                     )}
@@ -2115,7 +2183,9 @@ export default function Trending() {
                           Communities
                         </h3>
                         <div className="space-y-3">
-                          {communityPreview.map((user) => renderUserCard(user))}
+                          {communityPreview.map((user, index) =>
+                            renderUserCard(user, { index })
+                          )}
                         </div>
                       </section>
                     )}

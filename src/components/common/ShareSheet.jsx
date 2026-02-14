@@ -32,6 +32,84 @@ export default function ShareSheet({
     return shareTitle || "InCampus post";
   }, [isAnonymous, shareTitle]);
 
+  const resolveShareMediaUrl = (url) => {
+    if (!url) return "";
+    if (/^https?:\/\//i.test(url)) return url;
+    if (url.startsWith("data:") || url.startsWith("blob:")) return url;
+    try {
+      return new URL(url, window.location.origin).toString();
+    } catch {
+      return url;
+    }
+  };
+
+  const getExtensionFromType = (type = "") => {
+    const normalized = type.toLowerCase();
+    if (normalized.includes("png")) return "png";
+    if (normalized.includes("gif")) return "gif";
+    if (normalized.includes("webp")) return "webp";
+    if (normalized.includes("avif")) return "avif";
+    if (normalized.includes("jpeg") || normalized.includes("jpg")) return "jpg";
+    return "";
+  };
+
+  const getExtensionFromUrl = (url = "") => {
+    const clean = url.split("?")[0].split("#")[0];
+    const match = clean.match(/\.(png|jpe?g|gif|webp|avif|bmp)$/i);
+    return match ? match[1].toLowerCase() : "";
+  };
+
+  const shareMetaUrl = useMemo(() => {
+    if (!postId) return shareUrl;
+    const params = new URLSearchParams();
+    const title = (shareTitle || "").trim();
+    const description = (postPreviewText || "").trim();
+    const imageUrl = resolveShareMediaUrl(postThumbnail);
+    if (title) params.set("title", title.slice(0, 120));
+    if (description) params.set("text", description.slice(0, 180));
+    if (imageUrl) params.set("image", imageUrl);
+    const suffix = params.toString();
+    return `${window.location.origin}/share/${encodeURIComponent(postId)}${
+      suffix ? `?${suffix}` : ""
+    }`;
+  }, [postId, postThumbnail, postPreviewText, shareTitle, shareUrl]);
+
+  const buildShareFile = async (mediaUrl) => {
+    if (!mediaUrl) return null;
+    const resolvedUrl = resolveShareMediaUrl(mediaUrl);
+    const clean = resolvedUrl.split("?")[0].split("#")[0];
+    if (/\.(mp4|mov|webm|mkv|avi)$/i.test(clean)) {
+      return null;
+    }
+    const response = await fetch(resolvedUrl, { mode: "cors" });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    const type = blob.type || response.headers.get("content-type") || "";
+    if (!type.startsWith("image/")) return null;
+    const extension = getExtensionFromType(type) || getExtensionFromUrl(resolvedUrl) || "jpg";
+    return new File([blob], `incampus-post.${extension}`, { type: type || "image/jpeg" });
+  };
+
+  const shareWithThumbnail = async () => {
+    if (!postThumbnail) return false;
+    if (!navigator.share || !navigator.canShare) return false;
+    try {
+      const file = await buildShareFile(postThumbnail);
+      if (!file) return false;
+      if (!navigator.canShare({ files: [file] })) return false;
+      await navigator.share({
+        title: shareTitle || "InCampus Post",
+        text: shareText,
+        url: shareMetaUrl,
+        files: [file],
+      });
+      return true;
+    } catch (error) {
+      console.warn("Thumbnail share failed:", error);
+      return false;
+    }
+  };
+
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 1400);
@@ -44,7 +122,7 @@ export default function ShareSheet({
       return;
     }
     try {
-      await navigator.clipboard.writeText(shareUrl);
+      await navigator.clipboard.writeText(shareMetaUrl);
       setToast("Link copied");
     } catch (error) {
       console.error("Failed to copy:", error);
@@ -58,7 +136,7 @@ export default function ShareSheet({
       await navigator.share({
         title: shareTitle || "InCampus Post",
         text: shareText,
-        url: shareUrl,
+        url: shareMetaUrl,
       });
       return true;
     } catch (error) {
@@ -72,8 +150,8 @@ export default function ShareSheet({
       setToast("Private posts can't be shared outside.");
       return;
     }
-    const encodedUrl = encodeURIComponent(shareUrl);
-    const encodedText = encodeURIComponent(`${shareText} ${shareUrl}`);
+    const encodedUrl = encodeURIComponent(shareMetaUrl);
+    const encodedText = encodeURIComponent(`${shareText} ${shareMetaUrl}`);
 
     if (target === "system") {
       const shared = await handleNativeShare();
@@ -84,6 +162,8 @@ export default function ShareSheet({
     }
 
     if (target === "whatsapp") {
+      const sharedWithPreview = await shareWithThumbnail();
+      if (sharedWithPreview) return;
       window.open(`https://wa.me/?text=${encodedText}`, "_blank", "noopener");
       return;
     }

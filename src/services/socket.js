@@ -1,6 +1,8 @@
 import { io } from "socket.io-client";
 
-const SOCKET_BASE_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:8000";
+const SOCKET_BASE_URL =
+  import.meta.env.VITE_SOCKET_URL ||
+  (typeof window !== "undefined" ? window.location.origin : "");
 const HEARTBEAT_INTERVAL_MS = Number(import.meta.env.VITE_SOCKET_HEARTBEAT_MS) || 25000;
 const HEARTBEAT_EVENT =
   import.meta.env.VITE_SOCKET_HEARTBEAT_EVENT ||

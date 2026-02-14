@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { motion as Motion } from "framer-motion";
+import { useLocation, useSearchParams } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
 import StoryBar from "../components/stories/StoryBar";
@@ -8,6 +9,7 @@ import PostCreator from "../components/feed/PostCreator";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
+import PostModal from "../components/profile/PostModal";
 import { fetchRankedFeedPage } from "../services/api";
 import {
   getLikeCount,
@@ -229,7 +231,10 @@ export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
     useApp();
   const { currentUser } = useAuth();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [sharedPost, setSharedPost] = useState(null);
   const [rankedPosts, setRankedPosts] = useState([]);
   const [rankedPage, setRankedPage] = useState(1);
   const [rankedHasMore, setRankedHasMore] = useState(true);
@@ -243,6 +248,8 @@ export default function Feed() {
   const rankedPostsRef = useRef([]);
   const rankedLoadingRef = useRef(false);
   const latestPostRef = useRef("");
+  const sharedPostRef = useRef(null);
+  const openedPostRef = useRef("");
 
   const campusLabel = resolveUserCampus(currentUser);
   const campusId = resolveUserCollegeId(currentUser);
@@ -594,6 +601,44 @@ export default function Feed() {
     : finalFeedPosts;
   const showRankedError =
     !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0;
+  const postParam = (searchParams.get("post") || "").trim();
+
+  useEffect(() => {
+    if (location.state?.sharedPost) {
+      sharedPostRef.current = location.state.sharedPost;
+    }
+  }, [location.state]);
+
+  useEffect(() => {
+    if (!postParam) {
+      if (sharedPost) setSharedPost(null);
+      openedPostRef.current = "";
+      return;
+    }
+    if (openedPostRef.current === postParam) return;
+    const found = finalFeedPosts.find(
+      (post) =>
+        String(post?._id || post?.id || post?.postId || post?.post_id) === String(postParam)
+    );
+    if (found) {
+      setSharedPost(found);
+      openedPostRef.current = postParam;
+      return;
+    }
+    const fallback = sharedPostRef.current;
+    if (fallback) {
+      setSharedPost({ ...fallback, _id: fallback._id || postParam });
+      openedPostRef.current = postParam;
+    }
+  }, [postParam, finalFeedPosts, sharedPost]);
+
+  const handleCloseSharedPost = useCallback(() => {
+    setSharedPost(null);
+    if (!searchParams.has("post")) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("post");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   useEffect(() => {
     const latestId = finalFeedPosts.length
@@ -750,6 +795,14 @@ export default function Feed() {
       >
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
+      {sharedPost && (
+        <PostModal
+          post={sharedPost}
+          isOpen={!!sharedPost}
+          onClose={handleCloseSharedPost}
+          onDelete={() => {}}
+        />
+      )}
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
       <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
     </div>

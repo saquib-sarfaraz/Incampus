@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
@@ -170,6 +171,7 @@ const truncateMessage = (text = "") => {
 
 export default function Chat() {
   const { currentUser } = useAuth();
+  const navigate = useNavigate();
   const {
     cacheUser,
     getUserFromCache,
@@ -351,6 +353,36 @@ export default function Chat() {
     async (msg) => {
       if (!msg) return;
       const postId = msg.postId || msg.post_id || msg.post?.id || msg.post?._id;
+      const fallbackPost = {
+        _id: postId || msg.postId || msg.post_id || msg.post?.id || msg.post?._id,
+        content: msg.postPreviewText || msg.postTitle || "Shared post",
+        mediaUrl: msg.postThumbnail,
+        isAnonymous: msg.postIsAnonymous || msg.isAnonymous,
+        authorDisplayName: msg.postAuthorName,
+        authorId: msg.postAuthorId,
+      };
+      if (postId) {
+        navigate(`/feed?post=${encodeURIComponent(postId)}`, {
+          state: { sharedPost: fallbackPost },
+        });
+        return;
+      }
+      if (msg.postUrl) {
+        try {
+          const parsed = new URL(msg.postUrl, window.location.origin);
+          if (parsed.origin === window.location.origin) {
+            navigate(`${parsed.pathname}${parsed.search}${parsed.hash}`, {
+              state: { sharedPost: fallbackPost },
+            });
+            return;
+          }
+          window.open(parsed.toString(), "_blank", "noopener");
+          return;
+        } catch {
+          window.open(msg.postUrl, "_blank", "noopener");
+          return;
+        }
+      }
       if (!postId) return;
       let found = findPostById(postId);
       if (!found) {
@@ -361,16 +393,9 @@ export default function Chat() {
         setSharedPost(found);
         return;
       }
-      setSharedPost({
-        _id: postId,
-        content: msg.postPreviewText || msg.postTitle || "Shared post",
-        mediaUrl: msg.postThumbnail,
-        isAnonymous: msg.postIsAnonymous || msg.isAnonymous,
-        authorDisplayName: msg.postAuthorName,
-        authorId: msg.postAuthorId,
-      });
+      setSharedPost(fallbackPost);
     },
-    [findPostById, loadPosts]
+    [findPostById, loadPosts, navigate]
   );
 
   const resolveContactName = useCallback(
@@ -383,6 +408,22 @@ export default function Chat() {
         contact.displayName ||
         contact.fullName ||
         "User"
+      );
+    },
+    [getUserFromCache]
+  );
+
+  const resolveContactVerified = useCallback(
+    (contact) => {
+      if (!contact || contact.isGroup) return false;
+      const cached = getUserFromCache(contact.id);
+      return Boolean(
+        contact.isVerified ||
+          contact.verified ||
+          contact.is_verified ||
+          cached?.isVerified ||
+          cached?.verified ||
+          cached?.is_verified
       );
     },
     [getUserFromCache]
@@ -1457,8 +1498,7 @@ export default function Chat() {
     ? true
     : canChat(activeChatUser?.id || activeChatId);
   const activeChatName = resolveContactName(activeChatUser);
-  const activeChatVerified =
-    !activeChatUser?.isGroup && Boolean(activeChatUser?.isVerified);
+  const activeChatVerified = resolveContactVerified(activeChatUser);
   const activePresence = activeChatUser?.isGroup
     ? { isOnline: false, lastSeen: "" }
     : getPresence(activeChatUser?.id, activeChatUser);
@@ -1559,16 +1599,24 @@ export default function Chat() {
                 ) : contactsList.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
                 ) : (
-                  contactsList.map((contact) => {
-                    const meta = chatMeta[contact.id] || {};
+                  contactsList.map((contact, index) => {
+                    const contactId =
+                      contact.id ||
+                      contact._id ||
+                      contact.userId ||
+                      contact.user_id ||
+                      "";
+                    const contactKey = contactId || `contact-${index}`;
+                    const meta = chatMeta[contactId] || {};
                     const unreadCount = meta.unreadCount || 0;
-                    const presence = getPresence(contact.id, contact);
+                    const presence = getPresence(contactId, contact);
                     const isOnline = presence.isOnline;
                     const displayName = resolveContactName(contact);
+                    const isVerified = resolveContactVerified(contact);
                     return (
                       <Motion.div
-                        key={contact.id}
-                        onClick={() => handleOpenChat(contact.id)}
+                        key={String(contactKey)}
+                        onClick={() => contactId && handleOpenChat(contactId)}
                         className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
                           unreadCount > 0
                             ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
@@ -1596,7 +1644,10 @@ export default function Chat() {
                               unreadCount > 0 ? "font-bold" : "font-semibold"
                             }`}
                           >
-                            {displayName}
+                            <span className="inline-flex items-center gap-1">
+                              {displayName}
+                              {isVerified && <BlueTick className="text-[10px]" />}
+                            </span>
                           </p>
                           <p
                             className={`text-xs truncate ${
@@ -1642,14 +1693,21 @@ export default function Chat() {
                 {groupsSorted.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
                 ) : (
-                  groupsSorted.map((group) => {
-                    const meta = chatMeta[group.id] || {};
+                  groupsSorted.map((group, index) => {
+                    const groupId =
+                      group.id ||
+                      group._id ||
+                      group.groupId ||
+                      group.group_id ||
+                      "";
+                    const groupKey = groupId || `group-${index}`;
+                    const meta = chatMeta[groupId] || {};
                     const unreadCount = meta.unreadCount || 0;
                     const memberCount = group.memberCount ?? group.members?.length;
                     return (
                       <Motion.div
-                        key={group.id}
-                        onClick={() => handleOpenChat(group.id)}
+                        key={String(groupKey)}
+                        onClick={() => groupId && handleOpenChat(groupId)}
                         className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
                           unreadCount > 0
                             ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"

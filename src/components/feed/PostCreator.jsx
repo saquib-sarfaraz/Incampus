@@ -444,9 +444,9 @@ export default function PostCreator() {
                 { id: "universal", label: "🌍 Universal" },
                 { id: "college", label: "🏫 College Only" },
                 { id: "private", label: "🔒 Friends Only" },
-              ].map((option) => (
+              ].map((option, index) => (
                 <button
-                  key={option.id}
+                  key={option.id || `visibility-${index}`}
                   type="button"
                   onClick={() => setVisibility(option.id)}
                   className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${

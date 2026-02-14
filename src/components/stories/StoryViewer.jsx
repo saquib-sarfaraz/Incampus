@@ -57,7 +57,12 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
   const currentGroup = stories[currentGroupIndex];
   const currentStory = currentGroup?.stories[currentStoryIndex];
   const authorIsVerified = Boolean(
-    currentGroup?.authorIsVerified || currentGroup?.author?.isVerified
+    currentGroup?.authorIsVerified ||
+      currentGroup?.author?.isVerified ||
+      currentGroup?.author?.verified ||
+      currentGroup?.author?.is_verified ||
+      currentGroup?.isVerified ||
+      currentGroup?.verified
   );
   const authorAvatar = getOptimizedMediaUrl(currentGroup?.authorProfilePic, {
     width: 64,
@@ -588,7 +593,7 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
               isVideo ? (
                 <video
                   ref={videoRef}
-                  key={storyId || mediaUrl}
+                  key={storyId || mediaUrl || `story-${currentStoryIndex}`}
                   src={mediaUrl}
                   className="w-full h-full object-cover"
                   autoPlay
