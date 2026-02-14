@@ -1,8 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { addComment, deleteComment, getUserById, reportComment, blockUser } from "../../services/api";
+import {
+  addComment,
+  deleteComment,
+  fetchPostComments,
+  getUserById,
+  reportComment,
+  blockUser,
+} from "../../services/api";
 import { getSocket } from "../../services/socket";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
@@ -70,6 +78,27 @@ const isAnonymousComment = (comment) =>
       comment?.is_anonymous
   );
 
+const normalizeCommentsPayload = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  const candidates = [
+    payload.comments,
+    payload.items,
+    payload.data,
+    payload.results,
+    payload.payload,
+    payload.response,
+    payload.comments?.items,
+    payload.data?.comments,
+    payload.data?.items,
+    payload.data?.results,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  return [];
+};
+
 export default function CommentModal({ post, isOpen, onClose }) {
   const { currentUser } = useAuth();
   const { updatePost, cacheUser, getUserFromCache, addBlockedUser, isUserBlocked } = useApp();
@@ -77,75 +106,133 @@ export default function CommentModal({ post, isOpen, onClose }) {
   const [commentText, setCommentText] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [commentsError, setCommentsError] = useState("");
   const [reportTarget, setReportTarget] = useState(null);
   const [openMenuId, setOpenMenuId] = useState(null);
   const menuRefs = useRef({});
+  const loadRequestRef = useRef(0);
   const postId = toIdString(post?._id || post?.id);
   const postOwnerId = toIdString(post?.author?._id || post?.authorId || post?.author);
   const socket = getSocket();
 
-  const loadComments = useCallback(async () => {
-    const postComments = Array.isArray(post?.comments) ? post.comments : [];
-    const commentsWithUsers = await Promise.all(
-      postComments.map(async (comment) => {
-        if (!comment || typeof comment !== "object") {
-          return null;
-        }
-        const content = resolveCommentContent(comment);
-        if (!content) return null;
-        const userId = resolveCommentUserId(comment);
-        if (userId && isUserBlocked(userId)) {
-          return null;
-        }
-        if (isAnonymousComment(comment)) {
+  const updatePostCounts = useCallback(
+    (count) => {
+      if (!postId) return;
+      updatePost(postId, {
+        commentCount: count,
+        commentsCount: count,
+      });
+    },
+    [postId, updatePost]
+  );
+
+  const hydrateComments = useCallback(
+    async (rawComments = []) => {
+      const commentsWithUsers = await Promise.all(
+        rawComments.map(async (comment) => {
+          if (!comment || typeof comment !== "object") {
+            return null;
+          }
+          const content = resolveCommentContent(comment);
+          if (!content) return null;
+          const userId = resolveCommentUserId(comment);
+          if (userId && isUserBlocked(userId)) {
+            return null;
+          }
+          if (isAnonymousComment(comment)) {
+            return {
+              ...comment,
+              content,
+              userId,
+              user: { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR },
+            };
+          }
+
+          let user = resolveCommentUser(comment, userId);
+          if (!user && userId) {
+            user = getUserFromCache(userId);
+          }
+          if (!user && userId) {
+            const userData = await getUserById(userId);
+            if (userData) {
+              cacheUser(userData);
+              user = {
+                id: userData._id,
+                displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+                profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+                isVerified: Boolean(userData.isVerified),
+              };
+            }
+          }
           return {
             ...comment,
             content,
             userId,
-            user: { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR },
+            user: user || { displayName: "User", profilePicUrl: ANONYMOUS_AVATAR },
           };
-        }
+        })
+      );
+      return commentsWithUsers.filter(Boolean);
+    },
+    [getUserFromCache, cacheUser, isUserBlocked]
+  );
 
-        let user = resolveCommentUser(comment, userId);
-        if (!user && userId) {
-          user = getUserFromCache(userId);
-        }
-        if (!user && userId) {
-          const userData = await getUserById(userId);
-          if (userData) {
-            cacheUser(userData);
-            user = {
-              id: userData._id,
-              displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-              profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
-              isVerified: Boolean(userData.isVerified),
-            };
-          }
-        }
-        return {
-          ...comment,
-          content,
-          userId,
-          user: user || { displayName: "User", profilePicUrl: ANONYMOUS_AVATAR },
-        };
-      })
-    );
-    const normalized = commentsWithUsers.filter(Boolean);
-    setComments(normalized);
-    if (postId) {
-      updatePost(postId, {
-        comments: normalized,
-        commentCount: normalized.length,
-        commentsCount: normalized.length,
-      });
+  const loadComments = useCallback(async () => {
+    if (!postId) return;
+    const requestId = ++loadRequestRef.current;
+    setLoadingComments(true);
+    setCommentsError("");
+    setComments([]);
+    try {
+      const payload = await fetchPostComments(postId);
+      const rawComments = normalizeCommentsPayload(payload);
+      const normalized = await hydrateComments(rawComments);
+      if (loadRequestRef.current !== requestId) return;
+      setComments(normalized);
+      updatePostCounts(normalized.length);
+    } catch (error) {
+      if (loadRequestRef.current !== requestId) return;
+      setCommentsError(error?.message || "Failed to load comments.");
+      const fallback = Array.isArray(post?.comments) ? post.comments : [];
+      if (fallback.length) {
+        const normalized = await hydrateComments(fallback);
+        if (loadRequestRef.current !== requestId) return;
+        setComments(normalized);
+        updatePostCounts(normalized.length);
+      } else {
+        setComments([]);
+      }
+    } finally {
+      if (loadRequestRef.current === requestId) {
+        setLoadingComments(false);
+      }
     }
-  }, [post, postId, updatePost, getUserFromCache, cacheUser, isUserBlocked]);
+  }, [postId, post?.comments, hydrateComments, updatePostCounts]);
 
   useEffect(() => {
-    if (isOpen && post) {
-      loadComments();
+    if (!isOpen) return;
+    loadComments();
+    return () => {
+      loadRequestRef.current += 1;
+    };
+  }, [isOpen, loadComments]);
+
+  useEffect(() => {
+    if (!isOpen || typeof document === "undefined") return;
+    const { body, documentElement } = document;
+    const prevOverflow = body.style.overflow;
+    const prevPaddingRight = body.style.paddingRight;
+    const scrollBarWidth = window.innerWidth - documentElement.clientWidth;
+    if (scrollBarWidth > 0) {
+      body.style.paddingRight = `${scrollBarWidth}px`;
     }
-  }, [isOpen, post, loadComments]);
+    body.style.overflow = "hidden";
+    return () => {
+      body.style.overflow = prevOverflow;
+      body.style.paddingRight = prevPaddingRight;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     const handleOutside = (event) => {
@@ -184,18 +271,14 @@ export default function CommentModal({ post, isOpen, onClose }) {
       createdAt,
       __optimistic: true,
     };
-    const prevPostComments = Array.isArray(post?.comments) ? post.comments : [];
-    const nextPostComments = [...prevPostComments, optimisticComment];
-    setComments((prev) => [...prev, optimisticComment]);
-    updatePost(postId, {
-      comments: nextPostComments,
-      commentCount: nextPostComments.length,
-      commentsCount: nextPostComments.length,
-    });
+    const prevComments = comments;
+    const nextComments = [...prevComments, optimisticComment];
+    setComments(nextComments);
+    updatePostCounts(nextComments.length);
     socket?.emit("comment-added", {
       postId,
       commentId: tempId,
-      count: nextPostComments.length,
+      count: nextComments.length,
     });
     try {
       const response = await addComment(postId, content, isAnonymous);
@@ -224,25 +307,16 @@ export default function CommentModal({ post, isOpen, onClose }) {
         setComments((prev) =>
           prev.map((comment) => (comment._id === tempId ? normalized : comment))
         );
-        updatePost(postId, {
-          comments: nextPostComments.map((comment) =>
-            comment._id === tempId ? normalized : comment
-          ),
-        });
       }
       setCommentText("");
       setIsAnonymous(false);
     } catch (error) {
-      setComments((prev) => prev.filter((comment) => comment._id !== tempId));
-      updatePost(postId, {
-        comments: prevPostComments,
-        commentCount: prevPostComments.length,
-        commentsCount: prevPostComments.length,
-      });
+      setComments(prevComments);
+      updatePostCounts(prevComments.length);
       socket?.emit("comment-added", {
         postId,
         commentId: tempId,
-        count: prevPostComments.length,
+        count: prevComments.length,
       });
       alert(error.message || "Failed to add comment");
     } finally {
@@ -257,30 +331,18 @@ export default function CommentModal({ post, isOpen, onClose }) {
     const filtered = prevComments.filter(
       (comment) => toIdString(comment._id || comment.id) !== toIdString(commentId)
     );
-    const prevPostComments = Array.isArray(post?.comments) ? post.comments : [];
-    const filteredPostComments = prevPostComments.filter(
-      (comment) => toIdString(comment._id || comment.id) !== toIdString(commentId)
-    );
     setComments(filtered);
-    updatePost(postId, {
-      comments: filteredPostComments,
-      commentCount: filteredPostComments.length,
-      commentsCount: filteredPostComments.length,
-    });
+    updatePostCounts(filtered.length);
     socket?.emit("comment-added", {
       postId,
       commentId,
-      count: filteredPostComments.length,
+      count: filtered.length,
     });
     try {
       await deleteComment(postId, commentId);
     } catch (error) {
       setComments(prevComments);
-      updatePost(postId, {
-        comments: prevPostComments,
-        commentCount: prevPostComments.length,
-        commentsCount: prevPostComments.length,
-      });
+      updatePostCounts(prevComments.length);
       alert(error.message || "Failed to delete comment");
     }
   };
@@ -317,7 +379,11 @@ export default function CommentModal({ post, isOpen, onClose }) {
     }
   };
 
-  return (
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
         <Motion.div
@@ -336,7 +402,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
             className="w-full max-w-md glass-card rounded-t-3xl shadow-2xl flex flex-col h-3/4 max-h-[80vh] mb-24 sm:mb-0"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="p-4 border-b border-white/10 flex justify-between items-center sticky top-0 bg-[#1a120b]/80 rounded-t-3xl backdrop-blur-xl">
+            <div className="p-4 border-b border-white/10 flex justify-between items-center sticky top-0 bg-[#1a120b]/80 rounded-t-3xl">
               <h3 className="font-semibold text-[#faf0e6]">Comments</h3>
               <button
                 onClick={onClose}
@@ -347,10 +413,25 @@ export default function CommentModal({ post, isOpen, onClose }) {
             </div>
 
             <div className="flex-grow overflow-y-auto p-4 space-y-4">
-              {comments.length === 0 ? (
+              {loadingComments ? (
                 <p className="text-[#b9b4c7] text-sm text-center mt-10">
-                  No comments yet
+                  Loading comments...
                 </p>
+              ) : comments.length === 0 ? (
+                <div className="text-center mt-10 space-y-3">
+                  <p className="text-[#b9b4c7] text-sm">
+                    {commentsError || "No comments yet"}
+                  </p>
+                  {commentsError && (
+                    <button
+                      type="button"
+                      onClick={loadComments}
+                      className="text-[11px] font-semibold text-[#faf0e6] rounded-full border border-white/10 bg-white/5 px-3 py-1.5 hover:bg-white/10"
+                    >
+                      Retry
+                    </button>
+                  )}
+                </div>
               ) : (
                 comments.map((comment, index) => {
                   const stableId = toIdString(
@@ -369,93 +450,93 @@ export default function CommentModal({ post, isOpen, onClose }) {
                     String(postOwnerId) === String(currentUser.id);
                   const canDelete = isCommentOwner || isPostOwner;
                   return (
-                  <div
-                    key={commentKey}
-                    className="flex justify-between items-start p-2 border-b border-white/10"
-                  >
-                    <div className="flex items-start space-x-2 flex-1">
-                      <img
-                        src={comment.user?.profilePicUrl || ANONYMOUS_AVATAR}
-                        alt={comment.user?.displayName}
-                        className="w-8 h-8 rounded-full object-cover"
-                      />
-                      <div className="flex-1">
-                        <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
-                          {comment.user?.displayName || "User"}
-                          {comment.user?.isVerified && <BlueTick className="text-[12px]" />}
-                        </p>
-                        <p className="text-sm text-[#b9b4c7]">
-                          {comment.content || comment.text || comment.body || ""}
-                        </p>
-                      </div>
-                    </div>
                     <div
-                      className="relative ml-2"
-                      ref={(el) => {
-                        if (el) menuRefs.current[commentKey] = el;
-                        else delete menuRefs.current[commentKey];
-                      }}
+                      key={commentKey}
+                      className="flex justify-between items-start p-2 border-b border-white/10"
                     >
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenMenuId((prev) => (prev === commentKey ? null : commentKey))
-                        }
-                        className="h-7 w-7 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors"
-                        aria-label="Comment actions"
+                      <div className="flex items-start space-x-2 flex-1">
+                        <img
+                          src={comment.user?.profilePicUrl || ANONYMOUS_AVATAR}
+                          alt={comment.user?.displayName}
+                          className="w-8 h-8 rounded-full object-cover"
+                        />
+                        <div className="flex-1">
+                          <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
+                            {comment.user?.displayName || "User"}
+                            {comment.user?.isVerified && <BlueTick className="text-[12px]" />}
+                          </p>
+                          <p className="text-sm text-[#b9b4c7]">
+                            {comment.content || comment.text || comment.body || ""}
+                          </p>
+                        </div>
+                      </div>
+                      <div
+                        className="relative ml-2"
+                        ref={(el) => {
+                          if (el) menuRefs.current[commentKey] = el;
+                          else delete menuRefs.current[commentKey];
+                        }}
                       >
-                        <i className="fa-solid fa-ellipsis-vertical text-[10px]"></i>
-                      </button>
-                      {openMenuId === commentKey && (
-                        <div className="absolute right-0 mt-2 w-36 rounded-2xl glass-card z-20 overflow-hidden">
-                          {canDelete ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setOpenMenuId(null);
-                                handleDelete(comment._id);
-                              }}
-                              className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
-                            >
-                              <i className="fa-solid fa-trash mr-2"></i>
-                              Delete
-                            </button>
-                          ) : (
-                            <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenMenuId((prev) => (prev === commentKey ? null : commentKey))
+                          }
+                          className="h-7 w-7 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors"
+                          aria-label="Comment actions"
+                        >
+                          <i className="fa-solid fa-ellipsis-vertical text-[10px]"></i>
+                        </button>
+                        {openMenuId === commentKey && (
+                          <div className="absolute right-0 mt-2 w-36 rounded-2xl glass-card z-20 overflow-hidden">
+                            {canDelete ? (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setOpenMenuId(null);
-                                  handleReport(comment);
-                                }}
-                                className="w-full text-left px-3 py-2 text-xs text-amber-200 hover:bg-white/10"
-                              >
-                                <i className="fa-solid fa-flag mr-2"></i>
-                                Report
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenMenuId(null);
-                                  handleBlock(comment);
+                                  handleDelete(comment._id);
                                 }}
                                 className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
                               >
-                                <i className="fa-solid fa-ban mr-2"></i>
-                                Block
+                                <i className="fa-solid fa-trash mr-2"></i>
+                                Delete
                               </button>
-                            </>
-                          )}
-                        </div>
-                      )}
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    handleReport(comment);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-xs text-amber-200 hover:bg-white/10"
+                                >
+                                  <i className="fa-solid fa-flag mr-2"></i>
+                                  Report
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenMenuId(null);
+                                    handleBlock(comment);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
+                                >
+                                  <i className="fa-solid fa-ban mr-2"></i>
+                                  Block
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
                 })
               )}
             </div>
 
-            <div className="p-4 border-t border-white/10 sticky bottom-0 bg-[#1a120b]/80 rounded-b-3xl backdrop-blur-xl">
+            <div className="p-4 border-t border-white/10 sticky bottom-0 bg-[#1a120b]/80 rounded-b-3xl">
               <form onSubmit={handleSubmit} className="flex flex-col space-y-2">
                 <div className="flex items-center justify-between text-xs text-[#b9b4c7]">
                   <p>{currentUser?.displayName || "You"}</p>
@@ -502,6 +583,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
         onSubmit={submitReport}
         title="Report Comment"
       />
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body
   );
 }

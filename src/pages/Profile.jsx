@@ -460,7 +460,11 @@ export default function Profile() {
     }
   };
 
-  const handlePasswordChange = async () => {
+  const handlePasswordChange = async (event) => {
+    if (event?.preventDefault) {
+      event.preventDefault();
+    }
+    console.log("Password submit clicked");
     setPasswordError("");
     setPasswordSuccess("");
     if (!newPassword) {
@@ -766,11 +770,15 @@ export default function Profile() {
                         <div className="opacity-0 group-hover:opacity-100 flex space-x-4 text-[#faf0e6]">
                           <span>
                             <i className="fa-solid fa-heart mr-1"></i>
-                            {post.likes?.length || 0}
+                            {post.likesCount ??
+                              post.likeCount ??
+                              (Array.isArray(post.likes) ? post.likes.length : 0)}
                           </span>
                           <span>
                             <i className="fa-regular fa-comment mr-1"></i>
-                            {post.comments?.length || 0}
+                            {post.commentsCount ??
+                              post.commentCount ??
+                              (Array.isArray(post.comments) ? post.comments.length : 0)}
                           </span>
                         </div>
                       </div>

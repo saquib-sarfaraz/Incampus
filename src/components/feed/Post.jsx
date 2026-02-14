@@ -44,10 +44,20 @@ const toNumber = (value) => {
 
 const resolvePostLikesCount = (post) => {
   if (!post) return 0;
-  if (Array.isArray(post.likes)) return post.likes.length;
-  if (Array.isArray(post.likedBy)) return post.likedBy.length;
-  if (Array.isArray(post.liked_by)) return post.liked_by.length;
-  return toNumber(post.likesCount ?? post.likeCount ?? post.likes ?? 0);
+  const list = Array.isArray(post.likes)
+    ? post.likes
+    : Array.isArray(post.likedBy)
+      ? post.likedBy
+      : Array.isArray(post.liked_by)
+        ? post.liked_by
+        : null;
+  const listCount = list ? list.length : null;
+  const numeric = toNumber(post.likesCount ?? post.likeCount ?? post.likes ?? 0);
+  if (listCount !== null) {
+    if (Number.isFinite(numeric) && numeric > listCount) return numeric;
+    return listCount;
+  }
+  return numeric;
 };
 
 const resolvePostCommentsCount = (post) => {
@@ -72,6 +82,23 @@ const resolveLikeIds = (likes = []) => {
       )
     )
     .filter(Boolean);
+};
+
+const resolvePostIsLiked = (post, currentUserId, likeIds = []) => {
+  if (!post || !currentUserId) return false;
+  const normalizedIds = Array.isArray(likeIds) ? likeIds : [];
+  const hasLikeId = normalizedIds.some(
+    (id) => String(id) === String(currentUserId)
+  );
+  const directFlag =
+    post.likedByMe ??
+    post.isLikedByMe ??
+    post.liked_by_me ??
+    post.isLiked ??
+    post.liked ??
+    post.hasLiked;
+  if (typeof directFlag === "boolean") return hasLikeId || directFlag;
+  return hasLikeId;
 };
 
 const getStoredViewTimestamp = (postId) => {
@@ -144,6 +171,7 @@ function Post({ post, onOpen, badge }) {
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
   const [author, setAuthor] = useState(null);
   const [optimisticLiked, setOptimisticLiked] = useState(null);
+  const [optimisticLikesCount, setOptimisticLikesCount] = useState(null);
   const [likePending, setLikePending] = useState(false);
   const [likePulse, setLikePulse] = useState(0);
   const [likeAction, setLikeAction] = useState(null);
@@ -159,6 +187,12 @@ function Post({ post, onOpen, badge }) {
   const viewSentRef = useRef(false);
   const postRef = useRef(post);
   const lastTapRef = useRef(0);
+  const likeCommitTimerRef = useRef(null);
+  const likeDesiredRef = useRef(null);
+  const likeCommitInFlightRef = useRef(false);
+  const committedLikedRef = useRef(null);
+  const committedCountRef = useRef(null);
+  const optimisticCountRef = useRef(null);
   const authorId = post.author?._id || post.authorId || post.author || "";
   const authorName =
     post.author?.displayName ||
@@ -177,16 +211,16 @@ function Post({ post, onOpen, badge }) {
       ? post.likedBy
       : Array.isArray(post.liked_by)
         ? post.liked_by
-        : [];
+        : null;
   const baseLikeIds = resolveLikeIds(baseLikesRaw);
   const baseLikes = baseLikeIds;
+  const baseLikesRawCount = Array.isArray(baseLikesRaw) ? baseLikesRaw.length : 0;
   const baseLikesCount = resolvePostLikesCount(post);
-  const baseIsLiked =
-    currentUser?.id && baseLikes.some((id) => String(id) === String(currentUser.id));
+  const shouldUseLikesList =
+    Array.isArray(baseLikesRaw) && baseLikesCount <= baseLikesRawCount;
+  const baseIsLiked = resolvePostIsLiked(post, currentUser?.id, baseLikeIds);
   const isLiked = optimisticLiked ?? baseIsLiked;
-  const likesCount =
-    baseLikesCount +
-    (optimisticLiked === null ? 0 : (optimisticLiked ? 1 : 0) - (baseIsLiked ? 1 : 0));
+  const likesCount = optimisticLikesCount ?? baseLikesCount;
   const postId = post._id || post.id || post.postId || post.post_id;
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const postMediaUrl = resolvePostMediaUrl(post);
@@ -271,60 +305,155 @@ function Post({ post, onOpen, badge }) {
     return () => document.removeEventListener("mousedown", handleOutside);
   }, []);
 
+  useEffect(() => {
+    if (likeDesiredRef.current !== null || likeCommitInFlightRef.current) return;
+    committedLikedRef.current = baseIsLiked;
+    committedCountRef.current = baseLikesCount;
+  }, [baseIsLiked, baseLikesCount]);
+
+  useEffect(() => {
+    return () => {
+      if (likeCommitTimerRef.current) {
+        clearTimeout(likeCommitTimerRef.current);
+        likeCommitTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const commitLike = useCallback(async () => {
+    if (!postId || !currentUser?.id) return;
+    if (likeCommitInFlightRef.current) {
+      if (likeCommitTimerRef.current) {
+        clearTimeout(likeCommitTimerRef.current);
+      }
+      likeCommitTimerRef.current = setTimeout(() => {
+        commitLike();
+      }, 250);
+      return;
+    }
+    const desired = likeDesiredRef.current;
+    if (desired === null) return;
+    const committed = committedLikedRef.current ?? baseIsLiked;
+    if (desired === committed) {
+      const committedCount = committedCountRef.current ?? baseLikesCount;
+      updatePost(postId, {
+        likeCount: committedCount,
+        likesCount: committedCount,
+        likedByMe: committed,
+        isLikedByMe: committed,
+      });
+      likeDesiredRef.current = null;
+      optimisticCountRef.current = null;
+      setOptimisticLiked(null);
+      setOptimisticLikesCount(null);
+      setLikeAction(null);
+      return;
+    }
+
+    likeCommitInFlightRef.current = true;
+    setLikePending(true);
+    const desiredAtSend = desired;
+    try {
+      const response = await likePost(postId);
+      const updatedPost =
+        response?.post || response?.data?.post || response?.data || response || null;
+      const fallbackCount = optimisticCountRef.current ?? baseLikesCount;
+      let updatedCount = updatedPost ? resolvePostLikesCount(updatedPost) : fallbackCount;
+      if (!Number.isFinite(updatedCount)) {
+        updatedCount = fallbackCount;
+      }
+      const updatedLikesRaw =
+        updatedPost && Array.isArray(updatedPost.likes)
+          ? updatedPost.likes
+          : updatedPost && Array.isArray(updatedPost.likedBy)
+            ? updatedPost.likedBy
+            : updatedPost && Array.isArray(updatedPost.liked_by)
+              ? updatedPost.liked_by
+              : null;
+      const updatedLikes = updatedLikesRaw ? resolveLikeIds(updatedLikesRaw) : null;
+      const updates = {
+        likeCount: updatedCount,
+        likesCount: updatedCount,
+        likedByMe: desiredAtSend,
+        isLikedByMe: desiredAtSend,
+      };
+      if (updatedLikes) {
+        updates.likes = updatedLikes;
+        updates.likedBy = updatedLikes;
+      }
+      updatePost(postId, updates);
+      committedLikedRef.current = desiredAtSend;
+      committedCountRef.current = updatedCount;
+    } catch {
+      const rollbackLiked = committedLikedRef.current ?? baseIsLiked;
+      const rollbackCount = committedCountRef.current ?? baseLikesCount;
+      updatePost(postId, {
+        likeCount: rollbackCount,
+        likesCount: rollbackCount,
+        likedByMe: rollbackLiked,
+        isLikedByMe: rollbackLiked,
+      });
+      setOptimisticLiked(rollbackLiked);
+      setOptimisticLikesCount(rollbackCount);
+    } finally {
+      likeCommitInFlightRef.current = false;
+      setLikePending(false);
+      setLikeAction(null);
+      if (likeDesiredRef.current === desiredAtSend) {
+        likeDesiredRef.current = null;
+        optimisticCountRef.current = null;
+        setOptimisticLiked(null);
+        setOptimisticLikesCount(null);
+      }
+    }
+  }, [
+    postId,
+    currentUser?.id,
+    baseIsLiked,
+    baseLikesCount,
+    updatePost,
+    likePost,
+  ]);
+
   const handleLike = async () => {
-    if (!currentUser || likePending) return;
+    if (!currentUser?.id) return;
     if (!postId) return;
 
     const nextLiked = !isLiked;
+    const currentCount = optimisticCountRef.current ?? baseLikesCount;
+    const nextCount = Math.max(0, currentCount + (nextLiked ? 1 : -1));
     setLikeAction(nextLiked ? "like" : "unlike");
     setLikePulse((prev) => prev + 1);
     if (typeof navigator !== "undefined" && navigator.vibrate) {
       navigator.vibrate(12);
     }
-    setLikePending(true);
     setOptimisticLiked(nextLiked);
-    const nextLikes = nextLiked
-      ? Array.from(new Set([...baseLikes, currentUser.id]))
-      : baseLikes.filter((id) => String(id) !== String(currentUser.id));
-    updatePost(postId, {
-      likes: nextLikes,
-      likedBy: nextLikes,
-      likeCount: nextLikes.length,
-      likesCount: nextLikes.length,
-    });
-
-    try {
-      const response = await likePost(postId);
-      const updatedPost =
-        response?.post || response?.data?.post || response?.data || response || null;
-      if (updatedPost) {
-        const updatedLikesRaw = Array.isArray(updatedPost.likes)
-          ? updatedPost.likes
-          : Array.isArray(updatedPost.likedBy)
-            ? updatedPost.likedBy
-            : Array.isArray(updatedPost.liked_by)
-              ? updatedPost.liked_by
-              : null;
-        const updatedLikes = updatedLikesRaw ? resolveLikeIds(updatedLikesRaw) : null;
-        const updatedCount = resolvePostLikesCount(updatedPost);
-        updatePost(postId, {
-          ...(updatedLikes ? { likes: updatedLikes, likedBy: updatedLikes } : {}),
-          likeCount: updatedCount,
-          likesCount: updatedCount,
-        });
-      }
-    } catch {
-      updatePost(postId, {
-        likes: baseLikes,
-        likedBy: baseLikes,
-        likeCount: baseLikes.length,
-        likesCount: baseLikes.length,
-      });
-    } finally {
-      setOptimisticLiked(null);
-      setLikePending(false);
-      setLikeAction(null);
+    setOptimisticLikesCount(nextCount);
+    optimisticCountRef.current = nextCount;
+    likeDesiredRef.current = nextLiked;
+    const nextLikes = shouldUseLikesList
+      ? nextLiked
+        ? Array.from(new Set([...baseLikes, currentUser.id]))
+        : baseLikes.filter((id) => String(id) !== String(currentUser.id))
+      : null;
+    const optimisticUpdates = {
+      likeCount: nextCount,
+      likesCount: nextCount,
+      likedByMe: nextLiked,
+      isLikedByMe: nextLiked,
+    };
+    if (shouldUseLikesList && nextLikes) {
+      optimisticUpdates.likes = nextLikes;
+      optimisticUpdates.likedBy = nextLikes;
     }
+    updatePost(postId, optimisticUpdates);
+
+    if (likeCommitTimerRef.current) {
+      clearTimeout(likeCommitTimerRef.current);
+    }
+    likeCommitTimerRef.current = setTimeout(() => {
+      commitLike();
+    }, 2000);
   };
 
   const handleReport = () => {
@@ -333,10 +462,10 @@ function Post({ post, onOpen, badge }) {
 
   const handleMediaDoubleTap = useCallback(() => {
     setMediaLikePulse((prev) => prev + 1);
-    if (!isLiked && !likePending) {
+    if (!isLiked) {
       handleLike();
     }
-  }, [isLiked, likePending, handleLike]);
+  }, [isLiked, handleLike]);
 
   const handleMediaTouchEnd = useCallback(() => {
     const now = Date.now();
@@ -616,41 +745,21 @@ function Post({ post, onOpen, badge }) {
             className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] px-2 ${
               isLiked ? "text-red-300" : ""
             }`}
-            whileTap={{ scale: 0.94 }}
           >
             <Motion.span
-              key={`like-glow-${likePulse}`}
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={
-                likeAction === "like"
-                  ? { opacity: [0, 0.7, 0], scale: [0.8, 1.4, 1.8] }
-                  : { opacity: 0, scale: 0.9 }
-              }
-              transition={{ duration: 0.3, ease: "easeOut" }}
-              className="absolute inset-0 -z-10 rounded-full bg-red-300/20 blur-xl"
-              aria-hidden="true"
-            />
-            <Motion.span
               key={`like-icon-${likePulse}`}
-              initial={{ scale: 1, opacity: 0.9 }}
+              initial={{ scale: 1 }}
               animate={
                 likeAction === "like"
-                  ? { scale: [1, 0.9, 1.1, 1], opacity: [0.9, 1, 1, 1] }
-                  : { scale: [1, 0.95, 1], opacity: [0.9, 1, 1] }
+                  ? { scale: [1, 1.15, 1] }
+                  : { scale: [1, 0.97, 1] }
               }
-              transition={{ duration: likeAction === "like" ? 0.18 : 0.15, ease: "easeOut" }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
               className="flex items-center"
             >
               <i className={`fa-${isLiked ? "solid" : "regular"} fa-heart`} />
             </Motion.span>
-            <Motion.span
-              key={`like-count-${likesCount}`}
-              initial={{ opacity: 0, y: -6 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.18, ease: "easeOut" }}
-            >
-              {likesCount}
-            </Motion.span>
+            <span className="tabular-nums min-w-[2ch] text-right">{likesCount}</span>
           </Motion.button>
           <Motion.button
             onClick={() => setShowComments(true)}
