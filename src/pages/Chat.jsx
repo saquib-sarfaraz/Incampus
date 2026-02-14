@@ -24,6 +24,8 @@ const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CONTACTS_CACHE_KEY = "incampus:chat:contacts";
 const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
+const REQUESTS_CACHE_KEY = "incampus:chat:requests";
+const REQUESTS_CACHE_TTL = 2 * 60 * 1000;
 
 const readContactsCache = (userId) => {
   if (!userId || typeof window === "undefined") return null;
@@ -48,6 +50,34 @@ const writeContactsCache = (userId, contacts) => {
       contacts: Array.isArray(contacts) ? contacts : [],
     };
     sessionStorage.setItem(CONTACTS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const readRequestsCache = (userId) => {
+  if (!userId || typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(REQUESTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.userId !== String(userId)) return null;
+    if (!parsed.ts || Date.now() - parsed.ts > REQUESTS_CACHE_TTL) return null;
+    return Array.isArray(parsed.requests) ? parsed.requests : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeRequestsCache = (userId, requests) => {
+  if (!userId || typeof window === "undefined") return;
+  try {
+    const payload = {
+      userId: String(userId),
+      ts: Date.now(),
+      requests: Array.isArray(requests) ? requests : [],
+    };
+    sessionStorage.setItem(REQUESTS_CACHE_KEY, JSON.stringify(payload));
   } catch {
     // Ignore storage errors.
   }
@@ -173,7 +203,10 @@ export default function Chat() {
     if (typeof window === "undefined") return true;
     return !(readContactsCache(currentUser?.id) || []).length;
   });
-  const [requests, setRequests] = useState([]);
+  const [requests, setRequests] = useState(() => {
+    if (typeof window === "undefined") return [];
+    return readRequestsCache(currentUser?.id) || [];
+  });
   const [messagesByChat, setMessagesByChat] = useState({});
   const [messageText, setMessageText] = useState("");
   const [presenceMap, setPresenceMap] = useState({});
@@ -209,6 +242,10 @@ export default function Chat() {
     if (cached && cached.length) {
       setContacts(cached);
       setContactsLoading(false);
+    }
+    const cachedRequests = readRequestsCache(currentUser.id);
+    if (cachedRequests && cachedRequests.length) {
+      setRequests(cachedRequests);
     }
   }, [currentUser?.id]);
 
@@ -563,17 +600,14 @@ export default function Chat() {
 
   const loadRequests = useCallback(async () => {
     try {
-      const requestsData = await getPendingRequests(
-        currentUser?.id
-          ? {
-              userId: currentUser.id,
-              receiverId: currentUser.id,
-              toUserId: currentUser.id,
-              recipientId: currentUser.id,
-              targetUserId: currentUser.id,
-            }
-          : {}
-      );
+      const currentUserId =
+        currentUser?.id || (typeof window !== "undefined" ? localStorage.getItem("currentUserId") : "");
+      if (!currentUserId) {
+        return [];
+      }
+      const requestsData = await getPendingRequests({
+        userId: currentUserId,
+      });
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
         console.log("[Requests] raw response:", requestsData);
       }
@@ -639,7 +673,7 @@ export default function Chat() {
           (toRaw && typeof toRaw === "object" ? toRaw : null) ||
           null;
 
-        const currentId = currentUser?.id ? String(currentUser.id) : "";
+        const currentId = currentUserId ? String(currentUserId) : "";
         const otherId =
           currentId && fromId && fromId !== currentId
             ? fromId
@@ -658,19 +692,37 @@ export default function Chat() {
 
         return { fromId, toId, user };
       };
+      const requestList = Array.isArray(requestsData) ? requestsData : [];
       const formattedRequests = await Promise.all(
-        requestsData.map(async (req) => {
+        requestList.map(async (req) => {
           const statusRaw = String(
-            req?.status || req?.state || req?.requestStatus || ""
+            req?.status ||
+              req?.state ||
+              req?.requestStatus ||
+              req?.request_status ||
+              req?.friendStatus ||
+              ""
           )
             .trim()
-            .toLowerCase();
-          if (statusRaw && statusRaw !== "pending") {
+            .toLowerCase()
+            .replace(/\s+/g, "_");
+          const blockedStatuses = new Set([
+            "accepted",
+            "approved",
+            "rejected",
+            "declined",
+            "ignored",
+            "cancelled",
+            "canceled",
+            "blocked",
+            "removed",
+          ]);
+          if (statusRaw && blockedStatuses.has(statusRaw)) {
             return null;
           }
           const { fromId, toId, user: embeddedUser } = resolveRequestUsers(req);
           const isOutgoing =
-            currentUser?.id && fromId && String(fromId) === String(currentUser.id);
+            currentUserId && fromId && String(fromId) === String(currentUserId);
           if (isOutgoing) {
             return null;
           }
@@ -735,7 +787,69 @@ export default function Chat() {
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
         console.log("[Requests] normalized:", formattedRequests.filter(Boolean));
       }
-      return formattedRequests.filter(Boolean);
+      const normalized = formattedRequests.filter(Boolean);
+      if (normalized.length > 0) {
+        writeRequestsCache(currentUserId, normalized);
+      }
+      if (normalized.length === 0 && requestList.length > 0) {
+        const fallback = requestList
+          .map((req) => {
+            const sender =
+              (req?.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+              (req?.sender && typeof req.sender === "object" ? req.sender : null) ||
+              (req?.requester && typeof req.requester === "object" ? req.requester : null) ||
+              (req?.user && typeof req.user === "object" ? req.user : null) ||
+              null;
+            const senderId =
+              resolveFriendId(sender) ||
+              resolveFriendId(req?.senderId) ||
+              resolveFriendId(req?.requesterId) ||
+              resolveFriendId(req?.fromUserId) ||
+              resolveFriendId(req?.userId) ||
+              "";
+            if (currentUser?.id && senderId && String(senderId) === String(currentUser.id)) {
+              return null;
+            }
+            if (senderId && isUserBlocked(senderId)) {
+              return null;
+            }
+            const displayName =
+              sender?.displayName ||
+              sender?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+              sender?.username ||
+              "User";
+            return {
+              ...req,
+              status: String(req?.status || "pending")
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, "_"),
+              user: sender
+                ? {
+                    id: senderId || sender?._id || sender?.id,
+                    displayName,
+                    profilePicUrl:
+                      sender?.profilePicUrl ||
+                      sender?.profilePic ||
+                      sender?.profile_pic ||
+                      ANONYMOUS_AVATAR,
+                    friends: sender?.friends || [],
+                    isVerified: Boolean(sender?.isVerified),
+                  }
+                : {
+                    id: senderId,
+                    displayName: "User",
+                    profilePicUrl: ANONYMOUS_AVATAR,
+                  },
+            };
+          })
+          .filter(Boolean);
+        if (fallback.length > 0) {
+          writeRequestsCache(currentUserId, fallback);
+        }
+        return fallback;
+      }
+      return normalized;
     } catch (error) {
       console.error("Failed to load requests:", error);
       return [];
@@ -982,10 +1096,12 @@ export default function Chat() {
     }
 
     const run = async () => {
-      const [contactsData, requestsData] = await Promise.all([
-        loadContacts({ force: true }),
-        loadRequests(),
-      ]);
+      const requestsPromise = loadRequests().then((requestsData) => {
+        if (cancelled) return [];
+        setRequests(requestsData);
+        return requestsData;
+      });
+      const contactsData = await loadContacts({ force: true });
       if (cancelled) return;
       setContacts(contactsData);
       setContactsLoading(false);
@@ -995,7 +1111,7 @@ export default function Chat() {
           lastSeen: contact.lastSeen || "",
         });
       });
-      setRequests(requestsData);
+      await requestsPromise;
     };
 
     let idleId = null;
@@ -1605,6 +1721,24 @@ export default function Chat() {
                   <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
                 ) : (
                   requests.map((req, index) => {
+                    const requestUser =
+                      (req.user && typeof req.user === "object" ? req.user : null) ||
+                      (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+                      (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+                      (req.requester && typeof req.requester === "object"
+                        ? req.requester
+                        : null) ||
+                      null;
+                    const requestDisplayName =
+                      requestUser?.displayName ||
+                      requestUser?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                      requestUser?.username ||
+                      "User";
+                    const requestAvatar =
+                      requestUser?.profilePicUrl ||
+                      requestUser?.profilePic ||
+                      requestUser?.profile_pic ||
+                      ANONYMOUS_AVATAR;
                     const requesterId =
                       resolveFriendId(req?.requesterId) ||
                       resolveFriendId(req?.senderId) ||
@@ -1615,7 +1749,7 @@ export default function Chat() {
                       resolveFriendId(req?.user) ||
                       resolveFriendId(req?.userId);
                     const requestKey = req._id || req.id || requesterId || "req";
-                    const requesterFriends = req.user?.friends || [];
+                    const requesterFriends = requestUser?.friends || [];
                     const mutualCount = requesterFriends.filter((id) =>
                       resolvedFriendIdSet.has(resolveFriendId(id))
                     ).length;
@@ -1627,13 +1761,13 @@ export default function Chat() {
                         <div className="flex items-center justify-between">
                           <div className="flex items-center flex-grow gap-3">
                             <img
-                              src={req.user?.profilePicUrl || ANONYMOUS_AVATAR}
-                              alt={req.user?.displayName}
+                              src={requestAvatar}
+                              alt={requestDisplayName}
                               className="w-10 h-10 rounded-full object-cover"
                             />
                             <div className="flex-grow">
                               <p className="font-semibold text-sm text-[#faf0e6]">
-                                {req.user?.displayName || "User"}
+                                {requestDisplayName}
                               </p>
                               <p className="text-xs text-[#b9b4c7]">
                                 {mutualCount > 0
