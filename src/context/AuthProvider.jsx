@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { login as loginAPI, getCurrentUser } from "../services/api";
 import { initSocket, disconnectSocket } from "../services/socket";
+import { resolveStudentType, resolveUserType } from "../utils/userProfile";
 import { AuthContext } from "./authContext";
 
 export const AuthProvider = ({ children }) => {
@@ -18,14 +19,8 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const normalizeUser = useCallback((user) => {
-    const rawStudentType = user?.studentType || user?.student_type || "student";
-    const rawUserType =
-      user?.userType ||
-      user?.user_type ||
-      user?.accountType ||
-      (rawStudentType === "alumni" ? "alumni" : null) ||
-      (user?.communityName || user?.communityType ? "community" : null) ||
-      "student";
+    const rawStudentType = resolveStudentType(user) || "student";
+    const rawUserType = resolveUserType(user) || "student";
     const isCommunity = String(rawUserType).toLowerCase() === "community";
     const displayNameBase = isCommunity
       ? user?.communityName || user?.community_name || user?.fullName
@@ -47,9 +42,9 @@ export const AuthProvider = ({ children }) => {
       privacyPublic: user?.privacyPublic ?? true,
       graduationYear: user?.graduationYear || user?.year || "",
       studentType: rawStudentType,
-      student_type: user?.student_type,
+      student_type: user?.student_type || rawStudentType,
       userType: rawUserType,
-      user_type: user?.user_type,
+      user_type: user?.user_type || rawUserType,
       course: user?.course,
       year: user?.year,
       passoutYear: user?.passoutYear || user?.passout_year || "",

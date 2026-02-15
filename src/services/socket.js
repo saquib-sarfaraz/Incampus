@@ -50,7 +50,8 @@ const shouldLog = () => {
 
 const log = (...args) => {
   if (shouldLog()) {
-    console.log("[socket]", ...args);
+    void args;
+    // Debug logging disabled.
   }
 };
 

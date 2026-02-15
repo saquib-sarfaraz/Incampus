@@ -650,7 +650,6 @@ export default function Chat() {
         userId: currentUserId,
       });
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
-        console.log("[Requests] raw response:", requestsData);
       }
       const resolveRequestUsers = (req) => {
         if (!req || typeof req !== "object") return { fromId: "", toId: "", user: null };
@@ -826,7 +825,6 @@ export default function Chat() {
         })
       );
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
-        console.log("[Requests] normalized:", formattedRequests.filter(Boolean));
       }
       const normalized = formattedRequests.filter(Boolean);
       if (normalized.length > 0) {

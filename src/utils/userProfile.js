@@ -1,5 +1,46 @@
+const normalizeUserTypeValue = (value) => {
+  const raw = String(value || "").trim().toLowerCase();
+  if (!raw) return "";
+  if (raw === "user" || raw === "profile" || raw === "person") return "";
+  if (
+    raw.includes("community") ||
+    raw.includes("club") ||
+    raw.includes("society") ||
+    raw.includes("organization") ||
+    raw.includes("org") ||
+    raw.includes("group")
+  ) {
+    return "community";
+  }
+  if (raw.includes("alumni")) return "alumni";
+  if (
+    raw.includes("student") ||
+    raw.includes("undergrad") ||
+    raw.includes("postgrad") ||
+    raw.includes("postgraduate") ||
+    raw.includes("graduate") ||
+    raw.includes("grad")
+  ) {
+    return "student";
+  }
+  return raw;
+};
+
 export const resolveStudentType = (user) => {
-  return user?.studentType || user?.student_type || user?.educationType || user?.role || "";
+  return (
+    user?.studentType ||
+    user?.student_type ||
+    user?.educationType ||
+    user?.education_type ||
+    user?.studentLevel ||
+    user?.level ||
+    user?.role ||
+    user?.userType ||
+    user?.user_type ||
+    user?.accountType ||
+    user?.account_type ||
+    ""
+  );
 };
 
 export const formatStudentType = (value) => {
@@ -24,16 +65,17 @@ export const resolveUserType = (user) => {
     user?.accountType ||
     user?.account_type ||
     user?.role ||
+    user?.type ||
+    user?.kind ||
     "";
-  if (typeof raw === "string" && raw) return raw.toLowerCase();
+  const normalizedRaw = normalizeUserTypeValue(raw);
   const studentType = resolveStudentType(user);
-  if (typeof studentType === "string" && studentType.toLowerCase() === "alumni") {
-    return "alumni";
-  }
-  if (typeof studentType === "string" && studentType.toLowerCase() === "community") {
-    return "community";
-  }
+  const normalizedStudent = normalizeUserTypeValue(studentType);
+  if (normalizedRaw === "community" || normalizedStudent === "community") return "community";
   if (user?.communityName || user?.communityType || user?.community_type) return "community";
+  if (normalizedRaw === "alumni" || normalizedStudent === "alumni") return "alumni";
+  if (normalizedRaw) return normalizedRaw;
+  if (normalizedStudent) return normalizedStudent;
   return "student";
 };
 

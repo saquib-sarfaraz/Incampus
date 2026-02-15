@@ -149,6 +149,8 @@ export default function CollegeSetup() {
         collegeName: trimmedCollege,
         graduationYear,
         role: studentType,
+        studentType,
+        student_type: studentType,
       });
       await refreshCurrentUser();
       await Promise.all([loadPosts(), loadStories()]);
