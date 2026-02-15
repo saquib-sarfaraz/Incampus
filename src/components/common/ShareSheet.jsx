@@ -105,7 +105,6 @@ export default function ShareSheet({
       });
       return true;
     } catch (error) {
-      console.warn("Thumbnail share failed:", error);
       return false;
     }
   };

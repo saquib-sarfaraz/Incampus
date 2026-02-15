@@ -472,7 +472,6 @@ export default function Profile() {
     if (event?.preventDefault) {
       event.preventDefault();
     }
-    console.log("Password submit clicked");
     setPasswordError("");
     setPasswordSuccess("");
     if (!newPassword) {
