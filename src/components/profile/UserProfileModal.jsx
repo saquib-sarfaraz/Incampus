@@ -268,7 +268,7 @@ const UserProfileModalContent = ({
           </div>
 
           <div className="grid grid-cols-3 gap-4 text-center text-xs text-[#b9b4c7] mb-6">
-            <div className="rounded-2xl border border-white/10 bg-white/5 py-3">
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
               <p className="text-base font-semibold text-[#faf0e6]">
                 {publicPostCount}
               </p>
@@ -276,12 +276,12 @@ const UserProfileModalContent = ({
             </div>
             {isCommunity ? (
               <>
-                <div className="rounded-2xl border border-white/10 bg-white/5 py-3">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
                   <p className="text-base font-semibold text-[#faf0e6]">{memberCount}</p>
                   <p>Members</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 py-3">
-                  <p className="text-base font-semibold text-[#faf0e6]">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
+                  <p className="text-sm font-semibold text-[#faf0e6] leading-tight break-words">
                     {communityTypeLabel || "Community"}
                   </p>
                   <p>Type</p>
@@ -289,12 +289,14 @@ const UserProfileModalContent = ({
               </>
             ) : (
               <>
-                <div className="rounded-2xl border border-white/10 bg-white/5 py-3">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
                   <p className="text-base font-semibold text-[#faf0e6]">{friendCount}</p>
                   <p>Friends</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 py-3">
-                  <p className="text-base font-semibold text-[#faf0e6]">{studentTypeLabel}</p>
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
+                  <p className="text-sm font-semibold text-[#faf0e6] leading-tight break-words">
+                    {studentTypeLabel}
+                  </p>
                   <p>Student Type</p>
                 </div>
               </>
