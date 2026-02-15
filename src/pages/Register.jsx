@@ -37,7 +37,6 @@ export default function Register() {
   const [step, setStep] = useState(1);
   const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
   const disableRecaptcha = import.meta.env.VITE_DISABLE_RECAPTCHA === "true";
-  const debugRecaptcha = import.meta.env.VITE_DEBUG_RECAPTCHA === "true";
   const collegeRef = useRef(null);
   const DRAFT_KEY = "incampus_register_draft";
   const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
@@ -187,15 +186,6 @@ export default function Register() {
     setPasswordStrength(calculatePasswordStrength(formData.password));
   }, [formData.password]);
 
-  useEffect(() => {
-    if (!debugRecaptcha) return;
-    // Temporary debug visibility for local testing.
-    console.log("[recaptcha]", {
-      siteKeyPresent: Boolean(siteKey),
-      disabled: disableRecaptcha,
-      tokenPresent: Boolean(captchaValue),
-    });
-  }, [debugRecaptcha, siteKey, disableRecaptcha, captchaValue]);
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -378,13 +368,6 @@ export default function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
-    if (debugRecaptcha) {
-      console.log("[register] recaptcha status", {
-        siteKeyPresent: Boolean(siteKey),
-        disabled: disableRecaptcha,
-        tokenPresent: Boolean(captchaValue),
-      });
-    }
     if (!validateStepOne() || !validateStepTwo()) return;
 
     const universityValue = normalizeText(formData.university);
