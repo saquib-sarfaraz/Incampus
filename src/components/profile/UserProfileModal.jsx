@@ -281,7 +281,7 @@ const UserProfileModalContent = ({
                   <p>Members</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-sm font-semibold text-[#faf0e6] leading-tight break-words">
+                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
                     {communityTypeLabel || "Community"}
                   </p>
                   <p>Type</p>
@@ -294,7 +294,7 @@ const UserProfileModalContent = ({
                   <p>Friends</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-sm font-semibold text-[#faf0e6] leading-tight break-words">
+                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
                     {studentTypeLabel}
                   </p>
                   <p>Student Type</p>
