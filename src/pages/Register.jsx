@@ -227,8 +227,11 @@ export default function Register() {
 
   const topMatches = useMemo(() => filteredColleges.slice(0, 5), [filteredColleges]);
 
+  const normalizeEmail = (value) => String(value || "").trim();
+  const normalizeText = (value) => String(value || "").trim();
+
   const validateEmail = (email) => {
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
   };
 
   const isStudent = formData.userType === "student";
@@ -247,7 +250,30 @@ export default function Register() {
   }, []);
 
   const resolveUsername = () => {
-    return formData.username.trim() || formData.email.split("@")[0];
+    const rawUsername = normalizeText(formData.username);
+    if (rawUsername) return rawUsername;
+    const emailValue = normalizeEmail(formData.email);
+    return emailValue ? emailValue.split("@")[0] : "";
+  };
+
+  const resolveRegisterError = (error) => {
+    const raw =
+      error?.message ||
+      error?.data?.message ||
+      error?.data?.error ||
+      error?.data?.details ||
+      (Array.isArray(error?.data?.errors) && error.data.errors.length
+        ? error.data.errors[0]?.message || error.data.errors[0]
+        : "") ||
+      "";
+    const normalized = String(raw || "").toLowerCase();
+    if (normalized.includes("invalid-input-response") || normalized.includes("missing-input-response")) {
+      return "reCAPTCHA failed. Please complete the verification and try again.";
+    }
+    if (normalized.includes("invalid-input-secret")) {
+      return "reCAPTCHA configuration error. Please contact support.";
+    }
+    return raw || "Registration failed. Email might be in use.";
   };
 
   const validateStepOne = () => {
@@ -255,7 +281,7 @@ export default function Register() {
       setError("Please enter a valid email address.");
       return false;
     }
-    if (!formData.password || !formData.fullName) {
+    if (!formData.password || !normalizeText(formData.fullName)) {
       setError("Please complete all required fields.");
       return false;
     }
@@ -328,17 +354,19 @@ export default function Register() {
     setError("");
     if (!validateStepOne() || !validateStepTwo()) return;
 
-    const universityValue = formData.university.trim();
+    const universityValue = normalizeText(formData.university);
     const usernameValue = resolveUsername();
+    const emailValue = normalizeEmail(formData.email);
+    const fullNameValue = normalizeText(formData.fullName);
 
     setLoading(true);
 
     try {
       const username = usernameValue;
       const payload = {
-        email: formData.email,
+        email: emailValue,
         password: formData.password,
-        fullName: formData.fullName.trim(),
+        fullName: fullNameValue,
         username,
         userType: formData.userType,
         studentType: formData.studentType,
@@ -387,7 +415,7 @@ export default function Register() {
         setError("Registration successful but login failed. Please log in manually.");
       }
     } catch (error) {
-      setError(error.message || "Registration failed. Email might be in use.");
+      setError(resolveRegisterError(error));
     } finally {
       setLoading(false);
     }
