@@ -36,6 +36,8 @@ export default function Register() {
   const [passwordStrength, setPasswordStrength] = useState(0);
   const [step, setStep] = useState(1);
   const siteKey = import.meta.env.VITE_RECAPTCHA_SITE_KEY;
+  const disableRecaptcha = import.meta.env.VITE_DISABLE_RECAPTCHA === "true";
+  const debugRecaptcha = import.meta.env.VITE_DEBUG_RECAPTCHA === "true";
   const collegeRef = useRef(null);
   const DRAFT_KEY = "incampus_register_draft";
   const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
@@ -185,6 +187,16 @@ export default function Register() {
     setPasswordStrength(calculatePasswordStrength(formData.password));
   }, [formData.password]);
 
+  useEffect(() => {
+    if (!debugRecaptcha) return;
+    // Temporary debug visibility for local testing.
+    console.log("[recaptcha]", {
+      siteKeyPresent: Boolean(siteKey),
+      disabled: disableRecaptcha,
+      tokenPresent: Boolean(captchaValue),
+    });
+  }, [debugRecaptcha, siteKey, disableRecaptcha, captchaValue]);
+
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
@@ -277,24 +289,38 @@ export default function Register() {
   };
 
   const validateStepOne = () => {
-    if (!validateEmail(formData.email)) {
+    const emailValue = normalizeEmail(formData.email);
+    const fullNameValue = normalizeText(formData.fullName);
+    const usernameValue = resolveUsername();
+    if (!validateEmail(emailValue)) {
       setError("Please enter a valid email address.");
       return false;
     }
-    if (!formData.password || !normalizeText(formData.fullName)) {
+    if (!formData.password || !fullNameValue) {
       setError("Please complete all required fields.");
       return false;
     }
-    const usernameValue = resolveUsername();
     if (!usernameValue) {
       setError("Please choose a username.");
+      return false;
+    }
+    if (usernameValue.length < 3 || usernameValue.length > 40) {
+      setError("Username must be between 3 and 40 characters.");
+      return false;
+    }
+    if (formData.password.length < 6 || formData.password.length > 128) {
+      setError("Password must be between 6 and 128 characters.");
+      return false;
+    }
+    if (fullNameValue.length > 100) {
+      setError("Full name must be 100 characters or less.");
       return false;
     }
     return true;
   };
 
   const validateStepTwo = () => {
-    if (siteKey && !captchaValue) {
+    if (siteKey && !disableRecaptcha && !captchaValue) {
       setError("Please complete the reCAPTCHA verification.");
       return false;
     }
@@ -352,6 +378,13 @@ export default function Register() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
+    if (debugRecaptcha) {
+      console.log("[register] recaptcha status", {
+        siteKeyPresent: Boolean(siteKey),
+        disabled: disableRecaptcha,
+        tokenPresent: Boolean(captchaValue),
+      });
+    }
     if (!validateStepOne() || !validateStepTwo()) return;
 
     const universityValue = normalizeText(formData.university);
@@ -371,7 +404,7 @@ export default function Register() {
         userType: formData.userType,
         studentType: formData.studentType,
         student_type: formData.studentType,
-        recaptchaToken: captchaValue,
+        recaptchaToken: disableRecaptcha ? undefined : captchaValue,
       };
 
       if (!isCommunity) {
@@ -380,15 +413,17 @@ export default function Register() {
       }
 
       if (isStudent) {
-        payload.graduationYear = formData.graduationYear;
-        payload.year = formData.graduationYear;
+        const graduationYearValue = Number(formData.graduationYear);
+        payload.graduationYear = Number.isNaN(graduationYearValue)
+          ? undefined
+          : graduationYearValue;
         if (formData.studentEmail) payload.studentEmail = formData.studentEmail;
       }
 
       if (isAlumni) {
-        payload.passoutYear = formData.passoutYear;
-        payload.graduationYear = formData.passoutYear;
-        payload.year = formData.passoutYear;
+        const passoutYearValue = Number(formData.passoutYear);
+        payload.passoutYear = Number.isNaN(passoutYearValue) ? undefined : passoutYearValue;
+        payload.graduationYear = payload.passoutYear;
         if (formData.industry) payload.industry = formData.industry;
       }
 
@@ -888,12 +923,17 @@ export default function Register() {
                 )}
 
                 <div className="space-y-2">
-                  {siteKey ? (
+                  {siteKey && !disableRecaptcha ? (
                     <ReCAPTCHA
                       sitekey={siteKey}
                       onChange={(value) => setCaptchaValue(value)}
                       theme="dark"
                     />
+                  ) : disableRecaptcha ? (
+                    <p className="text-xs text-[#b9b4c7]">
+                      reCAPTCHA disabled for local testing. Remove `VITE_DISABLE_RECAPTCHA=true`
+                      to re-enable.
+                    </p>
                   ) : (
                     <p className="text-xs text-[#b9b4c7]">
                       reCAPTCHA key missing. Set `VITE_RECAPTCHA_SITE_KEY` in your `.env` to
