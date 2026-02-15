@@ -150,24 +150,6 @@ const UserProfileModalContent = ({
   );
   const publicPostCount = publicPosts.length > 0 ? publicPosts.length : fallbackPublicCount;
   const canMessage = Boolean(resolvedUserId) && (isSelf || canChat(resolvedUserId));
-  const renderSplitGraduate = (label) => {
-    const text = String(label || "").trim();
-    if (!text) return "";
-    const lower = text.toLowerCase();
-    if (!text.includes(" ") && lower.endsWith("graduate") && lower !== "graduate") {
-      const tailLength = "graduate".length;
-      const head = text.slice(0, text.length - tailLength);
-      const tail = text.slice(text.length - tailLength);
-      return (
-        <>
-          <span>{head}</span>
-          <br />
-          <span>{tail}</span>
-        </>
-      );
-    }
-    return text;
-  };
 
   const handleMessage = () => {
     if (!canMessage) return;
@@ -313,7 +295,7 @@ const UserProfileModalContent = ({
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
                   <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
-                    {renderSplitGraduate(studentTypeLabel)}
+                    {studentTypeLabel}
                   </p>
                   <p>Student Type</p>
                 </div>
