@@ -57,7 +57,7 @@ export default function CollegeSetup() {
   const [collegeError, setCollegeError] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [graduationYear, setGraduationYear] = useState("");
-  const [studentType, setStudentType] = useState("student");
+  const [studentType, setStudentType] = useState("undergraduate");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const containerRef = useRef(null);
@@ -145,13 +145,26 @@ export default function CollegeSetup() {
     setSubmitting(true);
     setFormError("");
     try {
-      await setupCollege({
+      const isAlumni = studentType === "alumni";
+      const resolvedUserType = isAlumni ? "alumni" : "student";
+      const resolvedStudentType = isAlumni ? "alumni" : studentType || "undergraduate";
+      const yearValue = String(graduationYear);
+      const payload = {
         collegeName: trimmedCollege,
-        graduationYear,
-        role: studentType,
-        studentType,
-        student_type: studentType,
-      });
+        college: trimmedCollege,
+        university: trimmedCollege,
+        graduationYear: yearValue,
+        year: yearValue,
+        role: resolvedUserType,
+        userType: resolvedUserType,
+        user_type: resolvedUserType,
+        studentType: resolvedStudentType,
+        student_type: resolvedStudentType,
+      };
+      if (isAlumni) {
+        payload.passoutYear = yearValue;
+      }
+      await setupCollege(payload);
       await refreshCurrentUser();
       await Promise.all([loadPosts(), loadStories()]);
       navigate("/feed", { replace: true });
@@ -288,9 +301,9 @@ export default function CollegeSetup() {
                 <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 p-2">
                   <button
                     type="button"
-                    onClick={() => setStudentType("student")}
+                    onClick={() => setStudentType("undergraduate")}
                     className={`flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
-                      studentType === "student"
+                      studentType !== "alumni"
                         ? "liquid-button text-[#faf0e6]"
                         : "text-[#b9b4c7] hover:text-[#faf0e6]"
                     }`}
