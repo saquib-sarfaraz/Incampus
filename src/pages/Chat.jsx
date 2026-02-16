@@ -391,10 +391,11 @@ export default function Chat() {
     const viewport = window.visualViewport;
     if (!viewport) return;
     const updateViewportVars = () => {
-      const height = Math.max(0, Math.round(viewport.height));
+      const height = Math.max(0, Math.round(viewport.height || 0));
       const offsetTop = Math.max(0, Math.round(viewport.offsetTop || 0));
-      document.documentElement.style.setProperty("--chat-vh", `${height}px`);
-      document.documentElement.style.setProperty("--chat-offset-top", `${offsetTop}px`);
+      const layoutHeight = Math.max(0, Math.round(window.innerHeight || 0));
+      const keyboard = Math.max(0, layoutHeight - height - offsetTop);
+      document.documentElement.style.setProperty("--chat-keyboard", `${keyboard}px`);
     };
     updateViewportVars();
     viewport.addEventListener("resize", updateViewportVars);
@@ -402,8 +403,7 @@ export default function Chat() {
     return () => {
       viewport.removeEventListener("resize", updateViewportVars);
       viewport.removeEventListener("scroll", updateViewportVars);
-      document.documentElement.style.removeProperty("--chat-vh");
-      document.documentElement.style.removeProperty("--chat-offset-top");
+      document.documentElement.style.removeProperty("--chat-keyboard");
     };
   }, [isMobile]);
 
