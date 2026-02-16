@@ -16,7 +16,7 @@ export default function FeedView({ authToken }) {
     })
       .then(res => res.json())
       .then(data => setPosts(data.posts || []))
-      .catch(console.error);
+      .catch(() => {});
   }, [authToken]);
 
   return (
