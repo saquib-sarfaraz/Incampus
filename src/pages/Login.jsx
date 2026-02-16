@@ -44,7 +44,6 @@ export default function Login() {
         setError(result.error || "Invalid credentials. Please try again.");
       }
     } catch (error) {
-      console.error("Login error:", error);
       setError("Network Error: Could not connect to the InCampus server.");
     } finally {
       setLoading(false);

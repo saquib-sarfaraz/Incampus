@@ -1071,7 +1071,10 @@ export default function Trending() {
   const maxTrendingScore = filteredTrendingItems[0]?.score || 0;
   const hasMoreTrending =
     trendingVisibleCount < Math.min(filteredTrendingItems.length, TRENDING_MAX_VISIBLE);
-  const displayedTrendingItems = filteredTrendingItems.slice(0, trendingVisibleCount);
+  const displayedTrendingItems = useMemo(
+    () => filteredTrendingItems.slice(0, trendingVisibleCount),
+    [filteredTrendingItems, trendingVisibleCount]
+  );
   const showTrendingSkeletons = loading && filteredTrendingItems.length === 0;
   const isTrendingEmpty = !loading && filteredTrendingItems.length === 0;
 
@@ -1148,11 +1151,14 @@ export default function Trending() {
     return map;
   }, [groupedStories]);
 
-  const handleOpenStory = (story) => {
-    const idx = storyIndexMap.get(story._id);
-    if (idx === undefined) return;
-    setSelectedStoryIndex(idx);
-  };
+  const handleOpenStory = useCallback(
+    (story) => {
+      const idx = storyIndexMap.get(story._id);
+      if (idx === undefined) return;
+      setSelectedStoryIndex(idx);
+    },
+    [storyIndexMap]
+  );
 
   const [mediaLikePulse, setMediaLikePulse] = useState({});
   const [likeIconPulse, setLikeIconPulse] = useState({});
@@ -1282,7 +1288,6 @@ export default function Trending() {
             isLikedByMe: rollbackLiked,
           });
         }
-        console.error("Failed to like post:", error);
       } finally {
         likeCommitInFlightRef.current.set(postId, false);
         if (likeDesiredRef.current.get(postId) === desiredAtSend) {
@@ -1453,36 +1458,34 @@ export default function Trending() {
     [maxTrendingScore]
   );
 
-  const renderUnderReviewMediaCard = ({
-    key,
-    aspectClass = "aspect-square",
-    highlight = false,
-    className = "",
-  } = {}) => {
-    return (
-      <div
-        key={key}
-        className={`relative overflow-hidden rounded-2xl glass-card border border-amber-200/20 bg-amber-200/5 ${
-          highlight ? "glow-border" : ""
-        } ${className}`}
-      >
-        <div className={`relative w-full ${aspectClass}`}>
-          <div className="absolute inset-0 bg-gradient-to-br from-amber-400/10 via-black/30 to-black/70"></div>
-          <div className="relative z-10 h-full w-full flex flex-col items-center justify-center gap-2 p-4 text-center">
-            <div className="h-10 w-10 rounded-full border border-amber-200/40 bg-amber-200/10 flex items-center justify-center text-amber-100">
-              <i className="fa-solid fa-shield-halved text-sm"></i>
+  const renderUnderReviewMediaCard = useCallback(
+    ({ key, aspectClass = "aspect-square", highlight = false, className = "" } = {}) => {
+      return (
+        <div
+          key={key}
+          className={`relative overflow-hidden rounded-2xl glass-card border border-amber-200/20 bg-amber-200/5 ${
+            highlight ? "glow-border" : ""
+          } ${className}`}
+        >
+          <div className={`relative w-full ${aspectClass}`}>
+            <div className="absolute inset-0 bg-gradient-to-br from-amber-400/10 via-black/30 to-black/70"></div>
+            <div className="relative z-10 h-full w-full flex flex-col items-center justify-center gap-2 p-4 text-center">
+              <div className="h-10 w-10 rounded-full border border-amber-200/40 bg-amber-200/10 flex items-center justify-center text-amber-100">
+                <i className="fa-solid fa-shield-halved text-sm"></i>
+              </div>
+              <p className="text-sm font-semibold text-amber-100">Under review</p>
+              <p className="text-[11px] text-[#b9b4c7]">
+                This post is being checked.
+              </p>
             </div>
-            <p className="text-sm font-semibold text-amber-100">Under review</p>
-            <p className="text-[11px] text-[#b9b4c7]">
-              This post is being checked.
-            </p>
           </div>
         </div>
-      </div>
-    );
-  };
+      );
+    },
+    []
+  );
 
-  const renderUnderReviewWideCard = ({ key, className = "" } = {}) => {
+  const renderUnderReviewWideCard = useCallback(({ key, className = "" } = {}) => {
     return (
       <div
         key={key}
@@ -1502,13 +1505,14 @@ export default function Trending() {
         </div>
       </div>
     );
-  };
+  }, []);
 
-  const renderTrendingCard = (entry, index) => {
-    if (!entry) return null;
-    const isStory = entry.type === "story";
-    const item = entry.item;
-    const itemId = String(item?._id || item?.id || item?.postId || item?.post_id || "");
+  const renderTrendingCard = useCallback(
+    (entry, index) => {
+      if (!entry) return null;
+      const isStory = entry.type === "story";
+      const item = entry.item;
+      const itemId = String(item?._id || item?.id || item?.postId || item?.post_id || "");
     if (isContentUnderReview(item)) {
       return renderUnderReviewMediaCard({
         key: `review-${entry.type}-${itemId || index}`,
@@ -1547,9 +1551,9 @@ export default function Trending() {
     const pulseCount = itemId ? mediaLikePulse[itemId] || 0 : 0;
     const likePulse = itemId ? likeIconPulse[itemId] || 0 : 0;
 
-    return (
-      <Motion.div
-        key={`${entry.type}-${itemId || index}`}
+      return (
+        <Motion.div
+          key={`${entry.type}-${itemId || index}`}
         className={`relative aspect-square overflow-hidden rounded-2xl glass-card border border-white/10 ${
           index === 0 ? "glow-border" : ""
         }`}
@@ -1713,18 +1717,31 @@ export default function Trending() {
             </button>
           </div>
         )}
-      </Motion.div>
-    );
-  };
+        </Motion.div>
+      );
+    },
+    [
+      getUserFromCache,
+      handleMediaDoubleTap,
+      handleMediaTouchEnd,
+      handleOpenStory,
+      likeIconPulse,
+      mediaLikePulse,
+      renderUnderReviewMediaCard,
+      resolveTrendingBadge,
+      shouldSuppressOpen,
+    ]
+  );
 
-  const renderDoomItem = (entry, index) => {
-    if (!entry) return null;
-    const item = entry.item;
-    if (isContentUnderReview(item)) {
-      return renderUnderReviewWideCard({
-        key: `review-doom-${entry.type}-${item?._id || item?.id || index}`,
-      });
-    }
+  const renderDoomItem = useCallback(
+    (entry, index) => {
+      if (!entry) return null;
+      const item = entry.item;
+      if (isContentUnderReview(item)) {
+        return renderUnderReviewWideCard({
+          key: `review-doom-${entry.type}-${item?._id || item?.id || index}`,
+        });
+      }
     if (entry.type === "story") {
       const mediaUrl = resolveStoryMediaUrl(item);
       const storyType = resolveStoryMediaType(item, mediaUrl);
@@ -1810,15 +1827,31 @@ export default function Trending() {
     }
 
     const badge = resolveTrendingBadge(entry.score);
-    return (
-      <Post
-        key={`doom-post-${entry.item?._id || entry.item?.id || index}`}
-        post={entry.item}
-        badge={badge}
-        onOpen={() => setSelectedPost(entry.item)}
-      />
-    );
-  };
+      return (
+        <Post
+          key={`doom-post-${entry.item?._id || entry.item?.id || index}`}
+          post={entry.item}
+          badge={badge}
+          onOpen={() => setSelectedPost(entry.item)}
+        />
+      );
+    },
+    [
+      getUserFromCache,
+      handleOpenStory,
+      renderUnderReviewWideCard,
+      resolveTrendingBadge,
+    ]
+  );
+
+  const trendingGridItems = useMemo(
+    () => displayedTrendingItems.map((entry, index) => renderTrendingCard(entry, index)),
+    [displayedTrendingItems, renderTrendingCard]
+  );
+  const trendingDoomItems = useMemo(
+    () => displayedTrendingItems.map((entry, index) => renderDoomItem(entry, index)),
+    [displayedTrendingItems, renderDoomItem]
+  );
 
   const renderUserCard = (user, { variant = "default", index } = {}) => {
     if (!user) return null;
@@ -2387,15 +2420,11 @@ export default function Trending() {
             <>
               {trendingView === "grid" ? (
                 <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-4">
-                  {displayedTrendingItems.map((entry, index) =>
-                    renderTrendingCard(entry, index)
-                  )}
+                  {trendingGridItems}
                 </div>
               ) : (
                 <div className="space-y-6">
-                  {displayedTrendingItems.map((entry, index) =>
-                    renderDoomItem(entry, index)
-                  )}
+                  {trendingDoomItems}
                 </div>
               )}
               {hasMoreTrending && (

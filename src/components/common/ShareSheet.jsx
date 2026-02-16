@@ -124,7 +124,6 @@ export default function ShareSheet({
       await navigator.clipboard.writeText(shareMetaUrl);
       setToast("Link copied");
     } catch (error) {
-      console.error("Failed to copy:", error);
       setToast("Copy failed");
     }
   };
@@ -139,7 +138,6 @@ export default function ShareSheet({
       });
       return true;
     } catch (error) {
-      console.error("Share canceled:", error);
       return false;
     }
   };

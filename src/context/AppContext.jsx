@@ -321,7 +321,6 @@ export const AppProvider = ({ children }) => {
       setPosts(postsData);
       postsLoadedRef.current = true;
     } catch (error) {
-      console.error("Failed to load posts:", error);
     } finally {
       postsRequestRef.current = false;
       if (showLoading) {
@@ -369,7 +368,6 @@ export const AppProvider = ({ children }) => {
       });
       setStories(normalizeStoriesList(storiesData));
     } catch (error) {
-      console.error("Failed to load stories:", error);
     } finally {
       storiesRequestRef.current = false;
     }
@@ -404,7 +402,6 @@ export const AppProvider = ({ children }) => {
       const list = Array.isArray(notifs) ? notifs : [];
       setNotifications(list.filter((notif) => !isMessageNotification(notif)));
     } catch (error) {
-      console.error("Failed to load notifications:", error);
     } finally {
       notificationsRequestRef.current = false;
     }
@@ -422,7 +419,6 @@ export const AppProvider = ({ children }) => {
         .map((id) => String(id));
       setBlockedUsers(Array.from(new Set(ids)));
     } catch (error) {
-      console.error("Failed to load blocked users:", error);
       setBlockedUsers([]);
     } finally {
       blockedUsersRequestRef.current = false;
@@ -611,7 +607,6 @@ export const AppProvider = ({ children }) => {
       setFriendMap(applyBlockedToMap(nextMap));
       setFriendMapLoaded(true);
     } catch (error) {
-      console.error("Failed to load friend map:", error);
     } finally {
       friendMapRequestRef.current = false;
       setFriendMapLoading(false);

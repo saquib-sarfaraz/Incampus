@@ -322,7 +322,6 @@ export const getUserById = async (userId) => {
       const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
       return data?.user || data;
     } catch (error) {
-      console.error("getUserById failed:", error);
       return null;
     }
   })();

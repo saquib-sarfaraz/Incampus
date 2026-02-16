@@ -87,7 +87,6 @@ export default function ShareToChatModal({
         );
         setContacts(users.filter(Boolean));
       } catch (error) {
-        console.error("Failed to load contacts:", error);
       } finally {
         setLoading(false);
       }

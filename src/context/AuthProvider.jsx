@@ -120,7 +120,6 @@ export const AuthProvider = ({ children }) => {
         setAuthToken(token);
         await refreshCurrentUser();
       } catch (error) {
-        console.error("Auth initialization error:", error);
         const status = error?.status;
         if (status === 401 || status === 403) {
           logout();
