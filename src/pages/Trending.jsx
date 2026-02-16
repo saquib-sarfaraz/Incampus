@@ -2146,7 +2146,7 @@ export default function Trending() {
           </button>
         )}
 
-        <div ref={searchRef} className="sticky top-20 z-20">
+        <div ref={searchRef} className="relative sm:sticky sm:top-20 z-20">
           <div className="relative">
             <i className="fa-solid fa-magnifying-glass absolute left-4 top-1/2 -translate-y-1/2 text-[#b9b4c7]"></i>
             <input

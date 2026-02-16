@@ -1799,13 +1799,13 @@ export default function Chat() {
   return (
     <div
       id="chat-view"
-      className={`h-[100dvh] min-h-0 flex flex-col overflow-hidden ${
+      className={`h-[100dvh] min-h-0 flex flex-col ${
         isMobile && isChatOpen ? "pb-0" : "pb-24"
       } sm:pb-0`}
     >
       <Header />
 
-      <div id="chat-body" className="flex-1 flex min-h-0 overflow-hidden">
+      <div id="chat-body" className="flex-1 flex min-h-0">
         <div
           id="chat-sidebar"
           className={`relative z-30 w-full h-full sm:w-1/3 border-r border-white/10 bg-[#1a120b]/85 backdrop-blur-xl flex flex-col min-h-0 transition-transform duration-300 ease-out will-change-transform ${
