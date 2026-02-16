@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
@@ -390,6 +390,26 @@ export default function CommentModal({ post, isOpen, onClose }) {
   const lastPostIdRef = useRef(null);
   const postId = toIdString(post?._id || post?.id);
   const postOwnerId = toIdString(post?.author?._id || post?.authorId || post?.author);
+  const currentUserId = toIdString(currentUser?._id || currentUser?.id);
+  const currentUserProfile = useMemo(
+    () => ({
+      id: currentUserId,
+      displayName:
+        currentUser?.displayName ||
+        currentUser?.fullName ||
+        currentUser?.name ||
+        currentUser?.username ||
+        "You",
+      profilePicUrl:
+        currentUser?.profilePicUrl ||
+        currentUser?.profilePic ||
+        currentUser?.avatarUrl ||
+        currentUser?.avatar ||
+        ANONYMOUS_AVATAR,
+      isVerified: Boolean(currentUser?.isVerified || currentUser?.verified),
+    }),
+    [currentUser, currentUserId]
+  );
   const socket = getSocket();
   const setCommentsSafe = useCallback(
     (updater) => {
@@ -443,6 +463,11 @@ export default function CommentModal({ post, isOpen, onClose }) {
           if (user && typeof user !== "object") {
             user = null;
           }
+          const isCurrentUser =
+            currentUserId && userId && String(userId) === String(currentUserId);
+          if (!user && isCurrentUser) {
+            user = currentUserProfile;
+          }
           if (!user && userId) {
             user = getUserFromCache(userId);
           }
@@ -482,7 +507,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
         .filter(Boolean);
       return { normalized: commentsWithUsers, missingUserIds: Array.from(missingUserIds) };
     },
-    [getUserFromCache, isUserBlocked]
+    [currentUserId, currentUserProfile, getUserFromCache, isUserBlocked]
   );
 
   const resolveMissingUsers = useCallback(
@@ -663,9 +688,9 @@ export default function CommentModal({ post, isOpen, onClose }) {
     const optimisticUser = isAnonymous
       ? { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR }
       : {
-          displayName: currentUser?.displayName || "You",
-          profilePicUrl: currentUser?.profilePicUrl || ANONYMOUS_AVATAR,
-          isVerified: Boolean(currentUser?.isVerified),
+          displayName: currentUserProfile.displayName,
+          profilePicUrl: currentUserProfile.profilePicUrl,
+          isVerified: currentUserProfile.isVerified,
         };
     const optimisticComment = {
       _id: tempId,
@@ -708,10 +733,9 @@ export default function CommentModal({ post, isOpen, onClose }) {
           userId: toIdString(
             savedComment.user?._id || savedComment.userId || savedComment.user || currentUser?.id
           ),
-          user:
-            isAnonymousComment(savedComment)
-              ? { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR }
-              : savedComment.user || optimisticUser,
+          user: isAnonymousComment(savedComment)
+            ? { displayName: "Anonymous", profilePicUrl: ANONYMOUS_AVATAR }
+            : savedComment.user || currentUserProfile,
         };
         setCommentsSafe((prev) =>
           prev.map((comment) => (resolveCommentId(comment) === tempId ? normalized : comment))
@@ -883,7 +907,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
                     comments={comments}
                     postId={postId}
                     postOwnerId={postOwnerId}
-                    currentUserId={currentUser?.id}
+                    currentUserId={currentUserId}
                     openMenuId={openMenuId}
                     menuRefs={menuRefs}
                     onToggleMenu={handleToggleMenu}
@@ -897,7 +921,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
               <div className="p-4 border-t border-white/10 sticky bottom-0 bg-[#1a120b]/80 rounded-b-3xl">
                 <form onSubmit={handleSubmit} className="flex flex-col space-y-2">
                   <div className="flex items-center justify-between text-xs text-[#b9b4c7]">
-                    <p>{currentUser?.displayName || "You"}</p>
+                    <p>{currentUserProfile.displayName}</p>
                     <label className="flex items-center cursor-pointer">
                       <span className="mr-2">Post Anonymously</span>
                       <div className="relative">
