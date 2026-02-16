@@ -387,6 +387,27 @@ export default function Chat() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !isMobile) return;
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const updateViewportVars = () => {
+      const height = Math.max(0, Math.round(viewport.height));
+      const offsetTop = Math.max(0, Math.round(viewport.offsetTop || 0));
+      document.documentElement.style.setProperty("--chat-vh", `${height}px`);
+      document.documentElement.style.setProperty("--chat-offset-top", `${offsetTop}px`);
+    };
+    updateViewportVars();
+    viewport.addEventListener("resize", updateViewportVars);
+    viewport.addEventListener("scroll", updateViewportVars);
+    return () => {
+      viewport.removeEventListener("resize", updateViewportVars);
+      viewport.removeEventListener("scroll", updateViewportVars);
+      document.documentElement.style.removeProperty("--chat-vh");
+      document.documentElement.style.removeProperty("--chat-offset-top");
+    };
+  }, [isMobile]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem(CHAT_SOUND_PREF_KEY, chatSoundEnabled ? "on" : "off");
   }, [chatSoundEnabled]);
