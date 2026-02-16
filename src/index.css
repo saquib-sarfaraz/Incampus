@@ -157,11 +157,10 @@ main,
 @media (max-width: 640px) {
   #feed-view,
   #trending-view {
-    height: 100vh;
-    height: 100dvh;
-    overflow-y: auto;
-    overflow-x: hidden;
-    overscroll-behavior: contain;
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+    overscroll-behavior: auto;
     padding-bottom: calc(6rem + env(safe-area-inset-bottom));
   }
 
