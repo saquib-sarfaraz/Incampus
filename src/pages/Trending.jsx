@@ -2122,10 +2122,10 @@ export default function Trending() {
   return (
     <div
       id="trending-view"
-      className="min-h-screen h-[100dvh] overflow-hidden flex flex-col pb-24 sm:pb-6 sm:overflow-y-auto sm:overscroll-contain"
+      className="min-h-screen flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
     >
       <Header />
-      <main className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 space-y-10 flex-1 min-h-0 overflow-y-auto overscroll-contain sm:overflow-visible">
+      <main className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 space-y-10 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain">
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
             Trending + Search

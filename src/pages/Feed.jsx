@@ -726,33 +726,61 @@ export default function Feed() {
     setEstimatedItemHeight(FEED_ESTIMATED_ITEM_HEIGHT);
   }, [feedKey]);
 
+  const resolveScrollElement = useCallback(() => {
+    if (typeof document === "undefined") return null;
+    const mainEl = feedMainRef.current;
+    if (mainEl && mainEl.scrollHeight > mainEl.clientHeight + 4) return mainEl;
+    const viewEl = feedViewRef.current;
+    if (viewEl && viewEl.scrollHeight > viewEl.clientHeight + 4) return viewEl;
+    return document.scrollingElement || document.documentElement;
+  }, []);
+
+  const getScrollMetrics = useCallback(
+    (target) => {
+      if (typeof document === "undefined") return null;
+      const docEl = document.scrollingElement || document.documentElement;
+      const scrollEl = target || resolveScrollElement();
+      if (!scrollEl) return null;
+      const isDoc = scrollEl === docEl || scrollEl === document.body;
+      return {
+        scrollEl,
+        scrollTop: isDoc ? docEl.scrollTop : scrollEl.scrollTop,
+        scrollHeight: isDoc ? docEl.scrollHeight : scrollEl.scrollHeight,
+        clientHeight: isDoc ? window.innerHeight : scrollEl.clientHeight,
+      };
+    },
+    [resolveScrollElement]
+  );
+
   useEffect(() => {
     if (typeof window === "undefined") return;
     const prev = windowStartRef.current;
     if (prev === windowStart) return;
     const delta = (windowStart - prev) * estimatedItemHeight;
-    const mainEl = feedMainRef.current;
-    const viewEl = feedViewRef.current;
-    const scrollEl =
-      mainEl && mainEl.scrollHeight > mainEl.clientHeight + 4
-        ? mainEl
-        : viewEl && viewEl.scrollHeight > viewEl.clientHeight + 4
-          ? viewEl
-          : mainEl || viewEl;
+    const scrollEl = resolveScrollElement();
     if (scrollEl && Number.isFinite(delta) && delta !== 0) {
-      scrollEl.scrollTop += delta;
+      const docEl = document.scrollingElement || document.documentElement;
+      if (scrollEl === docEl || scrollEl === document.body) {
+        docEl.scrollTop += delta;
+      } else {
+        scrollEl.scrollTop += delta;
+      }
     }
     windowStartRef.current = windowStart;
-  }, [windowStart, estimatedItemHeight]);
+  }, [windowStart, estimatedItemHeight, resolveScrollElement]);
 
   const handleWindowScroll = useCallback(
     (event) => {
-      const target = event.currentTarget;
-      if (!target) return;
       if (scrollRafRef.current) return;
       scrollRafRef.current = window.requestAnimationFrame(() => {
         scrollRafRef.current = null;
-        const { scrollTop, scrollHeight, clientHeight } = target;
+        const target =
+          event && event.currentTarget && event.currentTarget !== window
+            ? event.currentTarget
+            : null;
+        const metrics = getScrollMetrics(target);
+        if (!metrics) return;
+        const { scrollTop, scrollHeight, clientHeight } = metrics;
         const nearBottom = scrollTop + clientHeight >= scrollHeight - FEED_SCROLL_EDGE;
         const nearTop = scrollTop <= FEED_SCROLL_EDGE;
         if (nearBottom && windowEnd < displayedPosts.length) {
@@ -762,8 +790,15 @@ export default function Feed() {
         }
       });
     },
-    [windowEnd, displayedPosts.length, maxWindowStart, windowStart]
+    [getScrollMetrics, windowEnd, displayedPosts.length, maxWindowStart, windowStart]
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const onScroll = () => handleWindowScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [handleWindowScroll]);
 
   useEffect(() => {
     setNewPostsAvailable(false);
@@ -819,14 +854,14 @@ export default function Feed() {
       id="feed-view"
       ref={feedViewRef}
       onScroll={handleWindowScroll}
-      className="min-h-screen h-[100dvh] overflow-hidden flex flex-col pb-24 sm:pb-6 sm:overflow-y-auto sm:overscroll-contain"
+      className="min-h-screen flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
     >
       <Header />
       <main
         id="feed"
         ref={feedMainRef}
         onScroll={handleWindowScroll}
-        className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 flex-1 min-h-0 overflow-y-auto overscroll-contain sm:overflow-visible"
+        className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"
       >
         <div className="mb-6 space-y-4">
           <div className="flex flex-col gap-2">
