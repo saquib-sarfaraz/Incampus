@@ -2321,7 +2321,10 @@ export default function Chat() {
                 <div ref={messagesEndRef} />
               </div>
 
-              <div className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]">
+              <div
+                id="chat-input-bar"
+                className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
+              >
                 {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
                   <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
                     <span>Only friends can message.</span>
@@ -2343,8 +2346,13 @@ export default function Chat() {
                     ) : null}
                   </div>
                 )}
-                <form onSubmit={handleSendMessage} className="flex space-x-3">
+                <form
+                  id="chat-input-row"
+                  onSubmit={handleSendMessage}
+                  className="flex items-center space-x-3"
+                >
                   <input
+                    id="chat-input-field"
                     type="text"
                     value={messageText}
                     onChange={(e) => setMessageText(e.target.value)}
