@@ -28,6 +28,73 @@ const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
 const REQUESTS_CACHE_KEY = "incampus:chat:requests";
 const REQUESTS_CACHE_TTL = 2 * 60 * 1000;
 
+const resolveMessageSenderId = (msg) => {
+  if (!msg) return "";
+  return String(
+    msg.from ||
+      msg.senderId ||
+      msg.sender_id ||
+      msg.userId ||
+      msg.user_id ||
+      msg.authorId ||
+      msg.author_id ||
+      msg.ownerId ||
+      msg.owner_id ||
+      msg.createdById ||
+      msg.created_by ||
+      msg.sender?._id ||
+      msg.sender?.id ||
+      msg.user?._id ||
+      msg.user?.id ||
+      msg.fromUser?._id ||
+      msg.fromUser?.id ||
+      msg.author?._id ||
+      msg.author?.id ||
+      msg.owner?._id ||
+      msg.owner?.id ||
+      msg.createdBy?._id ||
+      msg.createdBy?.id ||
+      msg.sender ||
+      msg.user ||
+      msg.author ||
+      msg.owner ||
+      msg.createdBy ||
+      ""
+  );
+};
+
+const resolveMessageRecipientId = (msg) => {
+  if (!msg) return "";
+  return String(
+    msg.to ||
+      msg.chatId ||
+      msg.chat_id ||
+      msg.groupId ||
+      msg.group_id ||
+      msg.roomId ||
+      msg.room_id ||
+      msg.conversationId ||
+      msg.conversation_id ||
+      msg.receiverId ||
+      msg.recipientId ||
+      msg.targetUserId ||
+      msg.targetId ||
+      msg.target ||
+      ""
+  );
+};
+
+const resolveMessageSenderEntity = (msg) =>
+  (msg && typeof msg === "object"
+    ? msg.sender ||
+      msg.user ||
+      msg.fromUser ||
+      msg.author ||
+      msg.owner ||
+      msg.createdBy ||
+      null
+    : null);
+
 const readContactsCache = (userId) => {
   if (!userId || typeof window === "undefined") return null;
   try {
@@ -101,9 +168,19 @@ const resolveFriendId = (value) => {
   return String(value._id || value.id || value.userId || value.user_id || "");
 };
 
-const messageKey = (msg) =>
-  msg._id ||
-  `${msg.from}-${msg.to}-${msg.createdAt}-${msg.text || msg.postId || msg.messageType || ""}`;
+const messageKey = (msg) => {
+  if (!msg) return "";
+  const senderId = resolveMessageSenderId(msg);
+  const recipientId = resolveMessageRecipientId(msg);
+  const createdAt = msg.createdAt || msg.created_at || msg.timestamp || "";
+  const payloadKey = msg.text || msg.postId || msg.messageType || msg.type || "";
+  return (
+    msg._id ||
+    msg.id ||
+    msg.clientMessageId ||
+    `${senderId}-${recipientId}-${createdAt}-${payloadKey}`
+  );
+};
 
 const getMessageTimestamp = (msg) => {
   const raw = msg?.createdAt || msg?.created_at || msg?.timestamp;
@@ -223,6 +300,7 @@ export default function Chat() {
   const messageIndexRef = useRef({});
   const loadedChatsRef = useRef(new Set());
   const lastSeenSentRef = useRef(new Map());
+  const missingGroupSenderRef = useRef(new Set());
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -429,6 +507,71 @@ export default function Chat() {
     [getUserFromCache]
   );
 
+  const resolveMessageSender = useCallback(
+    (msg) => {
+      if (!msg) {
+        return {
+          id: "",
+          name: "User",
+          avatar: ANONYMOUS_AVATAR,
+          isVerified: false,
+        };
+      }
+      const senderEntity = resolveMessageSenderEntity(msg);
+      const senderId = resolveMessageSenderId(msg);
+      const cached = senderId ? getUserFromCache(senderId) : null;
+      const name =
+        senderEntity?.displayName ||
+        senderEntity?.fullName ||
+        senderEntity?.name ||
+        senderEntity?.username ||
+        msg.senderDisplayName ||
+        msg.senderName ||
+        msg.userDisplayName ||
+        msg.userName ||
+        msg.authorDisplayName ||
+        msg.authorName ||
+        msg.fromName ||
+        msg.displayName ||
+        msg.fullName ||
+        msg.username ||
+        cached?.displayName ||
+        cached?.fullName ||
+        cached?.name ||
+        cached?.username ||
+        "User";
+      const avatar =
+        senderEntity?.profilePicUrl ||
+        senderEntity?.profilePic ||
+        senderEntity?.avatarUrl ||
+        senderEntity?.avatar ||
+        msg.senderAvatar ||
+        msg.userAvatar ||
+        msg.profilePicUrl ||
+        msg.avatarUrl ||
+        msg.avatar ||
+        cached?.profilePicUrl ||
+        ANONYMOUS_AVATAR;
+      const isVerified = Boolean(
+        senderEntity?.isVerified ||
+          senderEntity?.verified ||
+          senderEntity?.is_verified ||
+          msg.senderVerified ||
+          msg.userVerified ||
+          cached?.isVerified ||
+          cached?.verified ||
+          cached?.is_verified
+      );
+      return {
+        id: senderId,
+        name: name?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+        avatar,
+        isVerified,
+      };
+    },
+    [getUserFromCache]
+  );
+
   const updatePresence = useCallback((userId, updates) => {
     if (!userId) return;
     setPresenceMap((prev) => ({
@@ -468,12 +611,26 @@ export default function Chat() {
 
         filteredIncoming.forEach((msg) => {
           const key = messageKey(msg);
-          const recentDuplicate = merged.slice(-5).some((existingMsg) => {
-            if (existingMsg.from !== msg.from || existingMsg.to !== msg.to) return false;
-            if (existingMsg.text !== msg.text) return false;
-            const existingTime = new Date(existingMsg.createdAt).getTime();
-            const incomingTime = new Date(msg.createdAt).getTime();
-            return Math.abs(existingTime - incomingTime) < 5000;
+          const incomingSender = resolveMessageSenderId(msg);
+          const incomingRecipient = resolveMessageRecipientId(msg);
+          const incomingText = msg.text || msg.postId || msg.messageType || msg.type || "";
+          const incomingClientId = msg.clientMessageId || "";
+          const incomingTime = getMessageTimestamp(msg);
+          const recentDuplicate = merged.slice(-6).some((existingMsg) => {
+            if (incomingClientId && existingMsg.clientMessageId === incomingClientId) {
+              return true;
+            }
+            const existingSender = resolveMessageSenderId(existingMsg);
+            const existingRecipient = resolveMessageRecipientId(existingMsg);
+            if (existingSender !== incomingSender || existingRecipient !== incomingRecipient) {
+              return false;
+            }
+            const existingText =
+              existingMsg.text || existingMsg.postId || existingMsg.messageType || existingMsg.type || "";
+            if (existingText !== incomingText) return false;
+            const existingTime = getMessageTimestamp(existingMsg);
+            if (existingTime === null || incomingTime === null) return false;
+            return Math.abs(existingTime - incomingTime) < 2000;
           });
 
           if (!index.has(key) && !recentDuplicate) {
@@ -983,6 +1140,7 @@ export default function Chat() {
       text,
       createdAt: new Date().toISOString(),
       isGroup: isGroupChat,
+      clientMessageId: `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     };
 
     mergeMessages(activeChatId, [newMessage]);
@@ -1487,6 +1645,34 @@ export default function Chat() {
       return !isMessageExpired(msg, nowTick) && !isUserBlocked(senderId);
     });
   }, [messagesByChat, activeChatId, isUserBlocked, nowTick]);
+  const isActiveGroupChat = isGroupChatId(activeChatId);
+
+  useEffect(() => {
+    if (!isActiveGroupChat || !visibleMessages.length) return;
+    const missing = new Set();
+    visibleMessages.forEach((msg) => {
+      const senderId = resolveMessageSenderId(msg);
+      if (!senderId) return;
+      if (currentUser?.id && String(senderId) === String(currentUser.id)) return;
+      const embedded = resolveMessageSenderEntity(msg);
+      if (embedded && typeof embedded === "object") return;
+      if (getUserFromCache(senderId)) return;
+      if (missingGroupSenderRef.current.has(senderId)) return;
+      missing.add(senderId);
+    });
+
+    missing.forEach((senderId) => {
+      missingGroupSenderRef.current.add(senderId);
+      getUserById(senderId)
+        .then((userData) => {
+          if (userData) cacheUser(userData);
+        })
+        .catch(() => {})
+        .finally(() => {
+          missingGroupSenderRef.current.delete(senderId);
+        });
+    });
+  }, [isActiveGroupChat, visibleMessages, currentUser?.id, getUserFromCache, cacheUser]);
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
   const isChatOpen = Boolean(activeChatId);
   const friendStatus = activeChatUser?.isGroup
@@ -1941,6 +2127,8 @@ export default function Chat() {
                       msg.messageType === "shared_post" || msg.type === "shared_post";
                     const previewText = resolveMessagePreview(msg);
                     const previewThumb = msg.postThumbnail;
+                    const senderInfo =
+                      !isMine && isActiveGroupChat ? resolveMessageSender(msg) : null;
                     return (
                       <Motion.div
                         key={messageKey(msg)}
@@ -1949,6 +2137,21 @@ export default function Chat() {
                         className={`message-row ${isMine ? "mine" : "theirs"}`}
                       >
                         <div className="message-bubble">
+                          {senderInfo && (
+                            <div className="mb-2 flex items-center gap-2">
+                              <img
+                                src={senderInfo.avatar || ANONYMOUS_AVATAR}
+                                alt={senderInfo.name}
+                                className="h-6 w-6 rounded-full object-cover border border-white/10"
+                              />
+                              <span className="text-[11px] font-semibold text-[#faf0e6] flex items-center gap-1">
+                                {senderInfo.name}
+                                {senderInfo.isVerified && (
+                                  <BlueTick className="text-[10px]" />
+                                )}
+                              </span>
+                            </div>
+                          )}
                           {isSharedPost ? (
                             <button
                               type="button"

@@ -64,9 +64,9 @@ const isCloudinaryUrl = (url = "") =>
   url.includes(CLOUDINARY_UPLOAD_SEGMENT);
 
 const hasCloudinaryTransform = (url = "") =>
-  /\/upload\/[^/]*(?:f_|q_|w_|h_|c_)/.test(url);
+  /\/upload\/[^/]*(?:f_|q_|w_|h_|c_|vc_)/.test(url);
 
-const buildCloudinaryTransform = ({ width, height, quality = "auto", format = "auto" } = {}) => {
+const buildCloudinaryTransform = ({ width = 600, height, quality = "auto", format = "auto" } = {}) => {
   const parts = [];
   if (format) parts.push(`f_${format}`);
   if (quality) parts.push(`q_${quality}`);
@@ -76,6 +76,8 @@ const buildCloudinaryTransform = ({ width, height, quality = "auto", format = "a
   return parts.join(",");
 };
 
+const buildCloudinaryVideoTransform = () => "q_auto,vc_auto";
+
 export const getOptimizedMediaUrl = (url, options = {}) => {
   if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;
   const transform = buildCloudinaryTransform(options);
@@ -83,7 +85,14 @@ export const getOptimizedMediaUrl = (url, options = {}) => {
   return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
 };
 
-export const getMediaSrcSet = (url, widths = [320, 480, 640, 768, 1024]) => {
+export const getOptimizedVideoUrl = (url) => {
+  if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;
+  const transform = buildCloudinaryVideoTransform();
+  if (!transform) return url;
+  return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
+};
+
+export const getMediaSrcSet = (url, widths = [240, 360, 480, 600]) => {
   if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return null;
   return widths
     .map((width) => `${getOptimizedMediaUrl(url, { width })} ${width}w`)

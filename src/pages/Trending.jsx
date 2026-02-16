@@ -43,7 +43,7 @@ import {
   resolveCommunityDescription,
   resolveCommunityName,
 } from "../utils/userProfile";
-import { getOptimizedMediaUrl, getMediaSrcSet } from "../utils/media";
+import { getOptimizedMediaUrl, getOptimizedVideoUrl, getMediaSrcSet } from "../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const SEARCH_DEBOUNCE_MS = 150;
@@ -62,6 +62,97 @@ const TRENDING_VIEWS = [
   { id: "grid", label: "Grid" },
   { id: "doom", label: "Doom Scroll" },
 ];
+const TRENDING_BATCH = 10;
+const TRENDING_MAX_VISIBLE = 20;
+
+const resolveAuthorEntity = (item) =>
+  item?.author ||
+  item?.user ||
+  item?.owner ||
+  item?.createdBy ||
+  item?.postedBy ||
+  item?.creator ||
+  null;
+
+const resolveAuthorId = (item) => {
+  const direct =
+    item?.authorId ||
+    item?.author_id ||
+    item?.userId ||
+    item?.user_id ||
+    item?.ownerId ||
+    item?.owner_id ||
+    item?.createdById ||
+    item?.created_by ||
+    item?.postedById ||
+    item?.creatorId ||
+    "";
+  if (direct) return direct;
+  const entity = resolveAuthorEntity(item);
+  return entity?._id || entity?.id || entity || "";
+};
+
+const resolveAuthorName = (item, cachedUser, isAnonymous) => {
+  if (isAnonymous) return "Anonymous Student";
+  const entity = resolveAuthorEntity(item);
+  return (
+    item?.authorDisplayName ||
+    item?.authorName ||
+    item?.authorFullName ||
+    item?.userDisplayName ||
+    item?.userName ||
+    item?.userFullName ||
+    entity?.displayName ||
+    entity?.fullName ||
+    entity?.name ||
+    entity?.username ||
+    cachedUser?.displayName ||
+    cachedUser?.fullName ||
+    cachedUser?.name ||
+    cachedUser?.username ||
+    "User"
+  );
+};
+
+const resolveAuthorAvatar = (item, cachedUser, isAnonymous) => {
+  if (isAnonymous) return ANONYMOUS_AVATAR;
+  const entity = resolveAuthorEntity(item);
+  return (
+    item?.authorProfilePic ||
+    item?.authorAvatar ||
+    item?.userProfilePic ||
+    item?.userAvatar ||
+    entity?.profilePicUrl ||
+    entity?.profilePic ||
+    entity?.avatarUrl ||
+    entity?.avatar ||
+    cachedUser?.profilePicUrl ||
+    ANONYMOUS_AVATAR
+  );
+};
+
+const resolveAuthorVerified = (item, cachedUser, isAnonymous) => {
+  if (isAnonymous) return false;
+  const entity = resolveAuthorEntity(item);
+  return Boolean(
+    item?.authorIsVerified ||
+      item?.authorVerified ||
+      item?.userIsVerified ||
+      item?.userVerified ||
+      item?.isVerified ||
+      item?.verified ||
+      item?.is_verified ||
+      item?.verification?.status === "verified" ||
+      entity?.isVerified ||
+      entity?.verified ||
+      entity?.is_verified ||
+      entity?.verification?.status === "verified" ||
+      cachedUser?.isVerified ||
+      cachedUser?.verified ||
+      cachedUser?.is_verified ||
+      cachedUser?.verification?.status === "verified"
+  );
+};
 
 const resolveLikeIds = (likes = []) => {
   if (!Array.isArray(likes)) return [];
@@ -455,7 +546,7 @@ export default function Trending() {
   const [trendingTab, setTrendingTab] = useState("all");
   const [trendingWindow, setTrendingWindow] = useState("48h");
   const [trendingView, setTrendingView] = useState("grid");
-  const [trendingVisibleCount, setTrendingVisibleCount] = useState(12);
+  const [trendingVisibleCount, setTrendingVisibleCount] = useState(TRENDING_BATCH);
   const [trendingSnapshot, setTrendingSnapshot] = useState([]);
   const [trendingNeedsRefresh, setTrendingNeedsRefresh] = useState(false);
   const [trendingRefreshing, setTrendingRefreshing] = useState(false);
@@ -978,14 +1069,17 @@ export default function Trending() {
   }, [trendingItems, trendingTab]);
 
   const maxTrendingScore = filteredTrendingItems[0]?.score || 0;
-  const hasMoreTrending = trendingVisibleCount < filteredTrendingItems.length;
+  const hasMoreTrending =
+    trendingVisibleCount < Math.min(filteredTrendingItems.length, TRENDING_MAX_VISIBLE);
   const displayedTrendingItems = filteredTrendingItems.slice(0, trendingVisibleCount);
   const showTrendingSkeletons = loading && filteredTrendingItems.length === 0;
   const isTrendingEmpty = !loading && filteredTrendingItems.length === 0;
 
   useEffect(() => {
-    setTrendingVisibleCount(12);
-  }, [trendingTab, trendingWindow]);
+    setTrendingVisibleCount(
+      Math.min(TRENDING_BATCH, filteredTrendingItems.length, TRENDING_MAX_VISIBLE)
+    );
+  }, [trendingTab, trendingWindow, filteredTrendingItems.length]);
 
   useEffect(() => {
     if (!trendingLoadMoreRef.current) return;
@@ -995,7 +1089,7 @@ export default function Trending() {
         const entry = entries[0];
         if (!entry?.isIntersecting) return;
         setTrendingVisibleCount((prev) =>
-          Math.min(prev + 8, filteredTrendingItems.length)
+          Math.min(prev + TRENDING_BATCH, filteredTrendingItems.length, TRENDING_MAX_VISIBLE)
         );
       },
       { rootMargin: "200px" }
@@ -1076,6 +1170,21 @@ export default function Trending() {
       likeCommitTimersRef.current.forEach((timer) => clearTimeout(timer));
       likeCommitTimersRef.current.clear();
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const unlockIfSafe = () => {
+      const hasLockingModal = document.querySelector(
+        "#comment-modal, #create-post-modal, #story-viewer-modal"
+      );
+      if (hasLockingModal) return;
+      document.documentElement.style.overflow = "";
+      document.body.style.overflow = "";
+    };
+    unlockIfSafe();
+    const id = window.setInterval(unlockIfSafe, 500);
+    return () => window.clearInterval(id);
   }, []);
 
   const bumpMediaLikePulse = useCallback((postId) => {
@@ -1410,6 +1519,10 @@ export default function Trending() {
     const mediaUrl = isStory ? resolveStoryMediaUrl(item) : resolvePostMediaUrl(item);
     const storyType = isStory ? resolveStoryMediaType(item, mediaUrl) : "image";
     const isVideo = isStory ? storyType === "video" : isVideoUrl(mediaUrl);
+    const optimizedMediaUrl = isVideo
+      ? getOptimizedVideoUrl(mediaUrl)
+      : getOptimizedMediaUrl(mediaUrl, { width: 600 });
+    const mediaSrcSet = !isVideo ? getMediaSrcSet(mediaUrl) : null;
     const isThought = contentType === "thought_text";
     const label = isStory ? "Story" : isThought ? "Thought" : isVideo ? "Video" : "Post";
     const likes = isStory ? 0 : getLikeCount(item);
@@ -1420,39 +1533,14 @@ export default function Trending() {
     const isAnonymous = Boolean(
       item.isAnonymous || item.anonymous || item.is_anonymous || item.author?.isAnonymous
     );
-    const authorId = item.author?._id || item.authorId || item.author;
+    const authorId = resolveAuthorId(item);
     const cachedUser = authorId ? getUserFromCache(authorId) : null;
-    const authorName = isStory
-      ? item.authorDisplayName ||
-        item.author?.displayName ||
-        item.author?.fullName ||
-        cachedUser?.displayName ||
-        "User"
-      : isAnonymous
-        ? "Anonymous Student"
-        : item.author?.displayName ||
-          item.author?.fullName ||
-          item.authorName ||
-          cachedUser?.displayName ||
-          "User";
-    const authorIsVerified = !isAnonymous && Boolean(
-      item.authorIsVerified ||
-        item.authorVerified ||
-        item.author?.isVerified ||
-        item.author?.verified ||
-        item.author?.is_verified ||
-        item.author?.verification?.status === "verified" ||
-        cachedUser?.isVerified ||
-        cachedUser?.verified ||
-        cachedUser?.is_verified ||
-        cachedUser?.verification?.status === "verified"
-    );
-    const avatar = isAnonymous
-      ? ANONYMOUS_AVATAR
-      : (isStory ? item.authorProfilePic : item.author?.profilePicUrl) ||
-        cachedUser?.profilePicUrl ||
-        item.author?.profilePicUrl ||
-        ANONYMOUS_AVATAR;
+    const authorName = resolveAuthorName(item, cachedUser, isAnonymous && !isStory);
+    const authorIsVerified = resolveAuthorVerified(item, cachedUser, isAnonymous);
+    const avatar =
+      isStory && !isAnonymous
+        ? resolveAuthorAvatar(item, cachedUser, false)
+        : resolveAuthorAvatar(item, cachedUser, isAnonymous);
     const snippet = isStory ? item.caption || "Story preview" : item.content || "Campus update";
     const badge = resolveTrendingBadge(entry.score);
 
@@ -1499,9 +1587,23 @@ export default function Trending() {
       >
         {mediaUrl ? (
           isVideo ? (
-            <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline />
+            <video
+              src={optimizedMediaUrl || mediaUrl}
+              className="h-full w-full object-cover"
+              muted
+              playsInline
+              preload="metadata"
+            />
           ) : (
-            <img src={mediaUrl} alt="Trending" className="h-full w-full object-cover" />
+            <img
+              src={optimizedMediaUrl || mediaUrl}
+              srcSet={mediaSrcSet || undefined}
+              sizes="(max-width: 640px) 45vw, (max-width: 1024px) 30vw, 260px"
+              alt="Trending"
+              className="h-full w-full object-cover"
+              loading="lazy"
+              decoding="async"
+            />
           )
         ) : (
           <div className="h-full w-full bg-white/5 p-4 flex items-end">
@@ -1627,31 +1729,15 @@ export default function Trending() {
       const mediaUrl = resolveStoryMediaUrl(item);
       const storyType = resolveStoryMediaType(item, mediaUrl);
       const isVideo = storyType === "video";
-      const authorId = item.authorId || item.author?._id || item.author;
+      const optimizedMediaUrl = isVideo
+        ? getOptimizedVideoUrl(mediaUrl)
+        : getOptimizedMediaUrl(mediaUrl, { width: 600 });
+      const mediaSrcSet = !isVideo ? getMediaSrcSet(mediaUrl) : null;
+      const authorId = resolveAuthorId(item);
       const cachedUser = authorId ? getUserFromCache(authorId) : null;
-      const authorName =
-        item.authorDisplayName ||
-        item.author?.displayName ||
-        item.author?.fullName ||
-        cachedUser?.displayName ||
-        "User";
-      const avatar =
-        item.authorProfilePic ||
-        cachedUser?.profilePicUrl ||
-        item.author?.profilePicUrl ||
-        ANONYMOUS_AVATAR;
-      const authorIsVerified = Boolean(
-        item.authorIsVerified ||
-          item.authorVerified ||
-          item.author?.isVerified ||
-          item.author?.verified ||
-          item.author?.is_verified ||
-          item.author?.verification?.status === "verified" ||
-          cachedUser?.isVerified ||
-          cachedUser?.verified ||
-          cachedUser?.is_verified ||
-          cachedUser?.verification?.status === "verified"
-      );
+      const authorName = resolveAuthorName(item, cachedUser, false);
+      const avatar = resolveAuthorAvatar(item, cachedUser, false);
+      const authorIsVerified = resolveAuthorVerified(item, cachedUser, false);
       const badge = resolveTrendingBadge(entry.score);
       const views = getStoryViewCount(item);
 
@@ -1667,9 +1753,23 @@ export default function Trending() {
           <div className="relative aspect-[16/9] w-full overflow-hidden">
             {mediaUrl ? (
               isVideo ? (
-                <video src={mediaUrl} className="h-full w-full object-cover" muted playsInline />
+                <video
+                  src={optimizedMediaUrl || mediaUrl}
+                  className="h-full w-full object-cover"
+                  muted
+                  playsInline
+                  preload="metadata"
+                />
               ) : (
-                <img src={mediaUrl} alt="Story" className="h-full w-full object-cover" />
+                <img
+                  src={optimizedMediaUrl || mediaUrl}
+                  srcSet={mediaSrcSet || undefined}
+                  sizes="(max-width: 640px) 90vw, 720px"
+                  alt="Story"
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                  decoding="async"
+                />
               )
             ) : (
               <div className="h-full w-full bg-white/5 flex items-center justify-center text-[#faf0e6]">
@@ -1758,6 +1858,11 @@ export default function Trending() {
     const mutualCount = Number(
       user.mutualFriendsCount || user.mutualFriends?.length || 0
     );
+    const friendCountRaw =
+      user.friendCount ??
+      user.friendsCount ??
+      (Array.isArray(user.friends) ? user.friends.length : undefined);
+    const friendCount = Number(friendCountRaw);
     const publicPostCount = Number(
       user.publicPostCount || user.publicPostsCount || user.postCount || 0
     );
@@ -1768,6 +1873,7 @@ export default function Trending() {
     if (isCommunity) {
       if (memberCount || memberCount === 0) stats.push(`${memberCount} members`);
     } else {
+      if (Number.isFinite(friendCount)) stats.push(`${friendCount} friends`);
       if (mutualCount > 0) stats.push(`${mutualCount} mutual`);
       if (!Number.isNaN(publicPostCount)) stats.push(`${publicPostCount} posts`);
     }
@@ -1914,13 +2020,13 @@ export default function Trending() {
       });
     }
     const mediaUrl = resolvePostMediaUrl(post);
-    const optimizedMediaUrl = getOptimizedMediaUrl(mediaUrl, {
-      width: variant === "featured" ? 1200 : 720,
-    });
-    const mediaSrcSet = getMediaSrcSet(mediaUrl, [360, 540, 720, 1080]);
     const isVideo =
       isVideoUrl(mediaUrl) ||
       String(post.mediaType || post.type || "").toLowerCase().includes("video");
+    const optimizedMediaUrl = isVideo
+      ? getOptimizedVideoUrl(mediaUrl)
+      : getOptimizedMediaUrl(mediaUrl, { width: 600 });
+    const mediaSrcSet = !isVideo ? getMediaSrcSet(mediaUrl) : null;
     const isAnonymous = Boolean(
       post.isAnonymous ||
         post.anonymous ||
@@ -1963,7 +2069,7 @@ export default function Trending() {
           {mediaUrl ? (
             isVideo ? (
               <video
-                src={mediaUrl}
+                src={optimizedMediaUrl || mediaUrl}
                 className="h-full w-full object-cover"
                 muted
                 playsInline
@@ -2014,9 +2120,12 @@ export default function Trending() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col pb-24 sm:pb-6">
+    <div
+      id="trending-view"
+      className="min-h-screen h-[100dvh] overflow-hidden flex flex-col pb-24 sm:pb-6 sm:overflow-y-auto sm:overscroll-contain"
+    >
       <Header />
-      <main className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 space-y-10">
+      <main className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 space-y-10 flex-1 min-h-0 overflow-y-auto overscroll-contain sm:overflow-visible">
         <div className="space-y-2">
           <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
             Trending + Search

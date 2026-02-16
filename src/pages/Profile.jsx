@@ -11,6 +11,8 @@ import {
   deleteProfilePic,
   deletePost,
   getUserById,
+  getFriendsList,
+  getFriendCount,
   searchColleges,
 } from "../services/api";
 import Header from "../components/common/Header";
@@ -93,6 +95,10 @@ export default function Profile() {
   const [privacyPublic, setPrivacyPublic] = useState(true);
   const [friendsList, setFriendsList] = useState([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const friendsLoadedRef = useRef(false);
+  const friendsLoadRequestRef = useRef(0);
+  const friendsCountsLoadedRef = useRef(false);
+  const friendsIdsKeyRef = useRef("");
   const [selectedUser, setSelectedUser] = useState(null);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
@@ -571,62 +577,327 @@ export default function Profile() {
   };
 
   const loadFriends = useCallback(async () => {
-    if (!resolvedFriendIds?.length) {
-      setFriendsList([]);
+    const requestId = ++friendsLoadRequestRef.current;
+    const friendIds = Array.isArray(resolvedFriendIds) ? resolvedFriendIds : [];
+    const idsKey = friendIds.map((id) => String(id)).join("|");
+    const shouldFetchCounts = activeTab === "friends";
+    if (idsKey && idsKey !== friendsIdsKeyRef.current) {
+      friendsCountsLoadedRef.current = false;
+    }
+    if (
+      friendsLoadedRef.current &&
+      idsKey &&
+      idsKey === friendsIdsKeyRef.current &&
+      (!shouldFetchCounts || friendsCountsLoadedRef.current)
+    ) {
       return;
     }
-    setFriendsLoading(true);
-    try {
-      const friendsData = await Promise.all(
-        resolvedFriendIds.map(async (friendId) => {
-          let user = getUserFromCache(friendId);
-          if (!user) {
-            const userData = await getUserById(friendId);
-            if (userData) {
-              cacheUser(userData);
-              user = {
-                id: userData._id,
-                fullName: userData.fullName,
-                displayName:
-                  userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-                profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
-                isVerified: Boolean(
-                  userData.isVerified ||
-                    userData.verified ||
-                    userData.is_verified ||
-                    userData.verification?.status === "verified"
-                ),
-                bio: userData.bio || "",
-                university: userData.university || userData.college || "",
-                friends: userData.friends || [],
-                username: userData.username,
-              };
-            }
-          }
-          return (
-            user || {
-              id: friendId,
-              displayName: "User",
-              profilePicUrl: ANONYMOUS_AVATAR,
-              isVerified: false,
-              friends: [],
-            }
-          );
-        })
+    friendsIdsKeyRef.current = idsKey;
+
+    if (!friendIds.length) {
+      if (friendMapLoaded || (currentUser?.friends?.length || 0) === 0) {
+        if (requestId !== friendsLoadRequestRef.current) return;
+        setFriendsList([]);
+        friendsLoadedRef.current = true;
+      }
+      setFriendsLoading(false);
+      return;
+    }
+
+    const resolveCandidateId = (value) => {
+      if (!value) return "";
+      if (typeof value === "string" || typeof value === "number") return String(value);
+      return String(
+        value._id ||
+          value.id ||
+          value.userId ||
+          value.user_id ||
+          value.friendId ||
+          value.friend_id ||
+          value.ownerId ||
+          value.authorId ||
+          value.otherUserId ||
+          value.targetUserId ||
+          ""
       );
-      setFriendsList(friendsData);
+    };
+
+    const resolveFriendEntity = (raw, fallbackId) => {
+      if (!raw || typeof raw !== "object") return null;
+      const friendId = fallbackId ? String(fallbackId) : "";
+      const currentId = currentUser?.id ? String(currentUser.id) : "";
+      const candidates = [
+        raw.friend,
+        raw.friendUser,
+        raw.friendProfile,
+        raw.user,
+        raw.owner,
+        raw.createdBy,
+        raw.otherUser,
+        raw.targetUser,
+        raw.userA,
+        raw.userB,
+        raw.user1,
+        raw.user2,
+        raw.sender,
+        raw.receiver,
+      ];
+
+      if (friendId) {
+        for (const candidate of candidates) {
+          const candidateId = resolveCandidateId(candidate);
+          if (candidateId && candidateId === friendId) {
+            return candidate;
+          }
+        }
+        const rawId = resolveCandidateId(raw);
+        if (rawId && rawId === friendId) return raw;
+      }
+
+      if (currentId) {
+        for (const candidate of candidates) {
+          const candidateId = resolveCandidateId(candidate);
+          if (candidateId && candidateId !== currentId) {
+            return candidate;
+          }
+        }
+      }
+
+      return raw.user || raw.friend || raw.owner || raw.createdBy || raw;
+    };
+
+    const normalizeFriend = (raw, fallbackId) => {
+      if (!raw) {
+        return {
+          id: fallbackId,
+          displayName: "User",
+          profilePicUrl: ANONYMOUS_AVATAR,
+          isVerified: false,
+          friendCount: undefined,
+          friendsCount: undefined,
+        };
+      }
+      if (typeof raw === "string" || typeof raw === "number") {
+        return {
+          id: String(raw),
+          displayName: "User",
+          profilePicUrl: ANONYMOUS_AVATAR,
+          isVerified: false,
+          friendCount: undefined,
+          friendsCount: undefined,
+        };
+      }
+      const entity = resolveFriendEntity(raw, fallbackId);
+      const baseId = resolveCandidateId(entity) || fallbackId;
+      const baseName =
+        entity?.displayName ||
+        entity?.fullName ||
+        entity?.name ||
+        entity?.username ||
+        raw.displayName ||
+        raw.fullName ||
+        raw.name ||
+        raw.username ||
+        "User";
+      const baseAvatar =
+        entity?.profilePicUrl ||
+        entity?.profilePic ||
+        entity?.avatarUrl ||
+        entity?.avatar ||
+        raw.profilePicUrl ||
+        raw.profilePic ||
+        raw.avatarUrl ||
+        raw.avatar ||
+        ANONYMOUS_AVATAR;
+      const baseVerified = Boolean(
+        entity?.isVerified ||
+          entity?.verified ||
+          entity?.is_verified ||
+          raw.isVerified ||
+          raw.verified ||
+          raw.is_verified
+      );
+      const count =
+        entity?.friendCount ??
+        entity?.friendsCount ??
+        entity?.friends_count ??
+        raw.friendCount ??
+        raw.friendsCount ??
+        raw.friends_count ??
+        (Array.isArray(entity?.friends) ? entity.friends.length : undefined) ??
+        (Array.isArray(raw.friends) ? raw.friends.length : undefined);
+      return {
+        id: baseId,
+        fullName: entity?.fullName || raw.fullName,
+        displayName: baseName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+        profilePicUrl: baseAvatar,
+        isVerified: baseVerified,
+        bio: entity?.bio || raw.bio || "",
+        university:
+          entity?.university ||
+          entity?.college ||
+          raw.university ||
+          raw.college ||
+          "",
+        friends: Array.isArray(entity?.friends)
+          ? entity.friends
+          : Array.isArray(raw.friends)
+            ? raw.friends
+            : undefined,
+        friendCount: count,
+        friendsCount: count,
+        username: entity?.username || raw.username,
+      };
+    };
+
+    const cachedById = new Map();
+    const seedList = friendIds.map((friendId) => {
+      const cached = getUserFromCache(friendId);
+      if (cached) {
+        cachedById.set(String(friendId), cached);
+        return normalizeFriend(cached, friendId);
+      }
+      return normalizeFriend(null, friendId);
+    });
+
+    if (friendsList.length === 0) {
+      setFriendsList(seedList);
+    }
+
+    const shouldShowLoading = false;
+    setFriendsLoading(false);
+
+    try {
+      let listData = null;
+      try {
+        listData = await getFriendsList({
+          userId: currentUser?.id,
+          targetUserId: currentUser?.id,
+        });
+      } catch {
+        listData = null;
+      }
+
+      if (requestId !== friendsLoadRequestRef.current) return;
+
+      if (Array.isArray(listData) && listData.length > 0) {
+        const listIndex = new Map();
+        listData.forEach((item) => {
+          const ids = new Set();
+          [
+            item?._id,
+            item?.id,
+            item?.userId,
+            item?.user_id,
+            item?.friendId,
+            item?.friend_id,
+            item?.user?._id,
+            item?.user?.id,
+            item?.friend?._id,
+            item?.friend?.id,
+            item?.otherUser?._id,
+            item?.otherUser?.id,
+            item?.targetUser?._id,
+            item?.targetUser?.id,
+            item?.userA?._id,
+            item?.userA?.id,
+            item?.userB?._id,
+            item?.userB?.id,
+          ].forEach((value) => {
+            const id = resolveCandidateId(value);
+            if (id) ids.add(id);
+          });
+          ids.forEach((id) => listIndex.set(id, item));
+        });
+
+        const mergedFromList = friendIds
+          .map((friendId) => {
+            const key = String(friendId);
+            const item = listIndex.get(key);
+            return normalizeFriend(item, friendId);
+          })
+          .filter(Boolean);
+        if (mergedFromList.length > 0) {
+          setFriendsList(mergedFromList);
+        }
+      }
+
+      const missingIds = friendIds.filter(
+        (friendId) => !cachedById.has(String(friendId))
+      );
+      missingIds.forEach(async (friendId) => {
+        const userData = await getUserById(friendId);
+        if (!userData) return;
+        if (requestId !== friendsLoadRequestRef.current) return;
+        cacheUser(userData);
+        const normalized = normalizeFriend(userData, friendId);
+        setFriendsList((prev) =>
+          prev.map((item) =>
+            String(item.id) === String(friendId) ? { ...item, ...normalized } : item
+          )
+        );
+      });
+
+      friendsLoadedRef.current = true;
+      if (shouldFetchCounts) friendsCountsLoadedRef.current = true;
+
+      // Fetch missing friend counts in the background.
+      if (shouldFetchCounts) {
+        friendIds.forEach((friendId) => {
+          const existing = seedList.find((item) => String(item.id) === String(friendId));
+          const existingCount =
+            existing?.friendCount ??
+            existing?.friendsCount ??
+            (Array.isArray(existing?.friends) ? existing.friends.length : undefined);
+          if (existingCount !== undefined && existingCount !== null) return;
+          getFriendCount(friendId).then((fetchedCount) => {
+            if (!Number.isFinite(fetchedCount)) return;
+            if (requestId !== friendsLoadRequestRef.current) return;
+            setFriendsList((prev) =>
+              prev.map((item) =>
+                String(item.id) === String(friendId)
+                  ? {
+                      ...item,
+                      friendCount: fetchedCount,
+                      friendsCount: fetchedCount,
+                    }
+                  : item
+              )
+            );
+          });
+        });
+        friendsCountsLoadedRef.current = true;
+      }
     } catch (error) {
       console.error("Failed to load friends:", error);
     } finally {
-      setFriendsLoading(false);
+      if (requestId !== friendsLoadRequestRef.current) return;
+      friendsLoadedRef.current = true;
+      if (shouldShowLoading) setFriendsLoading(false);
     }
-  }, [resolvedFriendIds, cacheUser, getUserFromCache]);
+  }, [
+    resolvedFriendIds,
+    friendMapLoaded,
+    currentUser?.friends?.length,
+    currentUser?.id,
+    activeTab,
+    friendsList.length,
+    cacheUser,
+    getUserFromCache,
+    getFriendCount,
+  ]);
 
   useEffect(() => {
     if (activeTab === "friends" && !isCommunity) {
       loadFriends();
     }
   }, [activeTab, loadFriends, isCommunity]);
+
+  useEffect(() => {
+    if (!isCommunity && resolvedFriendIds?.length) {
+      loadFriends();
+    }
+  }, [isCommunity, resolvedFriendIds, loadFriends]);
 
   useEffect(() => {
     if (isCommunity && activeTab === "friends") {
@@ -859,6 +1130,27 @@ export default function Profile() {
                         </p>
                         <p className="text-xs text-[#b9b4c7]">
                           {friend.university || "Verified Campus"}
+                          {Number.isFinite(
+                            Number(
+                              friend.friendCount ??
+                                friend.friendsCount ??
+                                (Array.isArray(friend.friends)
+                                  ? friend.friends.length
+                                  : undefined)
+                            )
+                          ) && (
+                            <span className="ml-2">
+                              •{" "}
+                              {Number(
+                                friend.friendCount ??
+                                  friend.friendsCount ??
+                                  (Array.isArray(friend.friends)
+                                    ? friend.friends.length
+                                    : 0)
+                              )}{" "}
+                              friends
+                            </span>
+                          )}
                         </p>
                       </div>
                     </div>

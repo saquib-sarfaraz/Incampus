@@ -33,6 +33,34 @@ const POST_COMMENTS_PATHS = RAW_POST_COMMENTS_PATHS
       .filter(Boolean)
   : DEFAULT_POST_COMMENTS_PATHS;
 
+const RAW_FRIENDS_COUNT_PATHS =
+  import.meta.env.VITE_FRIENDS_COUNT_PATHS ||
+  import.meta.env.FRIENDS_COUNT_PATHS ||
+  "";
+const FRIENDS_COUNT_PATHS = RAW_FRIENDS_COUNT_PATHS
+  ? RAW_FRIENDS_COUNT_PATHS.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : [];
+const FRIENDS_COUNT_ALLOW_LIST_FALLBACK = String(
+  import.meta.env.VITE_FRIENDS_COUNT_ALLOW_LIST_FALLBACK || ""
+).toLowerCase() === "true";
+
+const RAW_FRIENDS_LIST_PATHS =
+  import.meta.env.VITE_FRIENDS_LIST_PATHS ||
+  import.meta.env.FRIENDS_LIST_PATHS ||
+  "";
+const DEFAULT_FRIENDS_LIST_PATHS = [
+  "/friends/list",
+  "/friends",
+  "/friend/list",
+];
+const FRIENDS_LIST_PATHS = RAW_FRIENDS_LIST_PATHS
+  ? RAW_FRIENDS_LIST_PATHS.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  : DEFAULT_FRIENDS_LIST_PATHS;
+
 const resolveApiPath = (path) => {
   if (!path) {
     return API_BASE_HAS_PREFIX ? "/" : API_PREFIX;
@@ -209,6 +237,8 @@ const normalizeList = (data, keys = []) => {
 
 const userRequestCache = new Map();
 let cachedPostCommentsEndpointMissing = false;
+let cachedFriendCountEndpointMissing = false;
+let cachedFriendListEndpointMissing = false;
 
 // Auth APIs
 export const login = async (username, password) => {
@@ -1345,8 +1375,108 @@ export const cancelFriendRequest = async (recipientId) => {
 };
 
 export const getFriendsList = async (params = {}) => {
-  const data = await apiFetch("/friends/list", { params });
+  const data = await apiFetchWithFallback(FRIENDS_LIST_PATHS, { params });
   return normalizeList(data, ["friends", "items", "data"]);
+};
+
+const resolveCountFromPayload = (payload) => {
+  if (payload === null || payload === undefined) return null;
+  if (typeof payload === "number" && Number.isFinite(payload)) return payload;
+  if (typeof payload === "string") {
+    const parsed = Number(payload);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (Array.isArray(payload)) return payload.length;
+  if (typeof payload !== "object") return null;
+
+  const numericCandidates = [
+    payload.count,
+    payload.total,
+    payload.totalCount,
+    payload.friendCount,
+    payload.friendsCount,
+    payload.friends_count,
+    payload.totalFriends,
+    payload.total_friends,
+    payload.data?.count,
+    payload.data?.total,
+    payload.data?.totalCount,
+    payload.data?.friendCount,
+    payload.data?.friendsCount,
+    payload.data?.friends_count,
+  ];
+  for (const candidate of numericCandidates) {
+    if (candidate === null || candidate === undefined || candidate === "") continue;
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  const listCandidates = [
+    payload.friends,
+    payload.items,
+    payload.results,
+    payload.data?.friends,
+    payload.data?.items,
+    payload.data?.results,
+    payload.friends?.items,
+    payload.friends?.data,
+  ];
+  for (const candidate of listCandidates) {
+    if (Array.isArray(candidate)) return candidate.length;
+  }
+
+  return null;
+};
+
+export const getFriendCount = async (userId, params = {}) => {
+  if (!userId) return null;
+  const encodedId = encodeURIComponent(String(userId));
+  const queryParams = {
+    userId,
+    targetUserId: userId,
+    id: userId,
+    ...params,
+  };
+
+  if (FRIENDS_COUNT_PATHS.length && !cachedFriendCountEndpointMissing) {
+    try {
+      const data = await apiFetchWithFallback(
+        FRIENDS_COUNT_PATHS.map((path) => path.replace(":id", encodedId)),
+        { params: queryParams }
+      );
+      const count = resolveCountFromPayload(data);
+      if (Number.isFinite(count)) return count;
+    } catch (error) {
+      if (error?.status === 404) {
+        cachedFriendCountEndpointMissing = true;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  if (FRIENDS_COUNT_ALLOW_LIST_FALLBACK && !cachedFriendListEndpointMissing) {
+    try {
+      const data = await apiFetchWithFallback(
+        [
+          ...FRIENDS_LIST_PATHS,
+          `/users/${encodedId}/friends`,
+          `/friends/${encodedId}`,
+        ],
+        { params: queryParams }
+      );
+      const count = resolveCountFromPayload(data);
+      if (Number.isFinite(count)) return count;
+    } catch (error) {
+      if (error?.status === 404) {
+        cachedFriendListEndpointMissing = true;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  return null;
 };
 
 export const getMutualFriends = async (params = {}) => {

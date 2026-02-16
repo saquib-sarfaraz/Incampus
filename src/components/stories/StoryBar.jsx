@@ -45,19 +45,47 @@ export default function StoryBar() {
   const uploadAbortRef = useRef(null);
   const uploadStartRef = useRef(0);
   const lastProgressRef = useRef({ loaded: 0, time: 0 });
+  const getAuthorId = useCallback((story) => {
+    return (
+      story.authorId ||
+      story.author_id ||
+      story.userId ||
+      story.user_id ||
+      story.ownerId ||
+      story.owner_id ||
+      story.createdById ||
+      story.created_by ||
+      story.author?._id ||
+      story.author?.id ||
+      story.user?._id ||
+      story.user?.id ||
+      story.owner?._id ||
+      story.owner?.id ||
+      story.createdBy?._id ||
+      story.createdBy?.id ||
+      story.author ||
+      story.user ||
+      story.owner ||
+      story.createdBy ||
+      ""
+    );
+  }, []);
 
   useEffect(() => {
     const fetchMissingAuthors = async () => {
       const missing = new Set();
       stories.forEach((story) => {
-        const authorId = story.authorId || story.author?._id || story.author;
+        const authorId = getAuthorId(story);
         if (!authorId) return;
         const cached = getUserFromCache(authorId);
+        const entity = story.author || story.user || story.owner || story.createdBy;
         const hasName =
           story.authorDisplayName ||
-          story.author?.displayName ||
-          story.author?.fullName ||
-          story.author?.username;
+          story.authorName ||
+          story.userName ||
+          entity?.displayName ||
+          entity?.fullName ||
+          entity?.username;
         if (!cached && !hasName) missing.add(authorId);
       });
 
@@ -70,7 +98,7 @@ export default function StoryBar() {
     };
 
     fetchMissingAuthors();
-  }, [stories, getUserFromCache, cacheUser]);
+  }, [stories, getAuthorId, getUserFromCache, cacheUser]);
 
   useEffect(() => {
     return () => {
@@ -114,35 +142,63 @@ export default function StoryBar() {
   };
 
   const resolveStoryName = useCallback((story, cachedUser) => {
+    const entity = story.author || story.user || story.owner || story.createdBy;
     return (
       story.authorDisplayName ||
-      story.author?.displayName ||
-      story.author?.fullName ||
+      story.authorName ||
+      story.userDisplayName ||
+      story.userName ||
+      entity?.displayName ||
+      entity?.fullName ||
+      entity?.name ||
+      entity?.username ||
       cachedUser?.displayName ||
       cachedUser?.name ||
-      story.author?.username ||
       cachedUser?.username ||
       "User"
     );
   }, []);
 
   const resolveStoryAvatar = useCallback((story, cachedUser) => {
+    const entity = story.author || story.user || story.owner || story.createdBy;
     return (
       story.authorProfilePic ||
-      story.author?.profilePicUrl ||
+      story.authorAvatar ||
+      story.userProfilePic ||
+      story.userAvatar ||
+      entity?.profilePicUrl ||
+      entity?.profilePic ||
+      entity?.avatarUrl ||
+      entity?.avatar ||
       cachedUser?.profilePicUrl ||
       ANONYMOUS_AVATAR
     );
   }, []);
 
   const resolveStoryVerified = useCallback((story, cachedUser) => {
+    const entity = story?.author || story?.user || story?.owner || story?.createdBy;
+    if (story?.authorIsVerified !== undefined || story?.authorVerified !== undefined) {
+      return Boolean(story.authorIsVerified || story.authorVerified);
+    }
     if (story?.author?.isVerified !== undefined) {
       return Boolean(story.author.isVerified);
+    }
+    if (story?.userIsVerified !== undefined || story?.userVerified !== undefined) {
+      return Boolean(story.userIsVerified || story.userVerified);
+    }
+    if (entity?.isVerified !== undefined) {
+      return Boolean(entity.isVerified);
     }
     if (cachedUser?.isVerified !== undefined) {
       return Boolean(cachedUser.isVerified);
     }
-    return Boolean(story?.isVerified);
+    if (story?.verification?.status) {
+      return story.verification.status === "verified";
+    }
+    if (entity?.verification?.status) {
+      return entity.verification.status === "verified";
+    }
+    return Boolean(story?.isVerified || story?.verified || story?.is_verified);
   }, []);
 
   const resolveStoryCampus = useCallback((story, cachedUser) => {
@@ -188,10 +244,6 @@ export default function StoryBar() {
   }, []);
 
   const currentUserId = currentUser?.id;
-
-  const getAuthorId = useCallback((story) => {
-    return story.authorId || story.author?._id || story.author || "";
-  }, []);
 
   const isOwner = useCallback(
     (authorId) => {
@@ -256,7 +308,7 @@ export default function StoryBar() {
   const groupedStories = useMemo(() => {
     const grouped = {};
     filteredStories.forEach((story) => {
-      const rawAuthorId = story.authorId || story.author?._id || story.author;
+      const rawAuthorId = getAuthorId(story);
       const authorId = rawAuthorId || `unknown-${story._id || "story"}`;
       const cachedUser = rawAuthorId ? getUserFromCache(rawAuthorId) : null;
       const displayName = resolveStoryName(story, cachedUser);
