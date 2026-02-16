@@ -76,7 +76,7 @@ const buildCloudinaryTransform = ({ width = 600, height, quality = "auto", forma
   return parts.join(",");
 };
 
-const buildCloudinaryVideoTransform = () => "q_auto,vc_auto";
+const buildCloudinaryVideoTransform = () => "q_auto:good,vc_auto";
 
 export const getOptimizedMediaUrl = (url, options = {}) => {
   if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;

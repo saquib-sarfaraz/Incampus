@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -17,6 +17,47 @@ import { getOptimizedMediaUrl } from "../../utils/media";
 import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+
+const StoryListItem = memo(function StoryListItem({ group, index, onOpen }) {
+  const handleOpen = useCallback(() => onOpen(index), [onOpen, index]);
+  const isVerified = Boolean(
+    group.authorIsVerified ||
+      group.author?.isVerified ||
+      group.author?.verified ||
+      group.author?.is_verified ||
+      group.isVerified ||
+      group.verified
+  );
+  const avatarUrl =
+    getOptimizedMediaUrl(group.authorProfilePic, { width: 96, height: 96 }) ||
+    ANONYMOUS_AVATAR;
+  const displayName = group.authorDisplayName || "User";
+
+  return (
+    <Motion.div
+      className="w-16 flex flex-col items-center cursor-pointer flex-shrink-0"
+      onClick={handleOpen}
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.95 }}
+    >
+      <div className="w-12 h-12 rounded-full border border-[#b9b4c7] overflow-hidden flex items-center justify-center bg-white/10">
+        <img
+          src={avatarUrl}
+          alt={displayName}
+          className="w-full h-full object-cover"
+          loading="lazy"
+          decoding="async"
+        />
+      </div>
+      <div className="mt-1 w-12 min-w-0 flex items-center gap-1 text-[11px] font-medium text-[#faf0e6]">
+        <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">
+          {displayName}
+        </span>
+        {isVerified && <BlueTick className="text-[10px]" />}
+      </div>
+    </Motion.div>
+  );
+});
 
 export default function StoryBar() {
   const { currentUser } = useAuth();
@@ -560,9 +601,22 @@ export default function StoryBar() {
     }
   };
 
-  const openStory = (index) => {
+  const openStory = useCallback((index) => {
     setSelectedStoryIndex(index);
-  };
+  }, []);
+
+  const storyListItems = useMemo(
+    () =>
+      storyGroupsForBar.map(({ group, index }) => (
+        <StoryListItem
+          key={`${group.authorId || "story"}-${index}`}
+          group={group}
+          index={index}
+          onOpen={openStory}
+        />
+      )),
+    [storyGroupsForBar, openStory]
+  );
 
   const previewCollegeTag = resolveCollegeTag();
 
@@ -629,46 +683,7 @@ export default function StoryBar() {
             </div>
 
             {/* Other Stories */}
-            {storyGroupsForBar.map(({ group, index }) => {
-              const isVerified = Boolean(
-                group.authorIsVerified ||
-                  group.author?.isVerified ||
-                  group.author?.verified ||
-                  group.author?.is_verified ||
-                  group.isVerified ||
-                  group.verified
-              );
-              return (
-              <Motion.div
-                key={`${group.authorId || "story"}-${index}`}
-                className="w-16 flex flex-col items-center cursor-pointer flex-shrink-0"
-                onClick={() => openStory(index)}
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-              >
-                <div className="w-12 h-12 rounded-full border border-[#b9b4c7] overflow-hidden flex items-center justify-center bg-white/10">
-                  <img
-                    src={
-                      getOptimizedMediaUrl(group.authorProfilePic, {
-                        width: 96,
-                        height: 96,
-                      }) || ANONYMOUS_AVATAR
-                    }
-                    alt={group.authorDisplayName}
-                    className="w-full h-full object-cover"
-                    loading="lazy"
-                    decoding="async"
-                  />
-                </div>
-                <div className="mt-1 w-12 min-w-0 flex items-center gap-1 text-[11px] font-medium text-[#faf0e6]">
-                  <span className="min-w-0 flex-1 truncate whitespace-nowrap text-left">
-                    {group.authorDisplayName || "User"}
-                  </span>
-                  {isVerified && <BlueTick className="text-[10px]" />}
-                </div>
-              </Motion.div>
-              );
-            })}
+            {storyListItems}
           </div>
         </div>
       </Motion.div>

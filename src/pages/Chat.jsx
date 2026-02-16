@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
@@ -219,6 +219,246 @@ const formatTime = (dateString) => {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+const ChatMessage = memo(function ChatMessage({
+  msg,
+  isMine,
+  isActiveGroupChat,
+  isDirectChat,
+  onOpenSharedPost,
+  onReport,
+  resolveMessageSender,
+}) {
+  const isSharedPost = msg.messageType === "shared_post" || msg.type === "shared_post";
+  const previewText = resolveMessagePreview(msg);
+  const previewThumb = msg.postThumbnail;
+  const senderInfo = !isMine && isActiveGroupChat ? resolveMessageSender(msg) : null;
+  return (
+    <Motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`message-row ${isMine ? "mine" : "theirs"}`}
+    >
+      <div className="message-bubble">
+        {senderInfo && (
+          <div className="mb-2 flex items-center gap-2">
+            <img
+              src={senderInfo.avatar || ANONYMOUS_AVATAR}
+              alt={senderInfo.name}
+              className="h-6 w-6 rounded-full object-cover border border-white/10"
+              loading="lazy"
+              decoding="async"
+            />
+            <span className="text-[11px] font-semibold text-[#faf0e6] flex items-center gap-1">
+              {senderInfo.name}
+              {senderInfo.isVerified && <BlueTick className="text-[10px]" />}
+            </span>
+          </div>
+        )}
+        {isSharedPost ? (
+          <button
+            type="button"
+            onClick={() => onOpenSharedPost(msg)}
+            className="w-full text-left space-y-2"
+          >
+            <div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
+              {previewThumb ? (
+                <img
+                  src={previewThumb}
+                  alt="Shared post"
+                  className="w-full h-32 object-cover"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <div className="h-24 w-full bg-white/5 flex items-center justify-center text-xs text-[#b9b4c7]">
+                  Post preview
+                </div>
+              )}
+              <div className="p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                  Shared post
+                </p>
+                <p className="text-sm text-[#faf0e6] line-clamp-2">
+                  {previewText}
+                </p>
+              </div>
+            </div>
+          </button>
+        ) : (
+          <span className="text-sm">{msg.text}</span>
+        )}
+        <span className="message-time flex items-center gap-1">
+          {formatTime(msg.createdAt)}
+          {isMine && isDirectChat && (
+            <span
+              className={`text-[10px] ${
+                msg.seenAt
+                  ? "text-[#b9b4c7]"
+                  : msg.deliveredAt
+                    ? "text-[#b9b4c7]/80"
+                    : "text-[#b9b4c7]/60"
+              }`}
+            >
+              {msg.seenAt ? "Seen" : msg.deliveredAt ? "Delivered" : "Sent"}
+            </span>
+          )}
+          {!isMine && (
+            <button
+              type="button"
+              onClick={() => onReport(msg)}
+              className="text-amber-300 hover:text-amber-200 text-[10px]"
+              title="Report message"
+            >
+              <i className="fa-solid fa-flag"></i>
+            </button>
+          )}
+        </span>
+      </div>
+    </Motion.div>
+  );
+});
+
+const ContactListItem = memo(function ContactListItem({
+  contactId,
+  avatarUrl,
+  displayName,
+  isVerified,
+  isOnline,
+  unreadCount,
+  lastMessageText,
+  lastMessageAt,
+  onOpen,
+}) {
+  const handleClick = useCallback(() => {
+    if (contactId) onOpen(contactId);
+  }, [contactId, onOpen]);
+  return (
+    <Motion.div
+      onClick={handleClick}
+      className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
+        unreadCount > 0
+          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
+          : "border-transparent hover:bg-white/5"
+      }`}
+      whileHover={{ scale: 1.01 }}
+      whileTap={{ scale: 0.98 }}
+    >
+      <div className="relative">
+        <img
+          src={avatarUrl}
+          alt={displayName}
+          className="w-11 h-11 rounded-full object-cover"
+          loading="lazy"
+          decoding="async"
+        />
+        {isOnline && (
+          <span className="absolute bottom-0 right-0 flex h-3 w-3 items-center justify-center">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-40"></span>
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+          </span>
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p
+          className={`text-sm text-[#faf0e6] truncate ${
+            unreadCount > 0 ? "font-bold" : "font-semibold"
+          }`}
+        >
+          <span className="inline-flex items-center gap-1">
+            {displayName}
+            {isVerified && <BlueTick className="text-[10px]" />}
+          </span>
+        </p>
+        <p
+          className={`text-xs truncate ${
+            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
+          }`}
+        >
+          {lastMessageText}
+        </p>
+      </div>
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-[10px] text-[#b9b4c7]">{formatTime(lastMessageAt)}</span>
+        {unreadCount > 0 && (
+          <div className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
+              {unreadCount}
+            </span>
+          </div>
+        )}
+      </div>
+    </Motion.div>
+  );
+});
+
+const GroupListItem = memo(function GroupListItem({
+  groupId,
+  avatarUrl,
+  displayName,
+  memberCount,
+  unreadCount,
+  lastMessageText,
+  lastMessageAt,
+  onOpen,
+}) {
+  const handleClick = useCallback(() => {
+    if (groupId) onOpen(groupId);
+  }, [groupId, onOpen]);
+  return (
+    <Motion.div
+      onClick={handleClick}
+      className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
+        unreadCount > 0
+          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
+          : "border-transparent hover:bg-white/5"
+      }`}
+      whileHover={{ scale: 1.01 }}
+      whileTap={{ scale: 0.98 }}
+    >
+      <div className="relative">
+        <img
+          src={avatarUrl}
+          alt={displayName}
+          className="w-11 h-11 rounded-2xl object-cover"
+          loading="lazy"
+          decoding="async"
+        />
+      </div>
+      <div className="flex-1 min-w-0">
+        <p
+          className={`text-sm text-[#faf0e6] truncate ${
+            unreadCount > 0 ? "font-bold" : "font-semibold"
+          }`}
+        >
+          {displayName}
+        </p>
+        <p
+          className={`text-xs truncate ${
+            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
+          }`}
+        >
+          {lastMessageText}
+        </p>
+      </div>
+      <div className="flex flex-col items-end gap-1">
+        <span className="text-[10px] text-[#b9b4c7]">{formatTime(lastMessageAt)}</span>
+        <span className="text-[10px] text-[#b9b4c7]">
+          {memberCount ? `${memberCount} members` : "Members"}
+        </span>
+        {unreadCount > 0 && (
+          <div className="flex items-center gap-1">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
+              {unreadCount}
+            </span>
+          </div>
+        )}
+      </div>
+    </Motion.div>
+  );
+});
+
 const formatLastSeen = (dateString) => {
   if (!dateString) return "Offline";
   const date = new Date(dateString);
@@ -337,9 +577,9 @@ export default function Chat() {
     }
   }, [currentUser?.id]);
 
-  const handleReportMessage = (msg) => {
+  const handleReportMessage = useCallback((msg) => {
     setReportTarget(msg);
-  };
+  }, []);
 
   const submitMessageReport = async ({ reason, details }) => {
     if (!reportTarget) return;
@@ -1137,7 +1377,6 @@ export default function Chat() {
       }
       return normalized;
     } catch (error) {
-      console.error("Failed to load requests:", error);
       return [];
     }
   }, [cacheUser, getUserFromCache, isUserBlocked, currentUser]);
@@ -1178,7 +1417,6 @@ export default function Chat() {
               });
             }
           } catch (error) {
-            console.error("Failed to load chat preview:", error);
           }
         })
       );
@@ -1203,7 +1441,6 @@ export default function Chat() {
           syncChatMetaFromMessages(userId, []);
         }
       } catch (error) {
-        console.error("Failed to load messages:", error);
       }
     },
     [fetchChatMessages, mergeMessages, updateChatMeta, resolveUnreadCount, syncChatMetaFromMessages]
@@ -1308,7 +1545,6 @@ export default function Chat() {
     try {
       await rejectFriend(requesterId);
     } catch (error) {
-      console.error("Failed to ignore request:", error);
     }
   };
 
@@ -1768,6 +2004,7 @@ export default function Chat() {
         });
     });
   }, [isActiveGroupChat, visibleMessages, currentUser?.id, getUserFromCache, cacheUser]);
+  const currentUserId = currentUser?.id;
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
   const isChatOpen = Boolean(activeChatId);
   const friendStatus = activeChatUser?.isGroup
@@ -1781,6 +2018,7 @@ export default function Chat() {
   const activePresence = activeChatUser?.isGroup
     ? { isOnline: false, lastSeen: "" }
     : getPresence(activeChatUser?.id, activeChatUser);
+  const isDirectChat = !activeChatUser?.isGroup;
 
   const contactsList = useMemo(() => {
     return [...contacts].sort((a, b) => {
@@ -1808,6 +2046,74 @@ export default function Chat() {
       return (a.rank || 0) - (b.rank || 0);
     });
   }, [groupList, chatMeta]);
+
+  const contactItems = useMemo(() => {
+    return contactsList.map((contact, index) => {
+      const contactId =
+        contact.id ||
+        contact._id ||
+        contact.userId ||
+        contact.user_id ||
+        "";
+      const contactKey = contactId || `contact-${index}`;
+      const meta = chatMeta[contactId] || {};
+      const unreadCount = meta.unreadCount || 0;
+      const presence = getPresence(contactId, contact);
+      const isOnline = presence.isOnline;
+      const displayName = resolveContactName(contact);
+      const isVerified = resolveContactVerified(contact);
+      const lastMessageText =
+        truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+        "Say hello to start chatting";
+      const avatarUrl = contact.profilePicUrl || ANONYMOUS_AVATAR;
+      return (
+        <ContactListItem
+          key={String(contactKey)}
+          contactId={contactId}
+          avatarUrl={avatarUrl}
+          displayName={displayName}
+          isVerified={isVerified}
+          isOnline={isOnline}
+          unreadCount={unreadCount}
+          lastMessageText={lastMessageText}
+          lastMessageAt={meta.lastMessageAt}
+          onOpen={handleOpenChat}
+        />
+      );
+    });
+  }, [contactsList, chatMeta, getPresence, resolveContactName, resolveContactVerified, handleOpenChat]);
+
+  const groupItems = useMemo(() => {
+    return groupsSorted.map((group, index) => {
+      const groupId =
+        group.id ||
+        group._id ||
+        group.groupId ||
+        group.group_id ||
+        "";
+      const groupKey = groupId || `group-${index}`;
+      const meta = chatMeta[groupId] || {};
+      const unreadCount = meta.unreadCount || 0;
+      const memberCount = group.memberCount ?? group.members?.length;
+      const lastMessageText =
+        truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+        "Campus group channel";
+      const avatarUrl = group.profilePicUrl || "/incampus-icon.svg";
+      return (
+        <GroupListItem
+          key={String(groupKey)}
+          groupId={groupId}
+          avatarUrl={avatarUrl}
+          displayName={group.displayName}
+          memberCount={memberCount}
+          unreadCount={unreadCount}
+          lastMessageText={lastMessageText}
+          lastMessageAt={meta.lastMessageAt}
+          onOpen={handleOpenChat}
+        />
+      );
+    });
+  }, [groupsSorted, chatMeta, handleOpenChat]);
 
   useEffect(() => {
     if (activeChatId) {
@@ -1883,81 +2189,7 @@ export default function Chat() {
                 ) : contactsList.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
                 ) : (
-                  contactsList.map((contact, index) => {
-                    const contactId =
-                      contact.id ||
-                      contact._id ||
-                      contact.userId ||
-                      contact.user_id ||
-                      "";
-                    const contactKey = contactId || `contact-${index}`;
-                    const meta = chatMeta[contactId] || {};
-                    const unreadCount = meta.unreadCount || 0;
-                    const presence = getPresence(contactId, contact);
-                    const isOnline = presence.isOnline;
-                    const displayName = resolveContactName(contact);
-                    const isVerified = resolveContactVerified(contact);
-                    return (
-                      <Motion.div
-                        key={String(contactKey)}
-                        onClick={() => contactId && handleOpenChat(contactId)}
-                        className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-                          unreadCount > 0
-                            ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-                            : "border-transparent hover:bg-white/5"
-                        }`}
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        <div className="relative">
-                          <img
-                            src={contact.profilePicUrl || ANONYMOUS_AVATAR}
-                            alt={displayName}
-                            className="w-11 h-11 rounded-full object-cover"
-                          />
-                          {isOnline && (
-                            <span className="absolute bottom-0 right-0 flex h-3 w-3 items-center justify-center">
-                              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-40"></span>
-                              <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p
-                            className={`text-sm text-[#faf0e6] truncate ${
-                              unreadCount > 0 ? "font-bold" : "font-semibold"
-                            }`}
-                          >
-                            <span className="inline-flex items-center gap-1">
-                              {displayName}
-                              {isVerified && <BlueTick className="text-[10px]" />}
-                            </span>
-                          </p>
-                          <p
-                            className={`text-xs truncate ${
-                              unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-                            }`}
-                          >
-                            {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
-                              "Say hello to start chatting"}
-                          </p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1">
-                          <span className="text-[10px] text-[#b9b4c7]">
-                            {formatTime(meta.lastMessageAt)}
-                          </span>
-                          {unreadCount > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                              <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-                                {unreadCount}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </Motion.div>
-                    );
-                  })
+                  contactItems
                 )}
               </div>
             </div>
@@ -1977,72 +2209,7 @@ export default function Chat() {
                 {groupsSorted.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
                 ) : (
-                  groupsSorted.map((group, index) => {
-                    const groupId =
-                      group.id ||
-                      group._id ||
-                      group.groupId ||
-                      group.group_id ||
-                      "";
-                    const groupKey = groupId || `group-${index}`;
-                    const meta = chatMeta[groupId] || {};
-                    const unreadCount = meta.unreadCount || 0;
-                    const memberCount = group.memberCount ?? group.members?.length;
-                    return (
-                      <Motion.div
-                        key={String(groupKey)}
-                        onClick={() => groupId && handleOpenChat(groupId)}
-                        className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-                          unreadCount > 0
-                            ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-                            : "border-transparent hover:bg-white/5"
-                        }`}
-                        whileHover={{ scale: 1.01 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        <div className="relative">
-                          <img
-                            src={group.profilePicUrl || "/incampus-icon.svg"}
-                            alt={group.displayName}
-                            className="w-11 h-11 rounded-2xl object-cover"
-                          />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p
-                            className={`text-sm text-[#faf0e6] truncate ${
-                              unreadCount > 0 ? "font-bold" : "font-semibold"
-                            }`}
-                          >
-                            {group.displayName}
-                          </p>
-                          <p
-                            className={`text-xs truncate ${
-                              unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-                            }`}
-                          >
-                            {truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
-                              "Campus group channel"}
-                          </p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1">
-                          <span className="text-[10px] text-[#b9b4c7]">
-                            {formatTime(meta.lastMessageAt)}
-                          </span>
-                          <span className="text-[10px] text-[#b9b4c7]">
-                            {memberCount ? `${memberCount} members` : "Members"}
-                          </span>
-                          {unreadCount > 0 && (
-                            <div className="flex items-center gap-1">
-                              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                              <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-                                {unreadCount}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </Motion.div>
-                    );
-                  })
+                  groupItems
                 )}
               </div>
             </div>
@@ -2106,6 +2273,8 @@ export default function Chat() {
                               src={requestAvatar}
                               alt={requestDisplayName}
                               className="w-10 h-10 rounded-full object-cover"
+                              loading="lazy"
+                              decoding="async"
                             />
                             <div className="flex-grow">
                               <p className="font-semibold text-sm text-[#faf0e6]">
@@ -2243,99 +2412,18 @@ export default function Chat() {
                   </p>
                 ) : (
                   visibleMessages.map((msg) => {
-                    const isMine = msg.from === currentUser?.id;
-                    const isSharedPost =
-                      msg.messageType === "shared_post" || msg.type === "shared_post";
-                    const previewText = resolveMessagePreview(msg);
-                    const previewThumb = msg.postThumbnail;
-                    const senderInfo =
-                      !isMine && isActiveGroupChat ? resolveMessageSender(msg) : null;
+                    const isMine = msg.from === currentUserId;
                     return (
-                      <Motion.div
+                      <ChatMessage
                         key={messageKey(msg)}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className={`message-row ${isMine ? "mine" : "theirs"}`}
-                      >
-                        <div className="message-bubble">
-                          {senderInfo && (
-                            <div className="mb-2 flex items-center gap-2">
-                              <img
-                                src={senderInfo.avatar || ANONYMOUS_AVATAR}
-                                alt={senderInfo.name}
-                                className="h-6 w-6 rounded-full object-cover border border-white/10"
-                              />
-                              <span className="text-[11px] font-semibold text-[#faf0e6] flex items-center gap-1">
-                                {senderInfo.name}
-                                {senderInfo.isVerified && (
-                                  <BlueTick className="text-[10px]" />
-                                )}
-                              </span>
-                            </div>
-                          )}
-                          {isSharedPost ? (
-                            <button
-                              type="button"
-                              onClick={() => handleOpenSharedPost(msg)}
-                              className="w-full text-left space-y-2"
-                            >
-                              <div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
-                                {previewThumb ? (
-                                  <img
-                                    src={previewThumb}
-                                    alt="Shared post"
-                                    className="w-full h-32 object-cover"
-                                  />
-                                ) : (
-                                  <div className="h-24 w-full bg-white/5 flex items-center justify-center text-xs text-[#b9b4c7]">
-                                    Post preview
-                                  </div>
-                                )}
-                                <div className="p-3">
-                                  <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
-                                    Shared post
-                                  </p>
-                                  <p className="text-sm text-[#faf0e6] line-clamp-2">
-                                    {previewText}
-                                  </p>
-                                </div>
-                              </div>
-                            </button>
-                          ) : (
-                            <span className="text-sm">{msg.text}</span>
-                          )}
-                          <span className="message-time flex items-center gap-1">
-                            {formatTime(msg.createdAt)}
-                            {isMine && !activeChatUser?.isGroup && (
-                              <span
-                                className={`text-[10px] ${
-                                  msg.seenAt
-                                    ? "text-[#b9b4c7]"
-                                    : msg.deliveredAt
-                                      ? "text-[#b9b4c7]/80"
-                                      : "text-[#b9b4c7]/60"
-                                }`}
-                              >
-                                {msg.seenAt
-                                  ? "Seen"
-                                  : msg.deliveredAt
-                                    ? "Delivered"
-                                    : "Sent"}
-                              </span>
-                            )}
-                            {!isMine && (
-                              <button
-                                type="button"
-                                onClick={() => handleReportMessage(msg)}
-                                className="text-amber-300 hover:text-amber-200 text-[10px]"
-                                title="Report message"
-                              >
-                                <i className="fa-solid fa-flag"></i>
-                              </button>
-                            )}
-                          </span>
-                        </div>
-                      </Motion.div>
+                        msg={msg}
+                        isMine={isMine}
+                        isActiveGroupChat={isActiveGroupChat}
+                        isDirectChat={isDirectChat}
+                        onOpenSharedPost={handleOpenSharedPost}
+                        onReport={handleReportMessage}
+                        resolveMessageSender={resolveMessageSender}
+                      />
                     );
                   })
                 )}

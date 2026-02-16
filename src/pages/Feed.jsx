@@ -707,10 +707,57 @@ export default function Feed() {
 
   const maxWindowStart = Math.max(0, displayedPosts.length - FEED_WINDOW_SIZE);
   const windowEnd = Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length);
-  const windowedPosts = displayedPosts.slice(windowStart, windowEnd);
+  const windowedPosts = useMemo(
+    () => displayedPosts.slice(windowStart, windowEnd),
+    [displayedPosts, windowStart, windowEnd]
+  );
   const topSpacerHeight = windowStart * estimatedItemHeight;
   const bottomSpacerHeight =
     Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight;
+
+  const renderedWindowedPosts = useMemo(() => {
+    return windowedPosts.map((post, index) => {
+      const absoluteIndex = windowStart + index;
+      const postId = resolvePostId(post, absoluteIndex);
+      const postKey = resolvePostKey(post, absoluteIndex);
+      if (isContentUnderReview(post)) {
+        return (
+          <div
+            key={`${postKey}-review`}
+            ref={(node) => registerItemHeight(absoluteIndex, node)}
+          >
+            <UnderReviewCard />
+          </div>
+        );
+      }
+      let badge = null;
+      if (!shouldFilterByCollege) {
+        const badgeKey = universalFeedMeta.badgeMap.get(postId);
+        badge = resolveBadge(badgeKey);
+      } else {
+        const friendBadge =
+          isFriendPost(post) && !isAnonymousPost(post) ? FRIEND_BADGE : null;
+        const campusBadge = friendBadge ? null : matchesCollege(post) ? CAMPUS_BADGE : null;
+        badge = friendBadge || campusBadge;
+      }
+      return (
+        <div
+          key={postKey}
+          ref={(node) => registerItemHeight(absoluteIndex, node)}
+        >
+          <Post post={post} badge={badge} />
+        </div>
+      );
+    });
+  }, [
+    windowedPosts,
+    windowStart,
+    registerItemHeight,
+    shouldFilterByCollege,
+    universalFeedMeta.badgeMap,
+    isFriendPost,
+    matchesCollege,
+  ]);
 
   useEffect(() => {
     if (windowStart > maxWindowStart) {
@@ -929,40 +976,7 @@ export default function Feed() {
                   style={{ height: `${topSpacerHeight}px` }}
                 />
               )}
-              {windowedPosts.map((post, index) => {
-                const absoluteIndex = windowStart + index;
-                const postId = resolvePostId(post, absoluteIndex);
-                const postKey = resolvePostKey(post, absoluteIndex);
-                if (isContentUnderReview(post)) {
-                  return (
-                    <div
-                      key={`${postKey}-review`}
-                      ref={(node) => registerItemHeight(absoluteIndex, node)}
-                    >
-                      <UnderReviewCard />
-                    </div>
-                  );
-                }
-                let badge = null;
-                if (!shouldFilterByCollege) {
-                  const badgeKey = universalFeedMeta.badgeMap.get(postId);
-                  badge = resolveBadge(badgeKey);
-                } else {
-                  const friendBadge =
-                    isFriendPost(post) && !isAnonymousPost(post) ? FRIEND_BADGE : null;
-                  const campusBadge =
-                    friendBadge ? null : matchesCollege(post) ? CAMPUS_BADGE : null;
-                  badge = friendBadge || campusBadge;
-                }
-                return (
-                  <div
-                    key={postKey}
-                    ref={(node) => registerItemHeight(absoluteIndex, node)}
-                  >
-                    <Post post={post} badge={badge} />
-                  </div>
-                );
-              })}
+              {renderedWindowedPosts}
               {bottomSpacerHeight > 0 && (
                 <div
                   aria-hidden="true"

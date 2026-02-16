@@ -869,7 +869,6 @@ export default function Profile() {
         friendsCountsLoadedRef.current = true;
       }
     } catch (error) {
-      console.error("Failed to load friends:", error);
     } finally {
       if (requestId !== friendsLoadRequestRef.current) return;
       friendsLoadedRef.current = true;

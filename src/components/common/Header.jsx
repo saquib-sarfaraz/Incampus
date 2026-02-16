@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, memo } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
@@ -75,6 +75,48 @@ const formatTimeAgo = (dateValue) => {
   return `${Math.floor(diff / day)}d`;
 };
 
+const NotificationItem = memo(function NotificationItem({ notif }) {
+  const actor = resolveActor(notif);
+  const actorName = resolveActorName(actor);
+  const actorAvatar = resolveActorAvatar(actor);
+  const isUnread = !resolveIsRead(notif);
+  const actionText = formatNotificationText(notif);
+  const timeAgo = formatTimeAgo(
+    notif.createdAt || notif.created_at || notif.timestamp
+  );
+  const isVerified = resolveActorVerified(actor);
+  return (
+    <div
+      className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
+        isUnread ? "bg-white/5" : ""
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <img
+          src={actorAvatar}
+          alt={actorName}
+          className="h-9 w-9 rounded-full object-cover border border-white/10"
+          loading="lazy"
+          decoding="async"
+        />
+        <div className="flex-1 min-w-0">
+          <p className="text-[#faf0e6] truncate">
+            <span className="font-semibold inline-flex items-center gap-1">
+              {actorName}
+              {isVerified && <BlueTick className="text-[11px]" />}
+            </span>{" "}
+            <span className="text-[#b9b4c7]">{actionText}</span>
+          </p>
+          {timeAgo && <p className="text-[11px] text-[#b9b4c7]">{timeAgo}</p>}
+        </div>
+        {isUnread && (
+          <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+        )}
+      </div>
+    </div>
+  );
+});
+
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -102,6 +144,19 @@ export default function Header() {
   }, []);
 
   const unreadCount = notifications.filter((n) => !resolveIsRead(n)).length;
+  const notificationItems = useMemo(
+    () =>
+      notifications.map((notif, index) => {
+        const notifKey =
+          notif._id ||
+          notif.id ||
+          notif.notificationId ||
+          notif.notification_id ||
+          `notif-${index}`;
+        return <NotificationItem key={String(notifKey)} notif={notif} />;
+      }),
+    [notifications]
+  );
 
   const markAllReadOptimistic = () => {
     setNotifications((prev) =>
@@ -118,7 +173,6 @@ export default function Header() {
       markAllReadOptimistic();
       await markAllNotificationsRead();
     } catch (error) {
-      console.error("Failed to mark as read:", error);
     }
   };
 
@@ -130,7 +184,6 @@ export default function Header() {
       try {
         await markAllNotificationsRead();
       } catch (error) {
-        console.error("Failed to mark notifications read:", error);
       }
     }
   };
@@ -277,54 +330,7 @@ export default function Header() {
                           No notifications
                         </p>
                       ) : (
-                        notifications.map((notif, index) => {
-                          const actor = resolveActor(notif);
-                          const actorName = resolveActorName(actor);
-                          const actorAvatar = resolveActorAvatar(actor);
-                          const isUnread = !resolveIsRead(notif);
-                          const actionText = formatNotificationText(notif);
-                          const timeAgo = formatTimeAgo(
-                            notif.createdAt || notif.created_at || notif.timestamp
-                          );
-                          const isVerified = resolveActorVerified(actor);
-                          const notifKey =
-                            notif._id ||
-                            notif.id ||
-                            notif.notificationId ||
-                            notif.notification_id ||
-                            `notif-${index}`;
-                          return (
-                            <div
-                              key={String(notifKey)}
-                              className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
-                                isUnread ? "bg-white/5" : ""
-                              }`}
-                            >
-                              <div className="flex items-center gap-3">
-                                <img
-                                  src={actorAvatar}
-                                  alt={actorName}
-                                  className="h-9 w-9 rounded-full object-cover border border-white/10"
-                                />
-                                <div className="flex-1 min-w-0">
-                                  <p className="text-[#faf0e6] truncate">
-                                    <span className="font-semibold inline-flex items-center gap-1">
-                                      {actorName}
-                                      {isVerified && <BlueTick className="text-[11px]" />}
-                                    </span>{" "}
-                                    <span className="text-[#b9b4c7]">{actionText}</span>
-                                  </p>
-                                  {timeAgo && (
-                                    <p className="text-[11px] text-[#b9b4c7]">{timeAgo}</p>
-                                  )}
-                                </div>
-                                {isUnread && (
-                                  <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })
+                        notificationItems
                       )}
                     </div>
                   </Motion.div>
