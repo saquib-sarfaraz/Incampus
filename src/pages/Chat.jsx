@@ -2144,7 +2144,7 @@ export default function Chat() {
             <>
               <div
                 id="chat-header"
-                className="flex-shrink-0 z-20 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
+                className="sticky top-0 flex-shrink-0 z-30 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
               >
                 <div className="flex items-center gap-3">
                   {isMobile && (
