@@ -678,9 +678,7 @@ small {
     position: fixed;
     inset: 0;
     width: 100%;
-    top: var(--chat-offset-top, 0px);
-    bottom: auto;
-    height: var(--chat-vh, 100dvh);
+    height: 100dvh;
     background: #1a120b;
     z-index: 60;
   }
@@ -691,6 +689,8 @@ small {
     padding-bottom: env(safe-area-inset-bottom);
     display: flex;
     align-items: center;
+    transform: translateY(calc(-1 * var(--chat-keyboard, 0px)));
+    transition: transform 0.2s ease;
   }
 
   #chat-input-row {
@@ -729,7 +729,7 @@ small {
   flex-direction: column;
   gap: 8px;
   padding: 16px;
-  padding-bottom: 112px;
+  padding-bottom: calc(5rem + env(safe-area-inset-bottom) + var(--chat-keyboard, 0px));
 }
 
 .message-row {
