@@ -27,6 +27,7 @@ const CONTACTS_CACHE_KEY = "incampus:chat:contacts";
 const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
 const REQUESTS_CACHE_KEY = "incampus:chat:requests";
 const REQUESTS_CACHE_TTL = 2 * 60 * 1000;
+const CHAT_SOUND_PREF_KEY = "incampus:chat:sound";
 
 const resolveMessageSenderId = (msg) => {
   if (!msg) return "";
@@ -293,6 +294,13 @@ export default function Chat() {
   const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
+  const [chatSoundEnabled, setChatSoundEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    const stored = localStorage.getItem(CHAT_SOUND_PREF_KEY);
+    if (stored === "on") return true;
+    if (stored === "off") return false;
+    return false;
+  });
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [friendRequestLoading, setFriendRequestLoading] = useState(false);
   const messagesEndRef = useRef(null);
@@ -377,6 +385,11 @@ export default function Chat() {
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    localStorage.setItem(CHAT_SOUND_PREF_KEY, chatSoundEnabled ? "on" : "off");
+  }, [chatSoundEnabled]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -616,6 +629,62 @@ export default function Chat() {
           const incomingText = msg.text || msg.postId || msg.messageType || msg.type || "";
           const incomingClientId = msg.clientMessageId || "";
           const incomingTime = getMessageTimestamp(msg);
+          let replaced = false;
+
+          if (incomingClientId) {
+            const existingIndex = merged.findIndex(
+              (existingMsg) => existingMsg.clientMessageId === incomingClientId
+            );
+            if (existingIndex >= 0) {
+              const oldKey = messageKey(merged[existingIndex]);
+              merged[existingIndex] = { ...merged[existingIndex], ...msg, pending: false };
+              const newKey = messageKey(merged[existingIndex]);
+              if (oldKey !== newKey) {
+                index.delete(oldKey);
+                index.add(newKey);
+              }
+              replaced = true;
+            }
+          }
+
+          if (!replaced && incomingSender && currentUser?.id && incomingSender === String(currentUser.id)) {
+            let bestIndex = -1;
+            let bestDelta = Number.POSITIVE_INFINITY;
+            merged.forEach((existingMsg, idx) => {
+              if (!existingMsg?.pending) return;
+              const existingSender = resolveMessageSenderId(existingMsg);
+              const existingRecipient = resolveMessageRecipientId(existingMsg);
+              if (existingSender !== incomingSender || existingRecipient !== incomingRecipient) {
+                return;
+              }
+              const existingText =
+                existingMsg.text ||
+                existingMsg.postId ||
+                existingMsg.messageType ||
+                existingMsg.type ||
+                "";
+              if (existingText !== incomingText) return;
+              const existingTime = getMessageTimestamp(existingMsg);
+              if (existingTime === null || incomingTime === null) return;
+              const delta = Math.abs(existingTime - incomingTime);
+              if (delta < bestDelta) {
+                bestDelta = delta;
+                bestIndex = idx;
+              }
+            });
+            if (bestIndex >= 0 && bestDelta < 15000) {
+              const oldKey = messageKey(merged[bestIndex]);
+              merged[bestIndex] = { ...merged[bestIndex], ...msg, pending: false };
+              const newKey = messageKey(merged[bestIndex]);
+              if (oldKey !== newKey) {
+                index.delete(oldKey);
+                index.add(newKey);
+              }
+              replaced = true;
+            }
+          }
+
+          if (replaced) return;
           const recentDuplicate = merged.slice(-6).some((existingMsg) => {
             if (incomingClientId && existingMsg.clientMessageId === incomingClientId) {
               return true;
@@ -643,7 +712,7 @@ export default function Chat() {
         return { ...prev, [chatId]: merged };
       });
     },
-    [ensureIndex]
+    [ensureIndex, currentUser?.id]
   );
 
   const markMessagesSeen = useCallback(
@@ -1141,6 +1210,7 @@ export default function Chat() {
       createdAt: new Date().toISOString(),
       isGroup: isGroupChat,
       clientMessageId: `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      pending: true,
     };
 
     mergeMessages(activeChatId, [newMessage]);
@@ -1473,7 +1543,9 @@ export default function Chat() {
       mergeMessages(chatId, [msg]);
 
       if (chatId !== activeChatRef.current) {
-        playNotificationSound();
+        if (!isMobile || chatSoundEnabled) {
+          playNotificationSound();
+        }
         if (navigator.vibrate) navigator.vibrate(40);
       } else {
         markChatRead(chatId);
@@ -1503,6 +1575,8 @@ export default function Chat() {
     markMessagesSeen,
     mergeMessages,
     playNotificationSound,
+    chatSoundEnabled,
+    isMobile,
     scrollToBottom,
   ]);
 
@@ -1723,7 +1797,12 @@ export default function Chat() {
 
 
   return (
-    <div id="chat-view" className="h-[100dvh] min-h-[100dvh] flex flex-col pb-24 sm:pb-0">
+    <div
+      id="chat-view"
+      className={`h-[100dvh] min-h-0 flex flex-col overflow-hidden ${
+        isMobile && isChatOpen ? "pb-0" : "pb-24"
+      } sm:pb-0`}
+    >
       <Header />
 
       <div id="chat-body" className="flex-1 flex min-h-0 overflow-hidden">
@@ -2065,7 +2144,7 @@ export default function Chat() {
             <>
               <div
                 id="chat-header"
-                className="flex-shrink-0 z-20 p-4 min-h-[64px] border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
+                className="flex-shrink-0 z-20 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
               >
                 <div className="flex items-center gap-3">
                   {isMobile && (
@@ -2100,15 +2179,36 @@ export default function Chat() {
                     </p>
                   </div>
                 </div>
-                {!activeChatUser?.isGroup && activeChatUser?.id && (
-                  <button
-                    onClick={handleBlockActiveUser}
-                    className="text-xs text-rose-200 border border-rose-300/30 px-3 py-1 rounded-full hover:bg-rose-300/10"
-                  >
-                    <i className="fa-solid fa-ban mr-1"></i>
-                    Block
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {isMobile && (
+                    <button
+                      type="button"
+                      onClick={() => setChatSoundEnabled((prev) => !prev)}
+                      className={`h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm transition-colors ${
+                        chatSoundEnabled
+                          ? "bg-white/10 text-[#faf0e6]"
+                          : "bg-white/5 text-[#b9b4c7]"
+                      }`}
+                      title={chatSoundEnabled ? "Sound on" : "Sound off"}
+                      aria-pressed={chatSoundEnabled}
+                    >
+                      <i
+                        className={`fa-solid ${
+                          chatSoundEnabled ? "fa-volume-high" : "fa-volume-xmark"
+                        }`}
+                      />
+                    </button>
+                  )}
+                  {!activeChatUser?.isGroup && activeChatUser?.id && (
+                    <button
+                      onClick={handleBlockActiveUser}
+                      className="text-xs text-rose-200 border border-rose-300/30 px-3 py-1 rounded-full hover:bg-rose-300/10"
+                    >
+                      <i className="fa-solid fa-ban mr-1"></i>
+                      Block
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div
@@ -2221,7 +2321,7 @@ export default function Chat() {
                 <div ref={messagesEndRef} />
               </div>
 
-              <div className="flex-shrink-0 z-20 p-4 border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]">
+              <div className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]">
                 {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
                   <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
                     <span>Only friends can message.</span>
