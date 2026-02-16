@@ -14,7 +14,8 @@ import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
-import { getOptimizedMediaUrl, getMediaSrcSet } from "../../utils/media";
+import { getOptimizedMediaUrl, getOptimizedVideoUrl, getMediaSrcSet } from "../../utils/media";
+import { isVideoUrl } from "../../utils/storyMedia";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const VIEW_RATIO_THRESHOLD = 0.5;
@@ -166,6 +167,99 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
+const isLikelyId = (value) => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return true;
+  if (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      trimmed
+    )
+  ) {
+    return true;
+  }
+  if (/^\d+$/.test(trimmed)) return true;
+  return false;
+};
+
+const resolvePostAuthorEntity = (post) =>
+  post?.author ||
+  post?.user ||
+  post?.owner ||
+  post?.createdBy ||
+  post?.postedBy ||
+  post?.creator ||
+  null;
+
+const resolvePostAuthorId = (post) => {
+  const direct =
+    post?.authorId ||
+    post?.author_id ||
+    post?.userId ||
+    post?.user_id ||
+    post?.ownerId ||
+    post?.owner_id ||
+    post?.createdById ||
+    post?.created_by ||
+    post?.postedById ||
+    post?.creatorId ||
+    "";
+  if (direct) return direct;
+  const entity = resolvePostAuthorEntity(post);
+  return entity?._id || entity?.id || entity || "";
+};
+
+const resolvePostAuthorName = (post, entity) => {
+  if (typeof entity === "string") return isLikelyId(entity) ? "" : entity;
+  return (
+    post?.authorDisplayName ||
+    post?.authorName ||
+    post?.authorFullName ||
+    post?.userDisplayName ||
+    post?.userName ||
+    post?.userFullName ||
+    entity?.displayName ||
+    entity?.fullName ||
+    entity?.username ||
+    entity?.name ||
+    ""
+  );
+};
+
+const resolvePostAuthorPic = (post, entity) => {
+  if (typeof entity === "string") return "";
+  return (
+    post?.authorProfilePic ||
+    post?.authorAvatar ||
+    post?.userProfilePic ||
+    post?.userAvatar ||
+    entity?.profilePicUrl ||
+    entity?.profilePic ||
+    entity?.avatarUrl ||
+    entity?.avatar ||
+    ""
+  );
+};
+
+const resolvePostAuthorVerified = (post, entity) =>
+  Boolean(
+    post?.authorIsVerified ||
+      post?.authorVerified ||
+      post?.userIsVerified ||
+      post?.userVerified ||
+      post?.isVerified ||
+      post?.verified ||
+      post?.is_verified ||
+      post?.verification?.status === "verified" ||
+      (entity && typeof entity === "object"
+        ? entity.isVerified ||
+          entity.verified ||
+          entity.is_verified ||
+          entity.verification?.status === "verified"
+        : false)
+  );
+
 function Post({ post, onOpen, badge }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
@@ -193,18 +287,10 @@ function Post({ post, onOpen, badge }) {
   const committedLikedRef = useRef(null);
   const committedCountRef = useRef(null);
   const optimisticCountRef = useRef(null);
-  const authorId = post.author?._id || post.authorId || post.author || "";
-  const authorName =
-    post.author?.displayName ||
-    post.author?.fullName ||
-    post.author?.username ||
-    post.author?.name ||
-    "";
-  const authorPic =
-    post.author?.profilePicUrl ||
-    post.author?.profilePic ||
-    post.author?.avatarUrl ||
-    "";
+  const authorEntity = resolvePostAuthorEntity(post);
+  const authorId = resolvePostAuthorId(post);
+  const authorName = resolvePostAuthorName(post, authorEntity);
+  const authorPic = resolvePostAuthorPic(post, authorEntity);
   const baseLikesRaw = Array.isArray(post.likes)
     ? post.likes
     : Array.isArray(post.likedBy)
@@ -225,22 +311,23 @@ function Post({ post, onOpen, badge }) {
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const postMediaUrl = resolvePostMediaUrl(post);
   const postThumbnail = postMediaUrl;
-  const optimizedPostMedia = getOptimizedMediaUrl(postMediaUrl, { width: 1200 });
-  const postSrcSet = getMediaSrcSet(postMediaUrl, [480, 720, 1024, 1400]);
+  const isVideo =
+    isVideoUrl(postMediaUrl) ||
+    String(post.mediaType || post.type || "").toLowerCase().includes("video");
+  const optimizedPostMedia = isVideo
+    ? getOptimizedVideoUrl(postMediaUrl)
+    : getOptimizedMediaUrl(postMediaUrl, { width: 600 });
+  const postSrcSet = !isVideo ? getMediaSrcSet(postMediaUrl) : null;
   const avatarUrl = getOptimizedMediaUrl(author?.profilePicUrl, { width: 80, height: 80 });
   const postPreviewText =
     post.content && post.content.length > 0
       ? post.content.slice(0, 80)
       : "Campus update";
   const isPrivate = resolvePostPrivacy(post) === "friends";
-  const resolvedAuthorName =
-    author?.displayName ||
-    authorName ||
-    post.authorDisplayName ||
-    post.author?.fullName ||
-    post.author?.username ||
-    "";
-  const authorIsVerified = !post.isAnonymous && Boolean(author?.isVerified ?? post.author?.isVerified);
+  const resolvedAuthorName = author?.displayName || authorName || "";
+  const authorIsVerified =
+    !post.isAnonymous &&
+    Boolean(author?.isVerified ?? resolvePostAuthorVerified(post, authorEntity));
   const authorDisplayName = post.isAnonymous
     ? "Anonymous Student"
     : author?.displayName || "User";
@@ -266,7 +353,7 @@ function Post({ post, onOpen, badge }) {
           displayName:
             authorName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
           profilePicUrl: authorPic || ANONYMOUS_AVATAR,
-          isVerified: Boolean(post.author?.isVerified),
+          isVerified: resolvePostAuthorVerified(post, authorEntity),
         });
         return;
       }
@@ -287,7 +374,7 @@ function Post({ post, onOpen, badge }) {
         user || {
           displayName: "User",
           profilePicUrl: ANONYMOUS_AVATAR,
-          isVerified: Boolean(post.author?.isVerified),
+          isVerified: resolvePostAuthorVerified(post, authorEntity),
         }
       );
     };
@@ -717,15 +804,25 @@ function Post({ post, onOpen, badge }) {
             onTouchEnd={handleMediaTouchEnd}
             style={{ touchAction: "manipulation" }}
           >
-            <img
-              src={optimizedPostMedia || postMediaUrl}
-              srcSet={postSrcSet || undefined}
-              sizes="(max-width: 640px) 90vw, (max-width: 1024px) 70vw, 800px"
-              alt="Post media"
-              className="w-full max-h-96 object-cover"
-              loading="lazy"
-              decoding="async"
-            />
+            {isVideo ? (
+              <video
+                src={optimizedPostMedia || postMediaUrl}
+                className="w-full max-h-96 object-cover"
+                muted
+                playsInline
+                preload="metadata"
+              />
+            ) : (
+              <img
+                src={optimizedPostMedia || postMediaUrl}
+                srcSet={postSrcSet || undefined}
+                sizes="(max-width: 640px) 90vw, (max-width: 1024px) 70vw, 800px"
+                alt="Post media"
+                className="w-full max-h-96 object-cover"
+                loading="lazy"
+                decoding="async"
+              />
+            )}
             {mediaLikePulse > 0 && (
               <Motion.i
                 key={`media-like-${mediaLikePulse}`}

@@ -26,6 +26,10 @@ import { getSocket } from "../services/socket";
 const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 90000;
 const COLLEGE_REFRESH_MS = 120000;
+const FEED_WINDOW_SIZE = 20;
+const FEED_WINDOW_STEP = 10;
+const FEED_SCROLL_EDGE = 220;
+const FEED_ESTIMATED_ITEM_HEIGHT = 420;
 const FRIEND_BADGE = {
   text: "👥 Friend",
   tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
@@ -244,6 +248,12 @@ export default function Feed() {
   const [newPostsAvailable, setNewPostsAvailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const loadMoreRef = useRef(null);
+  const feedViewRef = useRef(null);
+  const feedMainRef = useRef(null);
+  const scrollRafRef = useRef(null);
+  const windowStartRef = useRef(0);
+  const heightStatsRef = useRef({ total: 0, count: 0 });
+  const heightMapRef = useRef(new Map());
   const prefetchRef = useRef({ page: null, data: null, promise: null });
   const rankedPostsRef = useRef([]);
   const rankedLoadingRef = useRef(false);
@@ -465,7 +475,24 @@ export default function Feed() {
       }
       if (indexById.has(id)) {
         const idx = indexById.get(id);
-        combined[idx] = { ...combined[idx], ...post };
+        const current = combined[idx];
+        if (current === post) {
+          return;
+        }
+        let changed = false;
+        if (post && typeof post === "object") {
+          for (const key of Object.keys(post)) {
+            if (post[key] !== current?.[key]) {
+              changed = true;
+              break;
+            }
+          }
+        } else if (post !== current) {
+          changed = true;
+        }
+        if (changed) {
+          combined[idx] = { ...current, ...post };
+        }
       } else {
         indexById.set(id, combined.length);
         combined.push(post);
@@ -649,6 +676,95 @@ export default function Feed() {
     }
   }, [finalFeedPosts]);
 
+  const [windowStart, setWindowStart] = useState(0);
+  const [estimatedItemHeight, setEstimatedItemHeight] = useState(FEED_ESTIMATED_ITEM_HEIGHT);
+
+  const registerItemHeight = useCallback(
+    (index, node) => {
+      if (!node || index < 0) return;
+      const height = Math.round(node.getBoundingClientRect().height || 0);
+      if (!Number.isFinite(height) || height <= 0) return;
+      const map = heightMapRef.current;
+      const prev = map.get(index);
+      if (prev && Math.abs(prev - height) < 4) return;
+      map.set(index, height);
+      const stats = heightStatsRef.current;
+      if (prev) {
+        stats.total += height - prev;
+      } else {
+        stats.total += height;
+        stats.count += 1;
+      }
+      if (stats.count >= 3) {
+        const nextAvg = Math.round(stats.total / stats.count);
+        if (Math.abs(nextAvg - estimatedItemHeight) > 12) {
+          setEstimatedItemHeight(nextAvg);
+        }
+      }
+    },
+    [estimatedItemHeight]
+  );
+
+  const maxWindowStart = Math.max(0, displayedPosts.length - FEED_WINDOW_SIZE);
+  const windowEnd = Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length);
+  const windowedPosts = displayedPosts.slice(windowStart, windowEnd);
+  const topSpacerHeight = windowStart * estimatedItemHeight;
+  const bottomSpacerHeight =
+    Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight;
+
+  useEffect(() => {
+    if (windowStart > maxWindowStart) {
+      setWindowStart(maxWindowStart);
+    }
+  }, [maxWindowStart, windowStart]);
+
+  useEffect(() => {
+    setWindowStart(0);
+    windowStartRef.current = 0;
+    heightMapRef.current.clear();
+    heightStatsRef.current = { total: 0, count: 0 };
+    setEstimatedItemHeight(FEED_ESTIMATED_ITEM_HEIGHT);
+  }, [feedKey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const prev = windowStartRef.current;
+    if (prev === windowStart) return;
+    const delta = (windowStart - prev) * estimatedItemHeight;
+    const mainEl = feedMainRef.current;
+    const viewEl = feedViewRef.current;
+    const scrollEl =
+      mainEl && mainEl.scrollHeight > mainEl.clientHeight + 4
+        ? mainEl
+        : viewEl && viewEl.scrollHeight > viewEl.clientHeight + 4
+          ? viewEl
+          : mainEl || viewEl;
+    if (scrollEl && Number.isFinite(delta) && delta !== 0) {
+      scrollEl.scrollTop += delta;
+    }
+    windowStartRef.current = windowStart;
+  }, [windowStart, estimatedItemHeight]);
+
+  const handleWindowScroll = useCallback(
+    (event) => {
+      const target = event.currentTarget;
+      if (!target) return;
+      if (scrollRafRef.current) return;
+      scrollRafRef.current = window.requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        const { scrollTop, scrollHeight, clientHeight } = target;
+        const nearBottom = scrollTop + clientHeight >= scrollHeight - FEED_SCROLL_EDGE;
+        const nearTop = scrollTop <= FEED_SCROLL_EDGE;
+        if (nearBottom && windowEnd < displayedPosts.length) {
+          setWindowStart((prev) => Math.min(prev + FEED_WINDOW_STEP, maxWindowStart));
+        } else if (nearTop && windowStart > 0) {
+          setWindowStart((prev) => Math.max(prev - FEED_WINDOW_STEP, 0));
+        }
+      });
+    },
+    [windowEnd, displayedPosts.length, maxWindowStart, windowStart]
+  );
+
   useEffect(() => {
     setNewPostsAvailable(false);
   }, [feedKey]);
@@ -683,10 +799,35 @@ export default function Feed() {
     loadMoreRanked,
   ]);
 
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const unlockIfSafe = () => {
+      const hasLockingModal = document.querySelector(
+        "#comment-modal, #create-post-modal, #story-viewer-modal"
+      );
+      if (hasLockingModal) return;
+      document.documentElement.style.overflow = "";
+      document.body.style.overflow = "";
+    };
+    unlockIfSafe();
+    const id = window.setInterval(unlockIfSafe, 500);
+    return () => window.clearInterval(id);
+  }, []);
+
   return (
-    <div id="feed-view" className="min-h-screen flex flex-col pb-24 sm:pb-6">
+    <div
+      id="feed-view"
+      ref={feedViewRef}
+      onScroll={handleWindowScroll}
+      className="min-h-screen h-[100dvh] overflow-hidden flex flex-col pb-24 sm:pb-6 sm:overflow-y-auto sm:overscroll-contain"
+    >
       <Header />
-      <main id="feed" className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8">
+      <main
+        id="feed"
+        ref={feedMainRef}
+        onScroll={handleWindowScroll}
+        className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 flex-1 min-h-0 overflow-y-auto overscroll-contain sm:overflow-visible"
+      >
         <div className="mb-6 space-y-4">
           <div className="flex flex-col gap-2">
             <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
@@ -747,11 +888,25 @@ export default function Feed() {
             </div>
           ) : (
             <div className="space-y-6">
-              {displayedPosts.map((post, index) => {
-                const postId = resolvePostId(post, index);
-                const postKey = resolvePostKey(post, index);
+              {topSpacerHeight > 0 && (
+                <div
+                  aria-hidden="true"
+                  style={{ height: `${topSpacerHeight}px` }}
+                />
+              )}
+              {windowedPosts.map((post, index) => {
+                const absoluteIndex = windowStart + index;
+                const postId = resolvePostId(post, absoluteIndex);
+                const postKey = resolvePostKey(post, absoluteIndex);
                 if (isContentUnderReview(post)) {
-                  return <UnderReviewCard key={`${postKey}-review`} />;
+                  return (
+                    <div
+                      key={`${postKey}-review`}
+                      ref={(node) => registerItemHeight(absoluteIndex, node)}
+                    >
+                      <UnderReviewCard />
+                    </div>
+                  );
                 }
                 let badge = null;
                 if (!shouldFilterByCollege) {
@@ -760,17 +915,25 @@ export default function Feed() {
                 } else {
                   const friendBadge =
                     isFriendPost(post) && !isAnonymousPost(post) ? FRIEND_BADGE : null;
-                  const campusBadge = friendBadge ? null : matchesCollege(post) ? CAMPUS_BADGE : null;
+                  const campusBadge =
+                    friendBadge ? null : matchesCollege(post) ? CAMPUS_BADGE : null;
                   badge = friendBadge || campusBadge;
                 }
                 return (
-                  <Post
+                  <div
                     key={postKey}
-                    post={post}
-                    badge={badge}
-                  />
+                    ref={(node) => registerItemHeight(absoluteIndex, node)}
+                  >
+                    <Post post={post} badge={badge} />
+                  </div>
                 );
               })}
+              {bottomSpacerHeight > 0 && (
+                <div
+                  aria-hidden="true"
+                  style={{ height: `${bottomSpacerHeight}px` }}
+                />
+              )}
               {hasMore && (
                 <div
                   ref={loadMoreRef}

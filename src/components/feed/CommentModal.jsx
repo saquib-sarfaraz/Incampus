@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { createPortal } from "react-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
@@ -26,6 +26,26 @@ const toIdString = (value) => {
   return "";
 };
 
+const isLikelyId = (value) => {
+  if (typeof value !== "string") return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\d+$/.test(trimmed)) return true;
+  return false;
+};
+
+const toSafeIdString = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") return isLikelyId(value) ? value.trim() : "";
+  if (typeof value === "object") return toIdString(value);
+  return "";
+};
+
 const resolveCommentId = (comment) =>
   toIdString(comment?._id || comment?.id || comment?.commentId || comment?.tempId);
 
@@ -41,18 +61,74 @@ const resolveCommentContent = (comment) => {
   );
 };
 
-const resolveCommentUserId = (comment) =>
-  toIdString(
-    comment?.user?._id ||
-      comment?.userId ||
-      comment?.user ||
-      comment?.author?._id ||
-      comment?.authorId ||
-      comment?.author
-  );
+const resolveCommentUserId = (comment) => {
+  const candidates = [
+    comment?.user?._id,
+    comment?.user?.id,
+    comment?.userId,
+    comment?.user_id,
+    comment?.author?._id,
+    comment?.author?.id,
+    comment?.authorId,
+    comment?.author_id,
+    comment?.owner?._id,
+    comment?.owner?.id,
+    comment?.ownerId,
+    comment?.owner_id,
+    comment?.createdBy?._id,
+    comment?.createdBy?.id,
+    comment?.createdById,
+    comment?.created_by,
+    comment?.user,
+    comment?.author,
+    comment?.owner,
+    comment?.createdBy,
+  ];
+  for (const candidate of candidates) {
+    const id = toSafeIdString(candidate);
+    if (id) return id;
+  }
+  return "";
+};
+
+const resolveCommentFallbackName = (comment) =>
+  comment?.authorDisplayName ||
+  comment?.authorName ||
+  comment?.authorFullName ||
+  comment?.userName ||
+  comment?.displayName ||
+  comment?.fullName ||
+  comment?.name ||
+  comment?.username ||
+  comment?.createdByName ||
+  comment?.ownerName ||
+  "";
+
+const resolveCommentFallbackAvatar = (comment) =>
+  comment?.authorProfilePic ||
+  comment?.authorAvatar ||
+  comment?.userAvatar ||
+  comment?.userProfilePic ||
+  comment?.profilePicUrl ||
+  comment?.profilePic ||
+  comment?.avatarUrl ||
+  comment?.avatar ||
+  comment?.createdByAvatar ||
+  comment?.ownerAvatar ||
+  "";
 
 const resolveCommentUser = (comment, fallbackId) => {
-  const candidate = comment?.user || comment?.author;
+  const candidate = comment?.user || comment?.author || comment?.owner || comment?.createdBy;
+  if (typeof candidate === "string") {
+    if (!isLikelyId(candidate)) {
+      return {
+        id: toIdString(fallbackId),
+        displayName: candidate,
+        profilePicUrl: ANONYMOUS_AVATAR,
+        isVerified: false,
+      };
+    }
+  }
   if (candidate && typeof candidate === "object") {
     return {
       id: toIdString(candidate._id || candidate.id || fallbackId),
@@ -64,10 +140,21 @@ const resolveCommentUser = (comment, fallbackId) => {
         "User",
       profilePicUrl:
         candidate.profilePicUrl ||
+        candidate.profilePic ||
         candidate.avatarUrl ||
         candidate.avatar ||
         ANONYMOUS_AVATAR,
       isVerified: Boolean(candidate.isVerified),
+    };
+  }
+  const fallbackName = resolveCommentFallbackName(comment);
+  const fallbackAvatar = resolveCommentFallbackAvatar(comment);
+  if (fallbackName || fallbackAvatar) {
+    return {
+      id: toIdString(fallbackId),
+      displayName: fallbackName || "User",
+      profilePicUrl: fallbackAvatar || ANONYMOUS_AVATAR,
+      isVerified: Boolean(comment?.isVerified || comment?.verified || comment?.is_verified),
     };
   }
   return null;
@@ -147,6 +234,129 @@ const mergeCommentLists = (incoming, current, removedIds) => {
   return merged;
 };
 
+const CommentList = memo(function CommentList({
+  comments,
+  postId,
+  postOwnerId,
+  currentUserId,
+  openMenuId,
+  menuRefs,
+  onToggleMenu,
+  onDelete,
+  onReport,
+  onBlock,
+}) {
+  if (!comments?.length) return null;
+  return comments.map((comment, index) => {
+    const stableId = resolveCommentId(comment) || toIdString(comment.userId);
+    const commentKey = `${postId || "post"}-${stableId || "comment"}-${index}`;
+    const commentUser =
+      comment?.user || comment?.author || comment?.owner || comment?.createdBy;
+    const rawName =
+      typeof commentUser === "string" && !isLikelyId(commentUser)
+        ? commentUser
+        : commentUser?.displayName ||
+          commentUser?.fullName ||
+          commentUser?.name ||
+          commentUser?.username ||
+          "";
+    const commentDisplayName = rawName || resolveCommentFallbackName(comment) || "User";
+    const commentAvatar =
+      (commentUser && typeof commentUser === "object"
+        ? commentUser.profilePicUrl ||
+          commentUser.profilePic ||
+          commentUser.avatarUrl ||
+          commentUser.avatar ||
+          ""
+        : "") ||
+      resolveCommentFallbackAvatar(comment) ||
+      ANONYMOUS_AVATAR;
+    const isVerified =
+      commentUser && typeof commentUser === "object"
+        ? Boolean(commentUser.isVerified || commentUser.verified)
+        : Boolean(comment?.isVerified || comment?.verified);
+    const isCommentOwner =
+      currentUserId && String(comment.userId) === String(currentUserId);
+    const isPostOwner =
+      currentUserId && postOwnerId && String(postOwnerId) === String(currentUserId);
+    const canDelete = isCommentOwner || isPostOwner;
+    return (
+      <div
+        key={commentKey}
+        className="flex justify-between items-start p-2 border-b border-white/10"
+      >
+        <div className="flex items-start space-x-2 flex-1">
+          <img
+            src={commentAvatar}
+            alt={commentDisplayName}
+            className="w-8 h-8 rounded-full object-cover"
+            loading="lazy"
+            decoding="async"
+          />
+          <div className="flex-1">
+            <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
+              {commentDisplayName}
+              {isVerified && <BlueTick className="text-[12px]" />}
+            </p>
+            <p className="text-sm text-[#b9b4c7]">
+              {comment.content || comment.text || comment.body || ""}
+            </p>
+          </div>
+        </div>
+        <div
+          className="relative ml-2"
+          ref={(el) => {
+            if (el) menuRefs.current[commentKey] = el;
+            else delete menuRefs.current[commentKey];
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => onToggleMenu(commentKey)}
+            className="h-7 w-7 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors"
+            aria-label="Comment actions"
+          >
+            <i className="fa-solid fa-ellipsis-vertical text-[10px]"></i>
+          </button>
+          {openMenuId === commentKey && (
+            <div className="absolute right-0 mt-2 w-36 rounded-2xl glass-card z-20 overflow-hidden">
+              {canDelete ? (
+                <button
+                  type="button"
+                  onClick={() => onDelete(resolveCommentId(comment))}
+                  className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
+                >
+                  <i className="fa-solid fa-trash mr-2"></i>
+                  Delete
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onReport(comment)}
+                    className="w-full text-left px-3 py-2 text-xs text-amber-200 hover:bg-white/10"
+                  >
+                    <i className="fa-solid fa-flag mr-2"></i>
+                    Report
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onBlock(comment)}
+                    className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
+                  >
+                    <i className="fa-solid fa-ban mr-2"></i>
+                    Block
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  });
+});
+
 const COMMENTS_CACHE_TTL = 2 * 60 * 1000;
 const commentsCache = new Map();
 
@@ -207,10 +417,10 @@ export default function CommentModal({ post, isOpen, onClose }) {
   );
 
   const hydrateComments = useCallback(
-    async (rawComments = [], options = {}) => {
-      const allowRemote = options.allowRemote !== false;
-      const commentsWithUsers = await Promise.all(
-        rawComments.map(async (comment) => {
+    (rawComments = []) => {
+      const missingUserIds = new Set();
+      const commentsWithUsers = rawComments
+        .map((comment) => {
           if (!comment || typeof comment !== "object") {
             return null;
           }
@@ -230,32 +440,106 @@ export default function CommentModal({ post, isOpen, onClose }) {
           }
 
           let user = resolveCommentUser(comment, userId);
+          if (user && typeof user !== "object") {
+            user = null;
+          }
           if (!user && userId) {
             user = getUserFromCache(userId);
           }
-          if (!user && userId && allowRemote) {
-            const userData = await getUserById(userId);
-            if (userData) {
-              cacheUser(userData);
-              user = {
-                id: userData._id,
-                displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-                profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
-                isVerified: Boolean(userData.isVerified),
-              };
-            }
+          if (!user && userId) {
+            missingUserIds.add(String(userId));
           }
+          const fallbackName = resolveCommentFallbackName(comment);
+          const fallbackAvatar = resolveCommentFallbackAvatar(comment);
+          const displayName =
+            user?.displayName ||
+            user?.fullName ||
+            user?.name ||
+            user?.username ||
+            fallbackName ||
+            "User";
+          const profilePicUrl =
+            user?.profilePicUrl ||
+            user?.profilePic ||
+            user?.avatarUrl ||
+            user?.avatar ||
+            fallbackAvatar ||
+            ANONYMOUS_AVATAR;
+          const isVerified = Boolean(user?.isVerified || user?.verified);
+          const normalizedUser = {
+            ...(user && typeof user === "object" ? user : {}),
+            displayName,
+            profilePicUrl,
+            isVerified,
+          };
           return {
             ...comment,
             content,
             userId,
-            user: user || { displayName: "User", profilePicUrl: ANONYMOUS_AVATAR },
+            user: normalizedUser,
           };
         })
-      );
-      return commentsWithUsers.filter(Boolean);
+        .filter(Boolean);
+      return { normalized: commentsWithUsers, missingUserIds: Array.from(missingUserIds) };
     },
-    [getUserFromCache, cacheUser, isUserBlocked]
+    [getUserFromCache, isUserBlocked]
+  );
+
+  const resolveMissingUsers = useCallback(
+    async (userIds = [], requestId) => {
+      const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+      if (uniqueIds.length === 0) return;
+      const results = await Promise.all(
+        uniqueIds.map(async (id) => {
+          try {
+            const userData = await getUserById(id);
+            return userData ? { id, data: userData } : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+      if (loadRequestRef.current !== requestId) return;
+      const updates = new Map();
+      results.forEach((entry) => {
+        if (!entry?.data) return;
+        const userData = entry.data;
+        cacheUser(userData);
+        updates.set(String(entry.id), {
+          displayName:
+            userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+          profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
+          isVerified: Boolean(userData.isVerified),
+        });
+      });
+      if (updates.size === 0) return;
+      setCommentsSafe((prev) => {
+        let changed = false;
+        const next = prev.map((comment) => {
+          const id = toIdString(comment.userId);
+          if (!id || !updates.has(id)) return comment;
+          const update = updates.get(id);
+          const currentUser = comment.user || {};
+          if (
+            currentUser.displayName === update.displayName &&
+            currentUser.profilePicUrl === update.profilePicUrl &&
+            Boolean(currentUser.isVerified) === Boolean(update.isVerified)
+          ) {
+            return comment;
+          }
+          changed = true;
+          return {
+            ...comment,
+            user: {
+              ...currentUser,
+              ...update,
+            },
+          };
+        });
+        return changed ? next : prev;
+      });
+    },
+    [cacheUser, setCommentsSafe]
   );
 
   const loadComments = useCallback(async () => {
@@ -273,10 +557,11 @@ export default function CommentModal({ post, isOpen, onClose }) {
       setCommentsSafe(cached);
       updatePostCounts(cached.length);
     } else if (fallback.length > 0 && (isNewPost || commentsRef.current.length === 0)) {
-      const normalizedFallback = await hydrateComments(fallback, { allowRemote: false });
+      const { normalized: normalizedFallback, missingUserIds } = hydrateComments(fallback);
       if (loadRequestRef.current !== requestId) return;
       setCommentsSafe(normalizedFallback);
       updatePostCounts(normalizedFallback.length);
+      resolveMissingUsers(missingUserIds, requestId);
     } else if (isNewPost) {
       setCommentsSafe([]);
     }
@@ -285,7 +570,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
     try {
       const payload = await fetchPostComments(postId);
       const rawComments = normalizeCommentsPayload(payload);
-      const normalized = await hydrateComments(rawComments);
+      const { normalized, missingUserIds } = hydrateComments(rawComments);
       if (loadRequestRef.current !== requestId) return;
       const merged = mergeCommentLists(
         normalized,
@@ -294,11 +579,12 @@ export default function CommentModal({ post, isOpen, onClose }) {
       );
       setCommentsSafe(merged);
       updatePostCounts(merged.length);
+      resolveMissingUsers(missingUserIds, requestId);
     } catch (error) {
       if (loadRequestRef.current !== requestId) return;
       setCommentsError(error?.message || "Failed to load comments.");
       if (fallback.length) {
-        const normalized = await hydrateComments(fallback);
+        const { normalized, missingUserIds } = hydrateComments(fallback);
         if (loadRequestRef.current !== requestId) return;
         const merged = mergeCommentLists(
           normalized,
@@ -307,6 +593,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
         );
         setCommentsSafe(merged);
         updatePostCounts(merged.length);
+        resolveMissingUsers(missingUserIds, requestId);
       } else {
         setCommentsSafe([]);
       }
@@ -315,7 +602,14 @@ export default function CommentModal({ post, isOpen, onClose }) {
         setLoadingComments(false);
       }
     }
-  }, [postId, post?.comments, hydrateComments, setCommentsSafe, updatePostCounts]);
+  }, [
+    postId,
+    post?.comments,
+    hydrateComments,
+    resolveMissingUsers,
+    setCommentsSafe,
+    updatePostCounts,
+  ]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -440,7 +734,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
     }
   };
 
-  const handleDelete = async (commentId) => {
+  const handleDelete = useCallback(async (commentId) => {
     if (!confirm("Delete this comment?")) return;
     if (!postId) return;
     const resolvedId = toIdString(commentId);
@@ -465,11 +759,11 @@ export default function CommentModal({ post, isOpen, onClose }) {
       updatePostCounts(prevComments.length);
       alert(error.message || "Failed to delete comment");
     }
-  };
+  }, [postId, setCommentsSafe, updatePostCounts, socket]);
 
-  const handleReport = (comment) => {
+  const handleReport = useCallback((comment) => {
     setReportTarget(comment);
-  };
+  }, []);
 
   const submitReport = async ({ reason, details }) => {
     if (!reportTarget?._id) return;
@@ -486,7 +780,7 @@ export default function CommentModal({ post, isOpen, onClose }) {
     }
   };
 
-  const handleBlock = async (comment) => {
+  const handleBlock = useCallback(async (comment) => {
     const userId = comment?.userId || comment?.user?._id;
     if (!userId) return;
     if (!confirm("Block this user? You will no longer see their content.")) return;
@@ -497,7 +791,35 @@ export default function CommentModal({ post, isOpen, onClose }) {
     } catch (error) {
       alert(error.message || "Failed to block user");
     }
-  };
+  }, [addBlockedUser]);
+
+  const handleToggleMenu = useCallback((commentKey) => {
+    setOpenMenuId((prev) => (prev === commentKey ? null : commentKey));
+  }, []);
+
+  const handleDeleteMenu = useCallback(
+    (commentId) => {
+      setOpenMenuId(null);
+      handleDelete(commentId);
+    },
+    [handleDelete]
+  );
+
+  const handleReportMenu = useCallback(
+    (comment) => {
+      setOpenMenuId(null);
+      handleReport(comment);
+    },
+    [handleReport]
+  );
+
+  const handleBlockMenu = useCallback(
+    (comment) => {
+      setOpenMenuId(null);
+      handleBlock(comment);
+    },
+    [handleBlock]
+  );
 
   if (typeof document === "undefined") {
     return null;
@@ -513,14 +835,15 @@ export default function CommentModal({ post, isOpen, onClose }) {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
             className="fixed inset-0 bg-black bg-opacity-80 z-50 flex items-end justify-center"
             onClick={onClose}
           >
             <Motion.div
-              initial={{ y: "100%" }}
-              animate={{ y: 0 }}
-              exit={{ y: "100%" }}
-              transition={{ type: "spring", damping: 25, stiffness: 200 }}
+              initial={{ y: 30, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 30, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
               className="w-full max-w-md glass-card comment-modal-panel rounded-t-3xl shadow-2xl flex flex-col h-3/4 max-h-[80vh] mb-24 sm:mb-0"
               onClick={(e) => e.stopPropagation()}
             >
@@ -556,100 +879,18 @@ export default function CommentModal({ post, isOpen, onClose }) {
                     )}
                   </div>
                 ) : (
-                  comments.map((comment, index) => {
-                  const stableId = resolveCommentId(comment) || toIdString(comment.userId);
-                  const commentKey = `${postId || "post"}-${stableId || "comment"}-${index}`;
-                    const isCommentOwner =
-                      currentUser?.id && String(comment.userId) === String(currentUser.id);
-                    const isPostOwner =
-                      currentUser?.id &&
-                      postOwnerId &&
-                      String(postOwnerId) === String(currentUser.id);
-                    const canDelete = isCommentOwner || isPostOwner;
-                    return (
-                      <div
-                        key={commentKey}
-                        className="flex justify-between items-start p-2 border-b border-white/10"
-                      >
-                        <div className="flex items-start space-x-2 flex-1">
-                          <img
-                            src={comment.user?.profilePicUrl || ANONYMOUS_AVATAR}
-                            alt={comment.user?.displayName}
-                            className="w-8 h-8 rounded-full object-cover"
-                          />
-                          <div className="flex-1">
-                            <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
-                              {comment.user?.displayName || "User"}
-                              {comment.user?.isVerified && <BlueTick className="text-[12px]" />}
-                            </p>
-                            <p className="text-sm text-[#b9b4c7]">
-                              {comment.content || comment.text || comment.body || ""}
-                            </p>
-                          </div>
-                        </div>
-                        <div
-                          className="relative ml-2"
-                          ref={(el) => {
-                            if (el) menuRefs.current[commentKey] = el;
-                            else delete menuRefs.current[commentKey];
-                          }}
-                        >
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setOpenMenuId((prev) => (prev === commentKey ? null : commentKey))
-                            }
-                            className="h-7 w-7 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors"
-                            aria-label="Comment actions"
-                          >
-                            <i className="fa-solid fa-ellipsis-vertical text-[10px]"></i>
-                          </button>
-                          {openMenuId === commentKey && (
-                            <div className="absolute right-0 mt-2 w-36 rounded-2xl glass-card z-20 overflow-hidden">
-                              {canDelete ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenMenuId(null);
-                                    handleDelete(resolveCommentId(comment));
-                                  }}
-                                  className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
-                                >
-                                  <i className="fa-solid fa-trash mr-2"></i>
-                                  Delete
-                                </button>
-                              ) : (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      handleReport(comment);
-                                    }}
-                                    className="w-full text-left px-3 py-2 text-xs text-amber-200 hover:bg-white/10"
-                                  >
-                                    <i className="fa-solid fa-flag mr-2"></i>
-                                    Report
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      setOpenMenuId(null);
-                                      handleBlock(comment);
-                                    }}
-                                    className="w-full text-left px-3 py-2 text-xs text-rose-200 hover:bg-white/10"
-                                  >
-                                    <i className="fa-solid fa-ban mr-2"></i>
-                                    Block
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })
+                  <CommentList
+                    comments={comments}
+                    postId={postId}
+                    postOwnerId={postOwnerId}
+                    currentUserId={currentUser?.id}
+                    openMenuId={openMenuId}
+                    menuRefs={menuRefs}
+                    onToggleMenu={handleToggleMenu}
+                    onDelete={handleDeleteMenu}
+                    onReport={handleReportMenu}
+                    onBlock={handleBlockMenu}
+                  />
                 )}
               </div>
 

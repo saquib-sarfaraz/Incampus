@@ -404,6 +404,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
       <AnimatePresence>
         {isOpen && (
           <Motion.div
+            id="create-post-modal"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

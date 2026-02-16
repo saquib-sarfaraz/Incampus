@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect } from "react";
-import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider } from "./context/AuthProvider";
 import { AppProvider } from "./context/AppContext";
 import ProtectedRoute from "./components/common/ProtectedRoute";
@@ -30,10 +30,22 @@ export default function App() {
     return () => window.clearTimeout(id);
   }, []);
 
+  const BodyOverflowReset = () => {
+    const location = useLocation();
+    useEffect(() => {
+      if (typeof document === "undefined") return;
+      document.body.style.overflow = "";
+      document.body.style.overflowX = "";
+      document.body.style.overflowY = "";
+    }, [location.pathname]);
+    return null;
+  };
+
   return (
     <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <AuthProvider>
         <AppProvider>
+          <BodyOverflowReset />
           <Suspense fallback={<PageLoader />}>
             <Routes>
               <Route path="/" element={<Landing />} />

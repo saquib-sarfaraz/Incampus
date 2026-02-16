@@ -45,6 +45,28 @@ body {
   }
 }
 
+@media (max-width: 640px) {
+  body {
+    background-attachment: scroll;
+  }
+}
+
+@media (max-width: 640px) {
+  #feed .glass-card,
+  #feed .glass-hover,
+  #trending-view main .glass-card,
+  #trending-view main .glass-hover {
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  #feed .glass-card::before,
+  #trending-view main .glass-card::before {
+    display: none;
+  }
+}
+
 #root {
   min-height: 100vh;
 }
@@ -113,6 +135,32 @@ main,
 #stories-section,
 #post-creator {
   background: linear-gradient(180deg, #2a1e14, #1a120b) !important;
+}
+
+#feed-view,
+#trending-view {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+#feed,
+#trending-view main {
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+@media (max-width: 640px) {
+  #feed-view,
+  #trending-view {
+    height: 100svh;
+    overflow: hidden;
+  }
+
+  #feed,
+  #trending-view main {
+    height: calc(100svh - 64px);
+    overflow-y: scroll;
+  }
 }
 
 /* ================= GLASS SURFACES ================= */

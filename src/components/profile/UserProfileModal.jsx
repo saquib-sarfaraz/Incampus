@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
-import { getUserById, reportUser, blockUser } from "../../services/api";
+import { getUserById, getFriendCount, reportUser, blockUser } from "../../services/api";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
 import PostModal from "./PostModal";
@@ -91,7 +91,24 @@ const UserProfileModalContent = ({
     const loadProfile = async () => {
       if (!baseUserId) return;
       setProfileLoading(true);
-      const data = await getUserById(baseUserId);
+      let data = await getUserById(baseUserId);
+      if (data) {
+        const rawCount =
+          data.friendCount ??
+          data.friendsCount ??
+          data.friends_count ??
+          (Array.isArray(data.friends) ? data.friends.length : null);
+        if (rawCount === null || rawCount === undefined) {
+          const fetchedCount = await getFriendCount(baseUserId);
+          if (Number.isFinite(fetchedCount)) {
+            data = {
+              ...data,
+              friendCount: fetchedCount,
+              friendsCount: fetchedCount,
+            };
+          }
+        }
+      }
       if (isActive && data) {
         setProfileUser(data);
       }
@@ -101,7 +118,7 @@ const UserProfileModalContent = ({
     return () => {
       isActive = false;
     };
-  }, [baseUserId]);
+  }, [baseUserId, getFriendCount]);
 
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
@@ -135,12 +152,19 @@ const UserProfileModalContent = ({
   const communityTypeLabel = formatCommunityType(resolveCommunityType(resolvedUser));
   const communityDescription =
     resolveCommunityDescription(resolvedUser) || "No description shared yet.";
-  const friendCount = Number(
-    resolvedUser.friendCount ||
-      resolvedUser.friendsCount ||
-      resolvedUser.friends?.length ||
-      0
-  );
+  const rawFriendCount =
+    resolvedUser.friendCount ??
+    resolvedUser.friendsCount ??
+    resolvedUser.friends_count ??
+    null;
+  const friendCountFromList = Array.isArray(resolvedUser.friends)
+    ? resolvedUser.friends.length
+    : null;
+  const resolvedFriendCount =
+    rawFriendCount !== null && rawFriendCount !== undefined && rawFriendCount !== ""
+      ? Number(rawFriendCount)
+      : friendCountFromList;
+  const showFriendCount = Number.isFinite(resolvedFriendCount);
   const memberCount = Number(resolveMemberCount(resolvedUser) || 0);
   const fallbackPublicCount = Number(
     resolvedUser.publicPostCount ||
@@ -290,7 +314,9 @@ const UserProfileModalContent = ({
             ) : (
               <>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-base font-semibold text-[#faf0e6]">{friendCount}</p>
+                  <p className="text-base font-semibold text-[#faf0e6]">
+                    {showFriendCount ? resolvedFriendCount : "—"}
+                  </p>
                   <p>Friends</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
