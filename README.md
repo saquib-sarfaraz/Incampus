@@ -33,7 +33,7 @@ npm install
 
 2. Create a `.env` file (see `.env.example`):
 ```env
-VITE_API_URL=https://uni-vibe-backend.onrender.com
+VITE_API_URL=https://incampusx-09ng.onrender.com
 VITE_RECAPTCHA_SITE_KEY=your-recaptcha-site-key-here
 ```
 
