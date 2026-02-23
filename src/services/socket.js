@@ -24,6 +24,7 @@ const sharedState =
     listenersBound: false,
     heartbeatId: null,
     heartbeatBound: false,
+    userId: null,
   });
 
 const getSharedSocket = () => sharedState.socket;
@@ -38,6 +39,10 @@ const setListenersBound = (value) => {
 const isHeartbeatBound = () => sharedState.heartbeatBound;
 const setHeartbeatBound = (value) => {
   sharedState.heartbeatBound = value;
+};
+const getUserId = () => sharedState.userId;
+const setUserId = (value) => {
+  sharedState.userId = value ? String(value) : null;
 };
 
 const shouldLog = () => {
@@ -89,7 +94,33 @@ const bindHeartbeat = (socket) => {
   }
 };
 
+const emitRegister = (socket) => {
+  if (!socket) return;
+  const userId = getUserId();
+  if (!userId) return;
+  socket.emit("register", userId);
+  socket.emit("register-user", { userId });
+};
+
+const emitPresence = (socket, status) => {
+  if (!socket) return;
+  const userId = getUserId();
+  if (!userId) return;
+  const payload = { userId, lastSeen: new Date().toISOString() };
+  if (status === "offline") {
+    socket.emit("user-offline", payload);
+    socket.emit("user_offline", payload);
+    return;
+  }
+  socket.emit("user-online", payload);
+  socket.emit("user_online", payload);
+};
+
 export const initSocket = (userId, rooms = []) => {
+  if (userId) {
+    setUserId(userId);
+    getRoomSubscriptions().add(String(userId));
+  }
   if (Array.isArray(rooms)) {
     rooms.forEach((room) => {
       if (room) getRoomSubscriptions().add(room);
@@ -104,9 +135,11 @@ export const initSocket = (userId, rooms = []) => {
         if (room.startsWith("group:")) {
           existingSocket.emit("join", { groupId: room });
         } else {
-          existingSocket.emit("join", { chatId: room });
+          existingSocket.emit("join", { chatId: room, userId: room });
         }
       });
+      emitRegister(existingSocket);
+      emitPresence(existingSocket, "online");
     } else {
       existingSocket.connect();
     }
@@ -123,6 +156,7 @@ export const initSocket = (userId, rooms = []) => {
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000,
     timeout: 20000,
+    withCredentials: true,
   });
   socket.auth = { token: getAuthToken() };
   setSharedSocket(socket);
@@ -133,9 +167,11 @@ export const initSocket = (userId, rooms = []) => {
       if (room.startsWith("group:")) {
         socket.emit("join", { groupId: room });
       } else {
-        socket.emit("join", { chatId: room });
+        socket.emit("join", { chatId: room, userId: room });
       }
     });
+    emitRegister(socket);
+    emitPresence(socket, "online");
   });
 
   socket.on("disconnect", (reason) => {
@@ -161,6 +197,7 @@ export const getSocket = () => {
 export const disconnectSocket = () => {
   const current = getSharedSocket();
   if (current) {
+    emitPresence(current, "offline");
     current.disconnect();
     setSharedSocket(null);
   }
@@ -177,7 +214,7 @@ export const joinSocket = (room) => {
     if (room.startsWith("group:")) {
       current.emit("join", { groupId: room });
     } else {
-      current.emit("join", { chatId: room });
+      current.emit("join", { chatId: room, userId: room });
     }
   }
 };
@@ -190,7 +227,7 @@ export const leaveSocket = (room) => {
     if (room.startsWith("group:")) {
       current.emit("leave", { groupId: room });
     } else {
-      current.emit("leave", { chatId: room });
+      current.emit("leave", { chatId: room, userId: room });
     }
   }
 };
