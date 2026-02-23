@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useLocation } from "react-router-dom";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { getSocket } from "../../services/socket";
 
 const CHAT_TOAST_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
 
@@ -28,17 +27,7 @@ const truncateMessage = (text = "", max = 60) => {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 };
 
-const eventNames = [
-  "chat-message",
-  "chat:newMessage",
-  "chat:messageSent",
-  "chat:newMessagePopup",
-  "receive_message",
-  "message",
-  "new_message",
-  "message_sent",
-  "message-sent",
-];
+const CHAT_EVENT = "chat:newMessage";
 
 export default function GlobalChatListener() {
   const location = useLocation();
@@ -168,18 +157,17 @@ export default function GlobalChatListener() {
 
   useEffect(() => {
     if (!currentUser?.id) return;
-    const socket = getSocket();
-    if (!socket) return;
+    if (typeof window === "undefined") return;
 
-    eventNames.forEach((eventName) => {
-      socket.off(eventName, handleChatMessage);
-      socket.on(eventName, handleChatMessage);
-    });
+    const handleWindowEvent = (event) => {
+      const payload = event?.detail || event;
+      handleChatMessage(payload);
+    };
+
+    window.addEventListener(CHAT_EVENT, handleWindowEvent);
 
     return () => {
-      eventNames.forEach((eventName) => {
-        socket.off(eventName, handleChatMessage);
-      });
+      window.removeEventListener(CHAT_EVENT, handleWindowEvent);
     };
   }, [currentUser?.id, handleChatMessage]);
 
