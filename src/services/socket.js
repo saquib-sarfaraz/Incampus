@@ -55,8 +55,7 @@ const shouldLog = () => {
 
 const log = (...args) => {
   if (shouldLog()) {
-    void args;
-    // Debug logging disabled.
+    console.debug("[socket]", ...args);
   }
 };
 
@@ -163,6 +162,7 @@ export const initSocket = (userId, rooms = []) => {
 
   socket.on("connect", () => {
     log("connected", socket.id);
+    log("transport", socket.io.engine?.transport?.name);
     getRoomSubscriptions().forEach((room) => {
       if (room.startsWith("group:")) {
         socket.emit("join", { groupId: room });
@@ -182,6 +182,16 @@ export const initSocket = (userId, rooms = []) => {
     // Refresh auth token for next reconnect attempt.
     socket.auth = { token: getAuthToken() };
     log("connect_error");
+  });
+
+  socket.io.on("reconnect_attempt", (attempt) => {
+    log("reconnect_attempt", attempt);
+  });
+  socket.io.on("reconnect", (attempt) => {
+    log("reconnect", attempt);
+  });
+  socket.io.on("reconnect_failed", () => {
+    log("reconnect_failed");
   });
 
   socket.connect();
