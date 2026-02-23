@@ -18,8 +18,7 @@ import {
 import { getSocket } from "../services/socket";
 import AppContext from "./appContextBase";
 import ChatToastContainer from "../components/chat/ChatToastContainer";
-
-const CHAT_TOAST_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
+import GlobalChatListener from "../components/chat/GlobalChatListener";
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const normalizeStoriesList = (list) => {
@@ -297,7 +296,6 @@ export const AppProvider = ({ children }) => {
   const friendStatusRequestRef = useRef(new Map());
   const activeChatIdRef = useRef(null);
   const chatViewActiveRef = useRef(false);
-  const seenChatMessagesRef = useRef(new Map());
   const toastDedupeRef = useRef(new Map());
   const [feedScope, setFeedScope] = useState(() => {
     if (typeof window === "undefined") return "universal";
@@ -883,19 +881,6 @@ export const AppProvider = ({ children }) => {
     [updateCachedUser]
   );
 
-  const resolveMessagePreview = useCallback((msg) => {
-    if (!msg) return "";
-    if (msg.messageType === "shared_post" || msg.type === "shared_post") {
-      return msg.postPreviewText || msg.postTitle || "Shared a post";
-    }
-    return msg.text || "";
-  }, []);
-
-  const truncateMessage = useCallback((text = "", max = 60) => {
-    if (!text) return "";
-    return text.length > max ? `${text.slice(0, max)}…` : text;
-  }, []);
-
   const resolveChatIdFromMessage = useCallback(
     (message) => {
       if (!message) return "";
@@ -1074,80 +1059,6 @@ export const AppProvider = ({ children }) => {
 
     const socket = getSocket();
     if (!socket) return;
-
-    // Chat message listener
-    const handleChatMessage = (payload = {}) => {
-      const message = payload?.message || payload;
-      if (!message) return;
-      const chatId = resolveChatIdFromMessage(message);
-      if (!chatId) return;
-      const dedupeKey =
-        message._id ||
-        message.id ||
-        `${chatId}-${message.createdAt || message.timestamp || ""}-${resolveEntityId(
-          message.from || message.senderId || message.userId || message.sender
-        )}-${message.text || message.postId || message.messageType || ""}`;
-      if (dedupeKey) {
-        const now = Date.now();
-        const seenAt = seenChatMessagesRef.current.get(dedupeKey);
-        if (seenAt && now - seenAt < 5000) return;
-        seenChatMessagesRef.current.set(dedupeKey, now);
-        if (seenChatMessagesRef.current.size > 500) {
-          const entries = Array.from(seenChatMessagesRef.current.entries());
-          entries
-            .sort((a, b) => a[1] - b[1])
-            .slice(0, 200)
-            .forEach(([key]) => seenChatMessagesRef.current.delete(key));
-        }
-      }
-
-      const senderId = resolveEntityId(
-        message.from || message.senderId || message.userId || message.sender
-      );
-      const isFromSelf =
-        senderId && currentUser?.id && String(senderId) === String(currentUser.id);
-
-      const isActiveChat =
-        chatViewActiveRef.current && activeChatIdRef.current === chatId;
-
-      updateChatMeta(chatId, message, {
-        incrementUnread: !isActiveChat && !isFromSelf,
-      });
-
-      if (!isFromSelf && !isActiveChat) {
-        const cachedUser = senderId ? getUserFromCache(senderId) : null;
-        const senderName =
-          message.senderName ||
-          message.fromName ||
-          message.authorName ||
-          cachedUser?.displayName ||
-          cachedUser?.username ||
-          "New message";
-        const senderAvatar =
-          message.senderAvatar ||
-          message.fromAvatar ||
-          cachedUser?.profilePicUrl ||
-          CHAT_TOAST_AVATAR;
-        const preview = truncateMessage(resolveMessagePreview(message));
-        const rawTime =
-          message.createdAt ||
-          message.created_at ||
-          message.timestamp ||
-          message.sentAt ||
-          Date.now();
-        const timeBucket = Math.floor(new Date(rawTime).getTime() / 5000);
-        const toastKey = `${chatId}-${senderId || "anon"}-${preview || ""}-${timeBucket}`;
-        pushChatToast({
-          id: `${chatId}-${message.createdAt || message.timestamp || Date.now()}`,
-          dedupeKey: toastKey,
-          chatId,
-          senderId,
-          title: senderName,
-          message: preview || "Sent you a message",
-          avatar: senderAvatar,
-        });
-      }
-    };
 
     const handleMessageExpired = (payload = {}) => {
       const message = payload?.message || payload;
@@ -1438,15 +1349,6 @@ export const AppProvider = ({ children }) => {
       updateAuthorProfile(userId, updates);
     };
 
-    socket.on("chat-message", handleChatMessage);
-    socket.on("chat:newMessage", handleChatMessage);
-    socket.on("chat:messageSent", handleChatMessage);
-    socket.on("chat:newMessagePopup", handleChatMessage);
-    socket.on("receive_message", handleChatMessage);
-    socket.on("message", handleChatMessage);
-    socket.on("new_message", handleChatMessage);
-    socket.on("message_sent", handleChatMessage);
-    socket.on("message-sent", handleChatMessage);
     socket.on("notification", handleNotification);
     socket.on("comment-added", handleCommentAdded);
     socket.on("post-liked", handlePostLiked);
@@ -1468,15 +1370,6 @@ export const AppProvider = ({ children }) => {
     socket.on("message-expired", handleMessageExpired);
 
     return () => {
-      socket.off("chat-message", handleChatMessage);
-      socket.off("chat:newMessage", handleChatMessage);
-      socket.off("chat:messageSent", handleChatMessage);
-      socket.off("chat:newMessagePopup", handleChatMessage);
-      socket.off("receive_message", handleChatMessage);
-      socket.off("message", handleChatMessage);
-      socket.off("new_message", handleChatMessage);
-      socket.off("message_sent", handleChatMessage);
-      socket.off("message-sent", handleChatMessage);
       socket.off("notification", handleNotification);
       socket.off("comment-added", handleCommentAdded);
       socket.off("post-liked", handlePostLiked);
@@ -1502,13 +1395,7 @@ export const AppProvider = ({ children }) => {
     currentUser,
     setFriendStatus,
     updateAuthorProfile,
-    resolveChatIdFromMessage,
-    updateChatMeta,
     setChatMetaEntry,
-    getUserFromCache,
-    truncateMessage,
-    resolveMessagePreview,
-    pushChatToast,
     refreshFriendMap,
   ]);
 
@@ -1647,6 +1534,7 @@ export const AppProvider = ({ children }) => {
   return (
     <AppContext.Provider value={value}>
       {children}
+      <GlobalChatListener />
       <ChatToastContainer />
     </AppContext.Provider>
   );
