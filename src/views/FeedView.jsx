@@ -12,7 +12,7 @@ export default function FeedView({ authToken }) {
     if (!authToken) return;
 
     fetch(`${API_BASE_URL}/posts`, {
-      headers: { Authorization: `Bearer ${authToken}` }
+      headers: { Authorization: `Bearer ${authToken}` },
     })
       .then(res => res.json())
       .then(data => setPosts(data.posts || []))
