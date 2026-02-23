@@ -1442,6 +1442,11 @@ export const AppProvider = ({ children }) => {
     socket.on("chat:newMessage", handleChatMessage);
     socket.on("chat:messageSent", handleChatMessage);
     socket.on("chat:newMessagePopup", handleChatMessage);
+    socket.on("receive_message", handleChatMessage);
+    socket.on("message", handleChatMessage);
+    socket.on("new_message", handleChatMessage);
+    socket.on("message_sent", handleChatMessage);
+    socket.on("message-sent", handleChatMessage);
     socket.on("notification", handleNotification);
     socket.on("comment-added", handleCommentAdded);
     socket.on("post-liked", handlePostLiked);
@@ -1467,6 +1472,11 @@ export const AppProvider = ({ children }) => {
       socket.off("chat:newMessage", handleChatMessage);
       socket.off("chat:messageSent", handleChatMessage);
       socket.off("chat:newMessagePopup", handleChatMessage);
+      socket.off("receive_message", handleChatMessage);
+      socket.off("message", handleChatMessage);
+      socket.off("new_message", handleChatMessage);
+      socket.off("message_sent", handleChatMessage);
+      socket.off("message-sent", handleChatMessage);
       socket.off("notification", handleNotification);
       socket.off("comment-added", handleCommentAdded);
       socket.off("post-liked", handlePostLiked);

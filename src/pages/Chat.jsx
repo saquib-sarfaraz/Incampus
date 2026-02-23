@@ -487,6 +487,50 @@ const truncateMessage = (text = "") => {
   return text.length > 40 ? `${text.slice(0, 40)}…` : text;
 };
 
+const normalizeMessageStatus = (msg) => {
+  if (!msg || typeof msg !== "object") return msg;
+  const deliveredAt = msg.deliveredAt || msg.delivered_at;
+  const seenAt =
+    msg.seenAt ||
+    msg.seen_at ||
+    msg.readAt ||
+    msg.read_at ||
+    msg.viewedAt ||
+    msg.viewed_at;
+  const status = String(
+    msg.status || msg.deliveryStatus || msg.messageStatus || msg.state || ""
+  ).toLowerCase();
+  const isDelivered = Boolean(msg.delivered || msg.isDelivered);
+  const isSeen = Boolean(msg.seen || msg.isSeen);
+  const fallback =
+    msg.updatedAt ||
+    msg.updated_at ||
+    msg.createdAt ||
+    msg.created_at ||
+    msg.timestamp ||
+    "";
+
+  let nextDelivered = deliveredAt;
+  let nextSeen = seenAt;
+
+  if ((status === "delivered" || isDelivered) && !nextDelivered) {
+    nextDelivered = fallback || new Date().toISOString();
+  }
+  if ((status === "seen" || isSeen) && !nextSeen) {
+    nextSeen = fallback || new Date().toISOString();
+  }
+  if ((status === "seen" || isSeen) && !nextDelivered) {
+    nextDelivered = nextSeen || fallback || new Date().toISOString();
+  }
+
+  if (!nextDelivered && !nextSeen) return msg;
+  return {
+    ...msg,
+    deliveredAt: nextDelivered || msg.deliveredAt,
+    seenAt: nextSeen || msg.seenAt,
+  };
+};
+
 export default function Chat() {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
@@ -530,6 +574,7 @@ export default function Chat() {
   const [messagesByChat, setMessagesByChat] = useState({});
   const [messageText, setMessageText] = useState("");
   const [presenceMap, setPresenceMap] = useState({});
+  const [typingMap, setTypingMap] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
@@ -549,6 +594,8 @@ export default function Chat() {
   const loadedChatsRef = useRef(new Set());
   const lastSeenSentRef = useRef(new Map());
   const missingGroupSenderRef = useRef(new Set());
+  const typingTimeoutsRef = useRef({});
+  const lastTypingSentRef = useRef({});
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -691,6 +738,30 @@ export default function Chat() {
       // ignore audio errors
     }
   }, []);
+
+  const emitTyping = useCallback(
+    (value) => {
+      const text = typeof value === "string" ? value : messageText;
+      if (!text || !currentUser?.id || !activeChatId) return;
+      if (String(activeChatId).startsWith("group:")) return;
+      const now = Date.now();
+      const lastSent = lastTypingSentRef.current[activeChatId] || 0;
+      if (now - lastSent < 1200) return;
+      lastTypingSentRef.current[activeChatId] = now;
+
+      const socket = getSocket();
+      if (!socket) return;
+      const payload = {
+        chatId: activeChatId,
+        senderId: currentUser.id,
+        receiverId: activeChatId,
+      };
+      socket.emit("typing", payload);
+      socket.emit("chat:typing", payload);
+      socket.emit("user_typing", payload);
+    },
+    [messageText, currentUser?.id, activeChatId]
+  );
 
   const findPostById = useCallback(
     (postId) => {
@@ -877,7 +948,9 @@ export default function Chat() {
         const now = Date.now();
         const existing = prev[chatId] || [];
         const filteredExisting = filterMessagesForChat(chatId, existing, now);
-        const filteredIncoming = filterMessagesForChat(chatId, incomingMessages, now);
+        const filteredIncoming = filterMessagesForChat(chatId, incomingMessages, now).map(
+          normalizeMessageStatus
+        );
         const index = ensureIndex(chatId);
         index.clear();
         filteredExisting.forEach((msg) => index.add(messageKey(msg)));
@@ -976,6 +1049,95 @@ export default function Chat() {
     [ensureIndex, currentUser?.id]
   );
 
+  const patchMessages = useCallback((chatId, predicate, updater) => {
+    if (typeof predicate !== "function") return;
+    setMessagesByChat((prev) => {
+      const applyUpdates = (list = []) => {
+        let changed = false;
+        const next = list.map((msg) => {
+          if (!predicate(msg)) return msg;
+          const updated =
+            typeof updater === "function" ? updater(msg) : { ...msg, ...updater };
+          if (updated !== msg) changed = true;
+          return updated;
+        });
+        return { next, changed };
+      };
+
+      if (chatId) {
+        const existing = prev[chatId] || [];
+        const { next, changed } = applyUpdates(existing);
+        return changed ? { ...prev, [chatId]: next } : prev;
+      }
+
+      let anyChanged = false;
+      const nextState = { ...prev };
+      Object.keys(prev).forEach((key) => {
+        const { next, changed } = applyUpdates(prev[key]);
+        if (changed) {
+          nextState[key] = next;
+          anyChanged = true;
+        }
+      });
+      return anyChanged ? nextState : prev;
+    });
+  }, []);
+
+  const resolveChatIdFromPayload = useCallback(
+    (payload) => {
+      const message = payload?.message || payload;
+      if (!message) return "";
+      const rawTarget =
+        message.chatId ||
+        message.chat_id ||
+        message.toChatId ||
+        message.to ||
+        message.receiverId ||
+        message.recipientId ||
+        payload?.chatId ||
+        payload?.roomId ||
+        payload?.conversationId ||
+        "";
+      const target = String(rawTarget || "");
+      if (target.startsWith("group:")) return target;
+      const fromId = resolveMessageSenderId(message);
+      if (currentUser?.id && fromId && String(fromId) === String(currentUser.id)) {
+        return target || fromId;
+      }
+      if (target && currentUser?.id && String(target) === String(currentUser.id)) {
+        return fromId || target;
+      }
+      return fromId || target;
+    },
+    [currentUser?.id]
+  );
+
+  const resolveTypingPayload = useCallback(
+    (payload) => {
+      if (!payload) return { chatId: "", senderId: "" };
+      const senderId = String(
+        payload.senderId || payload.userId || payload.from || payload.user || payload.id || ""
+      );
+      const rawTarget =
+        payload.chatId ||
+        payload.chat_id ||
+        payload.to ||
+        payload.receiverId ||
+        payload.recipientId ||
+        payload.roomId ||
+        payload.conversationId ||
+        "";
+      const target = String(rawTarget || "");
+      const chatId = target.startsWith("group:")
+        ? target
+        : currentUser?.id && target && String(target) === String(currentUser.id)
+          ? senderId || target
+          : target || senderId;
+      return { chatId: String(chatId || ""), senderId };
+    },
+    [currentUser?.id]
+  );
+
   const markMessagesSeen = useCallback(
     (chatId) => {
       if (!chatId) return;
@@ -1000,11 +1162,14 @@ export default function Chat() {
 
       const socket = getSocket();
       if (socket && currentUser?.id) {
-        socket.emit("message-seen", {
+        const payload = {
           chatId,
           userId: currentUser.id,
           seenAt,
-        });
+        };
+        socket.emit("message-seen", payload);
+        socket.emit("message_seen", payload);
+        socket.emit("mark_seen", payload);
       }
       markChatSeen({
         chatId,
@@ -1467,6 +1632,7 @@ export default function Chat() {
       text,
       createdAt: new Date().toISOString(),
       isGroup: isGroupChat,
+      status: "sent",
       clientMessageId: `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       pending: true,
     };
@@ -1474,7 +1640,15 @@ export default function Chat() {
     mergeMessages(activeChatId, [newMessage]);
     updateChatMeta(activeChatId, newMessage);
     markChatRead(activeChatId);
-    socket?.emit("chat-message", newMessage);
+    const socketPayload = {
+      ...newMessage,
+      senderId: currentUser.id,
+      receiverId: activeChatId,
+      chatId: activeChatId,
+    };
+    socket?.emit("chat-message", socketPayload);
+    socket?.emit("send_message", socketPayload);
+    socket?.emit("send-message", socketPayload);
     sendChatMessage(newMessage)
       .then((response) => {
         const saved = response?.message || response;
@@ -1737,16 +1911,73 @@ export default function Chat() {
     socket.off("user-online", handleOnline);
     socket.off("user-offline", handleOffline);
     socket.off("message-seen", handleSeen);
+    socket.off("user_online", handleOnline);
+    socket.off("user_offline", handleOffline);
+    socket.off("message_seen", handleSeen);
     socket.on("user-online", handleOnline);
     socket.on("user-offline", handleOffline);
     socket.on("message-seen", handleSeen);
+    socket.on("user_online", handleOnline);
+    socket.on("user_offline", handleOffline);
+    socket.on("message_seen", handleSeen);
 
     return () => {
       socket.off("user-online", handleOnline);
       socket.off("user-offline", handleOffline);
       socket.off("message-seen", handleSeen);
+      socket.off("user_online", handleOnline);
+      socket.off("user_offline", handleOffline);
+      socket.off("message_seen", handleSeen);
     };
   }, [currentUser?.id, updatePresence]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !currentUser?.id) return;
+
+    const handleTyping = (payload) => {
+      const { chatId, senderId } = resolveTypingPayload(payload);
+      if (!chatId || !senderId) return;
+      if (String(senderId) === String(currentUser.id)) return;
+
+      setTypingMap((prev) => ({
+        ...prev,
+        [chatId]: { userId: senderId, ts: Date.now() },
+      }));
+
+      const existing = typingTimeoutsRef.current[chatId];
+      if (existing) clearTimeout(existing);
+      typingTimeoutsRef.current[chatId] = setTimeout(() => {
+        setTypingMap((prev) => {
+          if (!prev[chatId]) return prev;
+          const next = { ...prev };
+          delete next[chatId];
+          return next;
+        });
+        delete typingTimeoutsRef.current[chatId];
+      }, 1800);
+    };
+
+    socket.off("typing", handleTyping);
+    socket.off("chat:typing", handleTyping);
+    socket.off("user_typing", handleTyping);
+    socket.off("user-typing", handleTyping);
+    socket.on("typing", handleTyping);
+    socket.on("chat:typing", handleTyping);
+    socket.on("user_typing", handleTyping);
+    socket.on("user-typing", handleTyping);
+
+    return () => {
+      socket.off("typing", handleTyping);
+      socket.off("chat:typing", handleTyping);
+      socket.off("user_typing", handleTyping);
+      socket.off("user-typing", handleTyping);
+      Object.values(typingTimeoutsRef.current).forEach((timeoutId) =>
+        clearTimeout(timeoutId)
+      );
+      typingTimeoutsRef.current = {};
+    };
+  }, [currentUser?.id, resolveTypingPayload]);
 
   const groupContacts = useMemo(() => {
     const universityLabel = currentUser?.university || currentUser?.college || "";
@@ -1799,6 +2030,19 @@ export default function Chat() {
       const chatId = isGroupMessage ? target : msg.from === currentUser.id ? msg.to : msg.from;
       mergeMessages(chatId, [msg]);
 
+      if (!isGroupMessage && msg.from && String(msg.from) !== String(currentUser.id)) {
+        const messageId = msg._id || msg.id || msg.clientMessageId;
+        const deliveredPayload = {
+          messageId,
+          chatId,
+          senderId: msg.from,
+          receiverId: currentUser.id,
+          deliveredAt: new Date().toISOString(),
+        };
+        socket.emit("message_delivered", deliveredPayload);
+        socket.emit("message-delivered", deliveredPayload);
+      }
+
       if (chatId !== activeChatRef.current) {
         if (!isMobile || chatSoundEnabled) {
           playNotificationSound();
@@ -1815,16 +2059,25 @@ export default function Chat() {
     socket.off("chat:newMessage", handleMessage);
     socket.off("chat:messageSent", handleMessage);
     socket.off("chat:newMessagePopup", handleMessage);
+    socket.off("receive_message", handleMessage);
+    socket.off("message", handleMessage);
+    socket.off("new_message", handleMessage);
     socket.on("chat-message", handleMessage);
     socket.on("chat:newMessage", handleMessage);
     socket.on("chat:messageSent", handleMessage);
     socket.on("chat:newMessagePopup", handleMessage);
+    socket.on("receive_message", handleMessage);
+    socket.on("message", handleMessage);
+    socket.on("new_message", handleMessage);
 
     return () => {
       socket.off("chat-message", handleMessage);
       socket.off("chat:newMessage", handleMessage);
       socket.off("chat:messageSent", handleMessage);
       socket.off("chat:newMessagePopup", handleMessage);
+      socket.off("receive_message", handleMessage);
+      socket.off("message", handleMessage);
+      socket.off("new_message", handleMessage);
     };
   }, [
     currentUser?.id,
@@ -1836,6 +2089,97 @@ export default function Chat() {
     isMobile,
     scrollToBottom,
   ]);
+
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !currentUser?.id) return;
+
+    const handleMessageSent = (payload) => {
+      const message = normalizeMessageStatus(payload?.message || payload);
+      if (!message) return;
+      const chatId = resolveChatIdFromPayload(message);
+      if (!chatId) return;
+      mergeMessages(chatId, [message]);
+      updateChatMeta(chatId, message);
+    };
+
+    const handleDelivered = (payload) => {
+      const message = payload?.message || payload;
+      const messageId =
+        message?._id || message?.id || payload?.messageId || payload?.id || "";
+      if (!messageId) return;
+      const chatId = resolveChatIdFromPayload(message) || payload?.chatId || "";
+      const deliveredAt =
+        payload?.deliveredAt ||
+        message?.deliveredAt ||
+        message?.delivered_at ||
+        new Date().toISOString();
+      patchMessages(chatId, (msg) => {
+        const id = msg?._id || msg?.id || msg?.clientMessageId || "";
+        return String(id) === String(messageId);
+      }, (msg) => ({
+        ...msg,
+        deliveredAt,
+        pending: false,
+        status: msg.status || "delivered",
+      }));
+    };
+
+    const handleMessagesSeen = (payload) => {
+      const seenAt = payload?.seenAt || payload?.readAt || new Date().toISOString();
+      const messageIds = []
+        .concat(payload?.messageIds || [])
+        .concat(payload?.messageId ? [payload.messageId] : [])
+        .map((id) => String(id))
+        .filter(Boolean);
+      let chatId = payload?.chatId || payload?.roomId || payload?.conversationId || "";
+      if (!chatId) {
+        const senderId = payload?.senderId || payload?.from || payload?.userId || "";
+        const receiverId = payload?.receiverId || payload?.to || payload?.targetUserId || "";
+        if (senderId && receiverId) {
+          chatId = String(senderId) === String(currentUser.id) ? receiverId : senderId;
+        }
+      }
+      if (!chatId && messageIds.length === 0) return;
+
+      patchMessages(chatId, (msg) => {
+        if (!msg) return false;
+        if (messageIds.length > 0) {
+          const id = msg._id || msg.id || msg.clientMessageId || "";
+          return messageIds.includes(String(id));
+        }
+        return String(resolveMessageSenderId(msg)) === String(currentUser.id);
+      }, (msg) => ({
+        ...msg,
+        seenAt,
+        deliveredAt: msg.deliveredAt || msg.delivered_at || seenAt,
+        pending: false,
+        status: "seen",
+      }));
+    };
+
+    socket.off("message_sent", handleMessageSent);
+    socket.off("message-sent", handleMessageSent);
+    socket.off("message_delivered", handleDelivered);
+    socket.off("message-delivered", handleDelivered);
+    socket.off("messages_seen", handleMessagesSeen);
+    socket.off("messages-seen", handleMessagesSeen);
+    socket.on("message_sent", handleMessageSent);
+    socket.on("message-sent", handleMessageSent);
+    socket.on("message_delivered", handleDelivered);
+    socket.on("message-delivered", handleDelivered);
+    socket.on("messages_seen", handleMessagesSeen);
+    socket.on("messages-seen", handleMessagesSeen);
+
+    return () => {
+      socket.off("message_sent", handleMessageSent);
+      socket.off("message-sent", handleMessageSent);
+      socket.off("message_delivered", handleDelivered);
+      socket.off("message-delivered", handleDelivered);
+      socket.off("messages_seen", handleMessagesSeen);
+      socket.off("messages-seen", handleMessagesSeen);
+    };
+  }, [currentUser?.id, mergeMessages, patchMessages, resolveChatIdFromPayload, updateChatMeta]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -2018,6 +2362,8 @@ export default function Chat() {
   const activePresence = activeChatUser?.isGroup
     ? { isOnline: false, lastSeen: "" }
     : getPresence(activeChatUser?.id, activeChatUser);
+  const activeTyping = activeChatId ? typingMap[activeChatId] : null;
+  const showTyping = Boolean(activeTyping && activeTyping.userId);
   const isDirectChat = !activeChatUser?.isGroup;
 
   const contactsList = useMemo(() => {
@@ -2362,10 +2708,14 @@ export default function Chat() {
                     </p>
                     <p className="text-xs text-[#b9b4c7]">
                       {activeChatUser?.isGroup
-                        ? "Group channel"
-                        : activePresence.isOnline
-                          ? "Online"
-                          : formatLastSeen(activePresence.lastSeen)}
+                        ? showTyping
+                          ? "Someone is typing..."
+                          : "Group channel"
+                        : showTyping
+                          ? "Typing..."
+                          : activePresence.isOnline
+                            ? "Online"
+                            : formatLastSeen(activePresence.lastSeen)}
                     </p>
                   </div>
                 </div>
@@ -2464,7 +2814,11 @@ export default function Chat() {
                     id="chat-input-field"
                     type="text"
                     value={messageText}
-                    onChange={(e) => setMessageText(e.target.value)}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setMessageText(value);
+                      emitTyping(value);
+                    }}
                     placeholder={
                       canChatActive ? "Type a message..." : "Only friends can message"
                     }
