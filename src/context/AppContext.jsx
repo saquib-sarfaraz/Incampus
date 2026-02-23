@@ -318,7 +318,8 @@ export const AppProvider = ({ children }) => {
       });
       setPosts(postsData);
       postsLoadedRef.current = true;
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     } finally {
       postsRequestRef.current = false;
       if (showLoading) {
@@ -365,7 +366,8 @@ export const AppProvider = ({ children }) => {
         staleTime: 30000,
       });
       setStories(normalizeStoriesList(storiesData));
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     } finally {
       storiesRequestRef.current = false;
     }
@@ -399,7 +401,8 @@ export const AppProvider = ({ children }) => {
       });
       const list = Array.isArray(notifs) ? notifs : [];
       setNotifications(list.filter((notif) => !isMessageNotification(notif)));
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     } finally {
       notificationsRequestRef.current = false;
     }
@@ -416,7 +419,8 @@ export const AppProvider = ({ children }) => {
         .filter(Boolean)
         .map((id) => String(id));
       setBlockedUsers(Array.from(new Set(ids)));
-    } catch (error) {
+    } catch (_error) {
+      void _error;
       setBlockedUsers([]);
     } finally {
       blockedUsersRequestRef.current = false;
@@ -604,7 +608,8 @@ export const AppProvider = ({ children }) => {
       });
       setFriendMap(applyBlockedToMap(nextMap));
       setFriendMapLoaded(true);
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     } finally {
       friendMapRequestRef.current = false;
       setFriendMapLoading(false);
@@ -879,30 +884,6 @@ export const AppProvider = ({ children }) => {
       );
     },
     [updateCachedUser]
-  );
-
-  const resolveChatIdFromMessage = useCallback(
-    (message) => {
-      if (!message) return "";
-      const rawTarget =
-        message.chatId ||
-        message.chat_id ||
-        message.toChatId ||
-        message.to ||
-        message.receiverId ||
-        message.recipientId ||
-        "";
-      const target = String(rawTarget || "");
-      if (target.startsWith("group:")) return target;
-      const fromId = resolveEntityId(
-        message.from || message.senderId || message.userId || message.sender
-      );
-      if (currentUser?.id && fromId && String(fromId) === String(currentUser.id)) {
-        return target || fromId;
-      }
-      return fromId || target;
-    },
-    [currentUser?.id]
   );
 
   const updateChatMeta = useCallback(

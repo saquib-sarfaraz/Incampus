@@ -118,7 +118,7 @@ const UserProfileModalContent = ({
     return () => {
       isActive = false;
     };
-  }, [baseUserId, getFriendCount]);
+  }, [baseUserId]);
 
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;

@@ -363,9 +363,9 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
         optimisticCountRef.current = null;
       }
     }
-  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost, likePost]);
+  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost]);
 
-  const handleLike = async () => {
+  const handleLike = useCallback(() => {
     if (!currentUser?.id) return;
     if (!postId) return;
     const nextLiked = !localIsLiked;
@@ -398,7 +398,16 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     likeCommitTimerRef.current = setTimeout(() => {
       commitLike();
     }, 2000);
-  };
+  }, [
+    currentUser?.id,
+    postId,
+    localIsLiked,
+    localLikesCount,
+    shouldUseLikesList,
+    baseLikes,
+    updatePost,
+    commitLike,
+  ]);
 
   const handleMediaDoubleTap = useCallback(() => {
     setMediaLikePulse((prev) => prev + 1);

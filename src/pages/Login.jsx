@@ -43,7 +43,8 @@ export default function Login() {
       } else {
         setError(result.error || "Invalid credentials. Please try again.");
       }
-    } catch (error) {
+    } catch (_error) {
+      void _error;
       setError("Network Error: Could not connect to the InCampus server.");
     } finally {
       setLoading(false);

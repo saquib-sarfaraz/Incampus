@@ -197,13 +197,13 @@ export default function Profile() {
     if (passwordError) {
       setPasswordError("");
     }
-  }, [newPassword, confirmPassword]);
+  }, [newPassword, confirmPassword, passwordError]);
 
   useEffect(() => {
     if (bioSuccess) {
       setBioSuccess("");
     }
-  }, [bio]);
+  }, [bio, bioSuccess]);
 
   useEffect(() => {
     if (!toast) return undefined;
@@ -868,11 +868,13 @@ export default function Profile() {
         });
         friendsCountsLoadedRef.current = true;
       }
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     } finally {
-      if (requestId !== friendsLoadRequestRef.current) return;
-      friendsLoadedRef.current = true;
-      if (shouldShowLoading) setFriendsLoading(false);
+      if (requestId === friendsLoadRequestRef.current) {
+        friendsLoadedRef.current = true;
+        if (shouldShowLoading) setFriendsLoading(false);
+      }
     }
   }, [
     resolvedFriendIds,
@@ -883,7 +885,6 @@ export default function Profile() {
     friendsList.length,
     cacheUser,
     getUserFromCache,
-    getFriendCount,
   ]);
 
   useEffect(() => {

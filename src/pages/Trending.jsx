@@ -1172,9 +1172,10 @@ export default function Trending() {
   const optimisticCountRef = useRef(new Map());
 
   useEffect(() => {
+    const timers = likeCommitTimersRef.current;
     return () => {
-      likeCommitTimersRef.current.forEach((timer) => clearTimeout(timer));
-      likeCommitTimersRef.current.clear();
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
     };
   }, []);
 
@@ -1277,7 +1278,8 @@ export default function Trending() {
         updatePost(postId, updates);
         committedLikedRef.current.set(postId, desiredAtSend);
         committedCountRef.current.set(postId, updatedCount);
-      } catch (error) {
+      } catch (_error) {
+        void _error;
         const rollbackLiked = committedLikedRef.current.get(postId);
         const rollbackCount = committedCountRef.current.get(postId);
         if (rollbackLiked !== undefined && rollbackCount !== undefined) {
@@ -1296,7 +1298,7 @@ export default function Trending() {
         }
       }
     },
-    [currentUser?.id, updatePost, likePost]
+    [currentUser?.id, updatePost]
   );
 
   const scheduleLikeCommit = useCallback(
@@ -1727,6 +1729,7 @@ export default function Trending() {
       handleOpenStory,
       likeIconPulse,
       mediaLikePulse,
+      handleToggleLike,
       renderUnderReviewMediaCard,
       resolveTrendingBadge,
       shouldSuppressOpen,

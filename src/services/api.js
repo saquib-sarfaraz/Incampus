@@ -321,7 +321,8 @@ export const getUserById = async (userId) => {
     try {
       const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
       return data?.user || data;
-    } catch (error) {
+    } catch (_error) {
+      void _error;
       return null;
     }
   })();

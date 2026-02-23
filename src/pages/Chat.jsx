@@ -459,6 +459,43 @@ const GroupListItem = memo(function GroupListItem({
   );
 });
 
+const MessageList = memo(function MessageList({
+  messages,
+  currentUserId,
+  isActiveGroupChat,
+  isDirectChat,
+  onOpenSharedPost,
+  onReport,
+  resolveMessageSender,
+  messagesEndRef,
+}) {
+  if (messages.length === 0) {
+    return (
+      <p className="text-center text-[#b9b4c7] mt-10">No messages yet. Say hi!</p>
+    );
+  }
+  return (
+    <>
+      {messages.map((msg) => {
+        const isMine = msg.from === currentUserId;
+        return (
+          <ChatMessage
+            key={messageKey(msg)}
+            msg={msg}
+            isMine={isMine}
+            isActiveGroupChat={isActiveGroupChat}
+            isDirectChat={isDirectChat}
+            onOpenSharedPost={onOpenSharedPost}
+            onReport={onReport}
+            resolveMessageSender={resolveMessageSender}
+          />
+        );
+      })}
+      <div ref={messagesEndRef} />
+    </>
+  );
+});
+
 const formatLastSeen = (dateString) => {
   if (!dateString) return "Offline";
   const date = new Date(dateString);
@@ -589,6 +626,8 @@ export default function Chat() {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [friendRequestLoading, setFriendRequestLoading] = useState(false);
   const messagesEndRef = useRef(null);
+  const messagesContainerRef = useRef(null);
+  const shouldAutoScrollRef = useRef(true);
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
   const loadedChatsRef = useRef(new Set());
@@ -668,20 +707,16 @@ export default function Chat() {
   }, [activeChatId]);
 
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket || !activeChatId) return;
-
-    socket.emit("chat:joinRoom", { roomId: activeChatId });
-    if (typeof window !== "undefined") {
-      window.__activeChatRoom = activeChatId;
-    }
-
-    return () => {
-      socket.emit("chat:leaveRoom", { roomId: activeChatId });
-      if (typeof window !== "undefined" && window.__activeChatRoom === activeChatId) {
-        window.__activeChatRoom = null;
-      }
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const handleScroll = () => {
+      const distance =
+        container.scrollHeight - container.scrollTop - container.clientHeight;
+      shouldAutoScrollRef.current = distance < 120;
     };
+    handleScroll();
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    return () => container.removeEventListener("scroll", handleScroll);
   }, [activeChatId]);
 
   useEffect(() => {
@@ -1198,8 +1233,11 @@ export default function Chat() {
     [currentUser, setMessagesByChat]
   );
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = useCallback((force = false) => {
+    if (!force && !shouldAutoScrollRef.current) return;
+    requestAnimationFrame(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    });
   }, []);
 
   const loadContacts = useCallback(
@@ -1319,6 +1357,7 @@ export default function Chat() {
         userId: currentUserId,
       });
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
+        void requestsData;
       }
       const resolveRequestUsers = (req) => {
         if (!req || typeof req !== "object") return { fromId: "", toId: "", user: null };
@@ -1494,6 +1533,7 @@ export default function Chat() {
         })
       );
       if (typeof window !== "undefined" && window.location?.search?.includes("debugRequests=1")) {
+        void formattedRequests;
       }
       const normalized = formattedRequests.filter(Boolean);
       if (normalized.length > 0) {
@@ -1558,7 +1598,8 @@ export default function Chat() {
         return fallback;
       }
       return normalized;
-    } catch (error) {
+    } catch (_error) {
+      void _error;
       return [];
     }
   }, [cacheUser, getUserFromCache, isUserBlocked, currentUser]);
@@ -1598,7 +1639,8 @@ export default function Chat() {
                 unreadCount: resolveUnreadCount(scopedMsgs, friend.id),
               });
             }
-          } catch (error) {
+          } catch (_error) {
+            void _error;
           }
         })
       );
@@ -1606,27 +1648,59 @@ export default function Chat() {
     [fetchChatMessages, mergeMessages, updateChatMeta, resolveUnreadCount]
   );
 
-  const loadMessages = useCallback(
-    async (userId) => {
-      if (!userId || loadedChatsRef.current.has(userId)) return;
+  const refreshChatMessages = useCallback(
+    async (chatId) => {
+      if (!chatId) return;
       try {
-        const msgs = await fetchChatMessages(userId);
-        const scopedMsgs = filterMessagesForChat(userId, msgs);
-        mergeMessages(userId, scopedMsgs);
-        loadedChatsRef.current.add(userId);
+        const msgs = await fetchChatMessages(chatId);
+        const scopedMsgs = filterMessagesForChat(chatId, msgs);
+        mergeMessages(chatId, scopedMsgs);
         if (scopedMsgs.length > 0) {
           const last = scopedMsgs[scopedMsgs.length - 1];
-          updateChatMeta(userId, last, {
-            unreadCount: resolveUnreadCount(scopedMsgs, userId),
+          updateChatMeta(chatId, last, {
+            unreadCount: resolveUnreadCount(scopedMsgs, chatId),
           });
-        } else if (isGroupChatId(userId)) {
-          syncChatMetaFromMessages(userId, []);
+        } else if (isGroupChatId(chatId)) {
+          syncChatMetaFromMessages(chatId, []);
         }
-      } catch (error) {
+      } catch (_error) {
+        void _error;
       }
     },
     [fetchChatMessages, mergeMessages, updateChatMeta, resolveUnreadCount, syncChatMetaFromMessages]
   );
+
+  useEffect(() => {
+    if (!activeChatId) {
+      if (typeof window !== "undefined") {
+        window.__activeChatRoom = null;
+      }
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      window.__activeChatRoom = activeChatId;
+    }
+
+    shouldAutoScrollRef.current = true;
+    refreshChatMessages(activeChatId);
+    markChatRead(activeChatId);
+    markMessagesSeen(activeChatId);
+
+    const socket = getSocket();
+    if (socket) {
+      socket.emit("chat:joinRoom", { roomId: activeChatId });
+    }
+
+    return () => {
+      if (socket) {
+        socket.emit("chat:leaveRoom", { roomId: activeChatId });
+      }
+      if (typeof window !== "undefined" && window.__activeChatRoom === activeChatId) {
+        window.__activeChatRoom = null;
+      }
+    };
+  }, [activeChatId, refreshChatMessages, markChatRead, markMessagesSeen]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -1663,16 +1737,23 @@ export default function Chat() {
       receiverId: activeChatId,
       chatId: activeChatId,
     };
-    socket?.emit("chat:newMessage", socketPayload);
-    sendChatMessage(newMessage)
-      .then((response) => {
-        const saved = response?.message || response;
-        if (saved) {
-          mergeMessages(activeChatId, [saved]);
-          updateChatMeta(activeChatId, saved);
-        }
-      })
-      .catch(() => {});
+    if (socket?.connected) {
+      socket.emit("chat:sendMessage", {
+        roomId: activeChatId,
+        receiverId: isGroupChat ? null : activeChatId,
+        message: socketPayload,
+      });
+    } else {
+      sendChatMessage(newMessage)
+        .then((response) => {
+          const saved = response?.message || response;
+          if (saved) {
+            mergeMessages(activeChatId, [saved]);
+            updateChatMeta(activeChatId, saved);
+          }
+        })
+        .catch(() => {});
+    }
     setMessageText("");
     scrollToBottom();
   };
@@ -1733,7 +1814,8 @@ export default function Chat() {
     );
     try {
       await rejectFriend(requesterId);
-    } catch (error) {
+    } catch (_error) {
+      void _error;
     }
   };
 
@@ -1766,11 +1848,8 @@ export default function Chat() {
       } else {
         setActiveTab("contacts");
       }
-      markChatRead(chatId);
-      loadMessages(chatId);
-      markMessagesSeen(chatId);
     },
-    [setActiveChatId, markChatRead, loadMessages, markMessagesSeen]
+    [setActiveChatId]
   );
 
   const handleCloseChat = () => {
@@ -2034,31 +2113,38 @@ export default function Chat() {
   }, [groupList, contacts]);
 
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket || !currentUser?.id) return;
+    if (!currentUser?.id || typeof window === "undefined") return;
 
-    const handleMessage = (payload) => {
+    const handleMessage = (event) => {
+      const payload = event?.detail || event;
       if (import.meta.env.DEV) {
         console.debug("[chat] Received:", payload);
       }
       const msg = payload?.message || payload;
       if (!msg) return;
-      const target = String(msg?.to || "");
-      const isGroupMessage = target.startsWith("group:");
-      const chatId = isGroupMessage ? target : msg.from === currentUser.id ? msg.to : msg.from;
-      mergeMessages(chatId, [msg]);
+      const chatId = resolveChatIdFromPayload(payload);
+      if (!chatId) return;
+      const isGroupMessage = String(chatId).startsWith("group:");
+      requestAnimationFrame(() => {
+        mergeMessages(chatId, [msg]);
+        updateChatMeta(chatId, msg);
+      });
 
-      if (!isGroupMessage && msg.from && String(msg.from) !== String(currentUser.id)) {
+      const senderId = resolveMessageSenderId(msg);
+      if (!isGroupMessage && senderId && String(senderId) !== String(currentUser.id)) {
         const messageId = msg._id || msg.id || msg.clientMessageId;
         const deliveredPayload = {
           messageId,
           chatId,
-          senderId: msg.from,
+          senderId,
           receiverId: currentUser.id,
           deliveredAt: new Date().toISOString(),
         };
-        socket.emit("message_delivered", deliveredPayload);
-        socket.emit("message-delivered", deliveredPayload);
+        const socket = getSocket();
+        if (socket) {
+          socket.emit("message_delivered", deliveredPayload);
+          socket.emit("message-delivered", deliveredPayload);
+        }
       }
 
       if (chatId !== activeChatRef.current) {
@@ -2073,17 +2159,18 @@ export default function Chat() {
       }
     };
 
-    socket.off("chat:newMessage", handleMessage);
-    socket.on("chat:newMessage", handleMessage);
+    window.addEventListener("chat:activeMessage", handleMessage);
 
     return () => {
-      socket.off("chat:newMessage", handleMessage);
+      window.removeEventListener("chat:activeMessage", handleMessage);
     };
   }, [
     currentUser?.id,
     markChatRead,
     markMessagesSeen,
     mergeMessages,
+    updateChatMeta,
+    resolveChatIdFromPayload,
     playNotificationSound,
     chatSoundEnabled,
     isMobile,
@@ -2755,29 +2842,18 @@ export default function Chat() {
                 id="chat-messages"
                 className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 pb-[calc(5rem+env(safe-area-inset-bottom))] space-y-4"
                 style={{ WebkitOverflowScrolling: "touch" }}
+                ref={messagesContainerRef}
               >
-                {visibleMessages.length === 0 ? (
-                  <p className="text-center text-[#b9b4c7] mt-10">
-                    No messages yet. Say hi!
-                  </p>
-                ) : (
-                  visibleMessages.map((msg) => {
-                    const isMine = msg.from === currentUserId;
-                    return (
-                      <ChatMessage
-                        key={messageKey(msg)}
-                        msg={msg}
-                        isMine={isMine}
-                        isActiveGroupChat={isActiveGroupChat}
-                        isDirectChat={isDirectChat}
-                        onOpenSharedPost={handleOpenSharedPost}
-                        onReport={handleReportMessage}
-                        resolveMessageSender={resolveMessageSender}
-                      />
-                    );
-                  })
-                )}
-                <div ref={messagesEndRef} />
+                <MessageList
+                  messages={visibleMessages}
+                  currentUserId={currentUserId}
+                  isActiveGroupChat={isActiveGroupChat}
+                  isDirectChat={isDirectChat}
+                  onOpenSharedPost={handleOpenSharedPost}
+                  onReport={handleReportMessage}
+                  resolveMessageSender={resolveMessageSender}
+                  messagesEndRef={messagesEndRef}
+                />
               </div>
 
               <div
