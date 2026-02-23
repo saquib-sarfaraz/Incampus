@@ -76,11 +76,39 @@ export const AuthProvider = ({ children }) => {
     const normalized = normalizeUser(user);
     if (normalized.id) {
       localStorage.setItem("currentUserId", normalized.id);
+      if (typeof window !== "undefined") {
+        window.__currentUserId = normalized.id;
+      }
     }
     setCurrentUser(normalized);
     initSocket(normalized.id, buildGroupRooms(user));
     return normalized;
   }, [buildGroupRooms, normalizeUser]);
+
+  const resolveChatIdFromMessage = useCallback(
+    (message) => {
+      if (!message) return "";
+      const rawTarget =
+        message.roomId ||
+        message.chatId ||
+        message.chat_id ||
+        message.toChatId ||
+        message.to ||
+        message.receiverId ||
+        message.recipientId ||
+        "";
+      const target = String(rawTarget || "");
+      if (target.startsWith("group:")) return target;
+      const fromId = String(
+        message.from || message.senderId || message.userId || message.sender || ""
+      );
+      if (currentUser?.id && fromId && String(fromId) === String(currentUser.id)) {
+        return target || fromId;
+      }
+      return fromId || target;
+    },
+    [currentUser?.id]
+  );
 
   const logout = useCallback(() => {
     localStorage.removeItem("authToken");
@@ -90,6 +118,7 @@ export const AuthProvider = ({ children }) => {
     disconnectSocket();
     if (typeof window !== "undefined") {
       window.__activeChatRoom = null;
+      window.__currentUserId = null;
     }
   }, []);
 
@@ -98,17 +127,46 @@ export const AuthProvider = ({ children }) => {
     const socket = getSocket();
     if (!socket) return;
 
-    const handleSocketMessage = (payload) => {
-      window.dispatchEvent(new CustomEvent("chat:newMessage", { detail: payload }));
+    const handleNewMessage = (payload) => {
+      const message = payload?.message || payload;
+      if (!message) return;
+      const chatId = resolveChatIdFromMessage(message);
+      if (!chatId) return;
+      if (window.__activeChatRoom && String(window.__activeChatRoom) === String(chatId)) {
+        window.dispatchEvent(new CustomEvent("chat:activeMessage", { detail: payload }));
+      }
     };
 
-    socket.off("chat:newMessage", handleSocketMessage);
-    socket.on("chat:newMessage", handleSocketMessage);
+    socket.off("chat:newMessage", handleNewMessage);
+    socket.on("chat:newMessage", handleNewMessage);
 
     return () => {
-      socket.off("chat:newMessage", handleSocketMessage);
+      socket.off("chat:newMessage", handleNewMessage);
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, resolveChatIdFromMessage]);
+
+  useEffect(() => {
+    if (!currentUser?.id || typeof window === "undefined") return;
+    const socket = getSocket();
+    if (!socket) return;
+
+    const handlePopup = (payload) => {
+      const message = payload?.message || payload;
+      if (!message) return;
+      const chatId = resolveChatIdFromMessage(message);
+      if (chatId && window.__activeChatRoom && String(window.__activeChatRoom) === String(chatId)) {
+        return;
+      }
+      window.dispatchEvent(new CustomEvent("chat:popup", { detail: payload }));
+    };
+
+    socket.off("chat:popup", handlePopup);
+    socket.on("chat:popup", handlePopup);
+
+    return () => {
+      socket.off("chat:popup", handlePopup);
+    };
+  }, [currentUser?.id, resolveChatIdFromMessage]);
 
   useEffect(() => {
     const handleInvalidToken = () => {

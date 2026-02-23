@@ -27,7 +27,7 @@ const truncateMessage = (text = "", max = 60) => {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 };
 
-const CHAT_EVENT = "chat:newMessage";
+const CHAT_EVENT = "chat:popup";
 
 export default function GlobalChatListener() {
   const location = useLocation();
@@ -50,6 +50,7 @@ export default function GlobalChatListener() {
     (message) => {
       if (!message) return "";
       const rawTarget =
+        message.roomId ||
         message.chatId ||
         message.chat_id ||
         message.toChatId ||

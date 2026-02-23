@@ -10,11 +10,11 @@ const HEARTBEAT_EVENT =
   "heartbeat";
 
 const globalScope =
-  typeof window !== "undefined"
-    ? window
-    : typeof globalThis !== "undefined"
-      ? globalThis
-      : global;
+  typeof globalThis !== "undefined"
+    ? globalThis
+    : typeof window !== "undefined"
+      ? window
+      : {};
 
 const sharedState =
   globalScope.__incampusSocketState ||
@@ -97,27 +97,15 @@ const emitRegister = (socket) => {
   if (!socket) return;
   const userId = getUserId();
   if (!userId) return;
-  socket.emit("register", userId);
-  socket.emit("register-user", { userId });
-};
-
-const emitPresence = (socket, status) => {
-  if (!socket) return;
-  const userId = getUserId();
-  if (!userId) return;
-  const payload = { userId, lastSeen: new Date().toISOString() };
-  if (status === "offline") {
-    socket.emit("user-offline", payload);
-    socket.emit("user_offline", payload);
-    return;
-  }
-  socket.emit("user-online", payload);
-  socket.emit("user_online", payload);
+  socket.emit("user:register", { userId });
 };
 
 export const initSocket = (userId, rooms = []) => {
   if (userId) {
     setUserId(userId);
+    if (typeof window !== "undefined") {
+      window.__currentUserId = String(userId);
+    }
     getRoomSubscriptions().add(String(userId));
   }
   if (Array.isArray(rooms)) {
@@ -138,7 +126,6 @@ export const initSocket = (userId, rooms = []) => {
         }
       });
       emitRegister(existingSocket);
-      emitPresence(existingSocket, "online");
     } else {
       existingSocket.connect();
     }
@@ -174,7 +161,6 @@ export const initSocket = (userId, rooms = []) => {
       }
     });
     emitRegister(socket);
-    emitPresence(socket, "online");
   });
 
   socket.on("disconnect", (reason) => {
@@ -210,7 +196,6 @@ export const getSocket = () => {
 export const disconnectSocket = () => {
   const current = getSharedSocket();
   if (current) {
-    emitPresence(current, "offline");
     current.disconnect();
     setSharedSocket(null);
   }

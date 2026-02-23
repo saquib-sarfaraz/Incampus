@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
-import { getUserById } from "../../services/api";
+import { getUserById, sendChatMessage } from "../../services/api";
 import { getSocket } from "../../services/socket";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
@@ -131,6 +131,7 @@ export default function ShareToChatModal({
     const shareLink =
       postUrl || (postId ? `${window.location.origin}/feed?post=${postId}` : "");
 
+    const canUseSocket = Boolean(socket?.connected);
     ids.forEach((targetId) => {
       const message = {
         from: currentUser.id,
@@ -148,7 +149,16 @@ export default function ShareToChatModal({
         postAuthorId: postIsAnonymous ? undefined : postAuthorId,
         senderId: currentUser.id,
       };
-      socket.emit("chat:newMessage", message);
+      if (canUseSocket) {
+        const isGroup = String(targetId).startsWith("group:");
+        socket.emit("chat:sendMessage", {
+          roomId: targetId,
+          receiverId: isGroup ? null : targetId,
+          message,
+        });
+      } else {
+        sendChatMessage(message).catch(() => {});
+      }
     });
 
     setToast("Post shared");
