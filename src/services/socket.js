@@ -163,6 +163,9 @@ export const initSocket = (userId, rooms = []) => {
   socket.on("connect", () => {
     log("connected", socket.id);
     log("transport", socket.io.engine?.transport?.name);
+    if (typeof window !== "undefined" && window.__activeChatRoom) {
+      socket.emit("chat:joinRoom", { roomId: window.__activeChatRoom });
+    }
     getRoomSubscriptions().forEach((room) => {
       if (room.startsWith("group:")) {
         socket.emit("join", { groupId: room });

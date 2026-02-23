@@ -148,7 +148,7 @@ export default function ShareToChatModal({
         postAuthorId: postIsAnonymous ? undefined : postAuthorId,
         senderId: currentUser.id,
       };
-      socket.emit("chat-message", message);
+      socket.emit("chat:newMessage", message);
     });
 
     setToast("Post shared");

@@ -668,6 +668,23 @@ export default function Chat() {
   }, [activeChatId]);
 
   useEffect(() => {
+    const socket = getSocket();
+    if (!socket || !activeChatId) return;
+
+    socket.emit("chat:joinRoom", { roomId: activeChatId });
+    if (typeof window !== "undefined") {
+      window.__activeChatRoom = activeChatId;
+    }
+
+    return () => {
+      socket.emit("chat:leaveRoom", { roomId: activeChatId });
+      if (typeof window !== "undefined" && window.__activeChatRoom === activeChatId) {
+        window.__activeChatRoom = null;
+      }
+    };
+  }, [activeChatId]);
+
+  useEffect(() => {
     const handleResize = () => setIsMobile(window.innerWidth < 640);
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
@@ -1646,9 +1663,7 @@ export default function Chat() {
       receiverId: activeChatId,
       chatId: activeChatId,
     };
-    socket?.emit("chat-message", socketPayload);
-    socket?.emit("send_message", socketPayload);
-    socket?.emit("send-message", socketPayload);
+    socket?.emit("chat:newMessage", socketPayload);
     sendChatMessage(newMessage)
       .then((response) => {
         const saved = response?.message || response;
@@ -2023,6 +2038,9 @@ export default function Chat() {
     if (!socket || !currentUser?.id) return;
 
     const handleMessage = (payload) => {
+      if (import.meta.env.DEV) {
+        console.debug("[chat] Received:", payload);
+      }
       const msg = payload?.message || payload;
       if (!msg) return;
       const target = String(msg?.to || "");
@@ -2055,29 +2073,11 @@ export default function Chat() {
       }
     };
 
-    socket.off("chat-message", handleMessage);
     socket.off("chat:newMessage", handleMessage);
-    socket.off("chat:messageSent", handleMessage);
-    socket.off("chat:newMessagePopup", handleMessage);
-    socket.off("receive_message", handleMessage);
-    socket.off("message", handleMessage);
-    socket.off("new_message", handleMessage);
-    socket.on("chat-message", handleMessage);
     socket.on("chat:newMessage", handleMessage);
-    socket.on("chat:messageSent", handleMessage);
-    socket.on("chat:newMessagePopup", handleMessage);
-    socket.on("receive_message", handleMessage);
-    socket.on("message", handleMessage);
-    socket.on("new_message", handleMessage);
 
     return () => {
-      socket.off("chat-message", handleMessage);
       socket.off("chat:newMessage", handleMessage);
-      socket.off("chat:messageSent", handleMessage);
-      socket.off("chat:newMessagePopup", handleMessage);
-      socket.off("receive_message", handleMessage);
-      socket.off("message", handleMessage);
-      socket.off("new_message", handleMessage);
     };
   }, [
     currentUser?.id,

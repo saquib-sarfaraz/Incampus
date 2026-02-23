@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { login as loginAPI, getCurrentUser } from "../services/api";
-import { initSocket, disconnectSocket } from "../services/socket";
+import { initSocket, disconnectSocket, getSocket } from "../services/socket";
 import { resolveStudentType, resolveUserType } from "../utils/userProfile";
 import { AuthContext } from "./authContext";
 
@@ -88,7 +88,27 @@ export const AuthProvider = ({ children }) => {
     setAuthToken(null);
     setCurrentUser(null);
     disconnectSocket();
+    if (typeof window !== "undefined") {
+      window.__activeChatRoom = null;
+    }
   }, []);
+
+  useEffect(() => {
+    if (!currentUser?.id || typeof window === "undefined") return;
+    const socket = getSocket();
+    if (!socket) return;
+
+    const handleSocketMessage = (payload) => {
+      window.dispatchEvent(new CustomEvent("chat:newMessage", { detail: payload }));
+    };
+
+    socket.off("chat:newMessage", handleSocketMessage);
+    socket.on("chat:newMessage", handleSocketMessage);
+
+    return () => {
+      socket.off("chat:newMessage", handleSocketMessage);
+    };
+  }, [currentUser?.id]);
 
   useEffect(() => {
     const handleInvalidToken = () => {
