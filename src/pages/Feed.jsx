@@ -10,6 +10,8 @@ import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import PostModal from "../components/profile/PostModal";
+import TrendingSidebar from "../components/feed/TrendingSidebar";
+import ChatSidebar from "../components/chat/ChatSidebar";
 import { fetchRankedFeedPage } from "../services/api";
 import {
   getLikeCount,
@@ -50,8 +52,29 @@ const resolveBadge = (badgeKey) => {
   return null;
 };
 
+const isLikelyId = (value) => {
+  if (value === null || value === undefined) return false;
+  const trimmed = String(value).trim();
+  if (!trimmed) return false;
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\d+$/.test(trimmed)) return true;
+  return false;
+};
+
 const getAuthorId = (post) => {
-  return post.author?._id || post.authorId || post.author || "";
+  const candidate =
+    post.author?._id ||
+    post.author?.id ||
+    post.authorId ||
+    post.author_id ||
+    post.userId ||
+    post.user_id ||
+    post.author ||
+    "";
+  return isLikelyId(candidate) ? String(candidate) : "";
 };
 
 const resolvePostId = (post, index) => {
@@ -244,6 +267,7 @@ export default function Feed() {
   const [rankedHasMore, setRankedHasMore] = useState(true);
   const [rankedLoading, setRankedLoading] = useState(false);
   const [rankedError, setRankedError] = useState("");
+  const [feedBooting, setFeedBooting] = useState(true);
   const [feedCursor, setFeedCursor] = useState({ key: "", page: 0 });
   const [newPostsAvailable, setNewPostsAvailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -268,6 +292,10 @@ export default function Feed() {
     () => `${feedScope}-${campusLabel || ""}-${campusId || ""}`,
     [feedScope, campusLabel, campusId]
   );
+
+  useEffect(() => {
+    setFeedBooting(true);
+  }, [feedKey]);
 
   const checkForNewPosts = useCallback(async () => {
     if (shouldFilterByCollege) return false;
@@ -398,14 +426,17 @@ export default function Feed() {
 
   useEffect(() => {
     if (shouldFilterByCollege) return;
-    setRankedPosts([]);
-    setRankedPage(1);
-    setRankedHasMore(true);
-    setRankedError("");
-    prefetchRef.current = { page: null, data: null, promise: null };
-    rankedPostsRef.current = [];
-    rankedLoadingRef.current = false;
-    loadRankedPage(1, { replace: true });
+    const hasExisting = rankedPostsRef.current.length > 0;
+    if (!hasExisting) {
+      setRankedPosts([]);
+      setRankedPage(1);
+      setRankedHasMore(true);
+      setRankedError("");
+      prefetchRef.current = { page: null, data: null, promise: null };
+      rankedPostsRef.current = [];
+      rankedLoadingRef.current = false;
+    }
+    loadRankedPage(1, { replace: !hasExisting });
   }, [shouldFilterByCollege, loadRankedPage]);
 
   const scopedPosts = useMemo(() => {
@@ -618,8 +649,8 @@ export default function Feed() {
   const activePage = feedCursor.key === feedKey ? feedCursor.page : 0;
   const visibleCount = 8 + activePage * 6;
   const showSkeletons = shouldFilterByCollege
-    ? loading && finalFeedPosts.length === 0
-    : rankedLoading && finalFeedPosts.length === 0 && !rankedError;
+    ? (loading || feedBooting) && finalFeedPosts.length === 0
+    : (rankedLoading || feedBooting) && finalFeedPosts.length === 0 && !rankedError;
   const hasMore = shouldFilterByCollege
     ? visibleCount < finalFeedPosts.length
     : rankedHasMore;
@@ -627,8 +658,27 @@ export default function Feed() {
     ? finalFeedPosts.slice(0, visibleCount)
     : finalFeedPosts;
   const showRankedError =
-    !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0;
+    !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0 && !feedBooting;
+  const showEmptyState =
+    finalFeedPosts.length === 0 && !showSkeletons && !showRankedError && !feedBooting;
   const postParam = (searchParams.get("post") || "").trim();
+  const trendingSidebarItems = useMemo(() => {
+    if (!finalFeedPosts.length) return [];
+    const entries = finalFeedPosts
+      .map((post, index) => {
+        const id = resolvePostId(post, index);
+        if (!id) return null;
+        return {
+          id,
+          post,
+          score: getEngagementScore(post),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+    return entries;
+  }, [finalFeedPosts]);
 
   useEffect(() => {
     if (location.state?.sharedPost) {
@@ -667,6 +717,16 @@ export default function Feed() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  const handleOpenTrendingPost = useCallback(
+    (postId) => {
+      if (!postId) return;
+      const next = new URLSearchParams(searchParams);
+      next.set("post", String(postId));
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
+
   useEffect(() => {
     const latestId = finalFeedPosts.length
       ? resolvePostIdentity(finalFeedPosts[0]) || ""
@@ -675,6 +735,15 @@ export default function Feed() {
       latestPostRef.current = latestId;
     }
   }, [finalFeedPosts]);
+
+  useEffect(() => {
+    if (!feedBooting) return;
+    if (shouldFilterByCollege) {
+      if (!loading) setFeedBooting(false);
+      return;
+    }
+    if (!rankedLoading) setFeedBooting(false);
+  }, [feedBooting, shouldFilterByCollege, loading, rankedLoading]);
 
   const [windowStart, setWindowStart] = useState(0);
   const [estimatedItemHeight, setEstimatedItemHeight] = useState(FEED_ESTIMATED_ITEM_HEIGHT);
@@ -901,99 +970,114 @@ export default function Feed() {
       id="feed-view"
       ref={feedViewRef}
       onScroll={handleWindowScroll}
-      className="min-h-screen flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
+      className="min-h-[100dvh] flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
     >
       <Header />
       <main
         id="feed"
         ref={feedMainRef}
         onScroll={handleWindowScroll}
-        className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"
+        className="w-full py-4 sm:py-6 lg:py-4 px-3 sm:px-4 lg:px-0 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"
       >
-        <div className="mb-6 space-y-4">
-          <div className="flex flex-col gap-2">
-            <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
-              {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
-            </p>
-            {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
-              <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
-                🔥 Trending
-              </span>
-            )}
-            {feedScope === "college" && !campusLabel && (
-              <p className="text-sm text-[#b9b4c7]">
-                Set your university to filter your feed. Showing all posts for now.
-              </p>
-            )}
+        <div className="mx-auto w-full max-w-6xl lg:max-w-screen-2xl flex flex-col lg:flex-row lg:justify-center lg:gap-6 lg:px-6">
+          <aside className="hidden lg:block lg:w-[260px] xl:w-[280px] lg:sticky lg:top-24 h-fit self-start">
+            <TrendingSidebar
+              items={trendingSidebarItems}
+              onOpenPost={handleOpenTrendingPost}
+            />
+          </aside>
+
+          <div className="w-full lg:w-[720px] xl:w-[760px] flex-shrink-0">
+            <div className="mb-4 lg:mb-2 space-y-3 lg:space-y-2">
+              <div className="flex flex-col gap-2">
+                <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
+                  {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
+                </p>
+                {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
+                  <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
+                    🔥 Trending
+                  </span>
+                )}
+                {feedScope === "college" && !campusLabel && (
+                  <p className="text-sm text-[#b9b4c7]">
+                    Set your university to filter your feed. Showing all posts for now.
+                  </p>
+                )}
+              </div>
+              {newPostsAvailable && (
+                <button
+                  type="button"
+                  onClick={handleRefreshFeed}
+                  className="glass-card border border-sky-400/30 bg-sky-400/10 text-sky-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit"
+                >
+                  New posts available ↑ Tap to refresh
+                </button>
+              )}
+            </div>
+
+            <section className="space-y-4 lg:space-y-2">
+              <div className="hidden sm:block">
+                <PostCreator />
+              </div>
+              <StoryBar />
+
+              {showSkeletons ? (
+                <div className="space-y-4 lg:space-y-2">
+                  {[1, 2, 3].map((i) => (
+                    <div
+                      key={i}
+                      className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
+                    >
+                      <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
+                      <div className="h-28 bg-white/10 rounded mb-4"></div>
+                      <div className="h-4 bg-white/10 rounded w-1/2"></div>
+                    </div>
+                  ))}
+                </div>
+              ) : showRankedError ? (
+                <div className="text-center py-12 glass-card rounded-3xl">
+                  <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
+                  <p className="text-[#b9b4c7]">{rankedError}</p>
+                </div>
+              ) : showEmptyState ? (
+                <div className="text-center py-12 glass-card rounded-3xl">
+                  <i className="fa-solid fa-inbox text-3xl text-[#b9b4c7] mb-3"></i>
+                  <p className="text-[#b9b4c7]">
+                    No posts yet. Be the first to share!
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-4 lg:space-y-2">
+                  {topSpacerHeight > 0 && (
+                    <div
+                      aria-hidden="true"
+                      style={{ height: `${topSpacerHeight}px` }}
+                    />
+                  )}
+                  {renderedWindowedPosts}
+                  {bottomSpacerHeight > 0 && (
+                    <div
+                      aria-hidden="true"
+                      style={{ height: `${bottomSpacerHeight}px` }}
+                    />
+                  )}
+                  {hasMore && (
+                    <div
+                      ref={loadMoreRef}
+                      className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
+                    >
+                      Loading more...
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
           </div>
-          {newPostsAvailable && (
-            <button
-              type="button"
-              onClick={handleRefreshFeed}
-              className="glass-card border border-sky-400/30 bg-sky-400/10 text-sky-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit"
-            >
-              New posts available ↑ Tap to refresh
-            </button>
-          )}
+
+          <aside className="hidden lg:block lg:w-[320px] xl:w-[340px] lg:sticky lg:top-24 h-fit self-start">
+            <ChatSidebar />
+          </aside>
         </div>
-
-        <section className="space-y-6">
-          <div className="hidden sm:block">
-            <PostCreator />
-          </div>
-          <StoryBar />
-
-          {showSkeletons ? (
-            <div className="space-y-6">
-              {[1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className="glass-card rounded-3xl p-6 animate-pulse"
-                >
-                  <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
-                  <div className="h-28 bg-white/10 rounded mb-4"></div>
-                  <div className="h-4 bg-white/10 rounded w-1/2"></div>
-                </div>
-              ))}
-            </div>
-          ) : showRankedError ? (
-            <div className="text-center py-12 glass-card rounded-3xl">
-              <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
-              <p className="text-[#b9b4c7]">{rankedError}</p>
-            </div>
-          ) : finalFeedPosts.length === 0 ? (
-            <div className="text-center py-12 glass-card rounded-3xl">
-              <i className="fa-solid fa-inbox text-3xl text-[#b9b4c7] mb-3"></i>
-              <p className="text-[#b9b4c7]">
-                No posts yet. Be the first to share!
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {topSpacerHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{ height: `${topSpacerHeight}px` }}
-                />
-              )}
-              {renderedWindowedPosts}
-              {bottomSpacerHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{ height: `${bottomSpacerHeight}px` }}
-                />
-              )}
-              {hasMore && (
-                <div
-                  ref={loadMoreRef}
-                  className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
-                >
-                  Loading more...
-                </div>
-              )}
-            </div>
-          )}
-        </section>
       </main>
       <Motion.button
         type="button"

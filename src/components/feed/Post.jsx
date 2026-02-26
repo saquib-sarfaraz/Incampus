@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, memo } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
+import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -14,14 +15,23 @@ import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
-import { getOptimizedMediaUrl, getOptimizedVideoUrl, getMediaSrcSet } from "../../utils/media";
+import {
+  getOptimizedMediaUrl,
+  getOptimizedVideoUrl,
+  getMediaSrcSet,
+  getOptimizedFillUrl,
+  detectAspectRatio,
+  resolveAspectRatioString,
+} from "../../utils/media";
 import { isVideoUrl } from "../../utils/storyMedia";
+import { buildUserPreview } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const VIEW_RATIO_THRESHOLD = 0.5;
 const VIEW_MIN_MS = 1200;
 const VIEW_COOLDOWN_MS = 5 * 60 * 1000;
 const VIEW_STORAGE_PREFIX = "incampus:post:view:";
+const CAPTION_PREVIEW_LENGTH = 100;
 const viewedPostsSession = new Set();
 
 const resolvePostViewsCount = (post) => {
@@ -167,6 +177,34 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
+const resolvePostAspectRatio = (post) => {
+  if (!post) return "";
+  const direct =
+    post.aspectRatio ||
+    post.media?.aspectRatio ||
+    post.media?.ratio ||
+    post.imageAspectRatio ||
+    post.mediaAspectRatio ||
+    "";
+  if (direct) return direct;
+  const width =
+    post.media?.width ||
+    post.media?.w ||
+    post.imageWidth ||
+    post.mediaWidth ||
+    post.width ||
+    0;
+  const height =
+    post.media?.height ||
+    post.media?.h ||
+    post.imageHeight ||
+    post.mediaHeight ||
+    post.height ||
+    0;
+  if (width && height) return detectAspectRatio(Number(width), Number(height));
+  return "";
+};
+
 const isLikelyId = (value) => {
   if (typeof value !== "string") return false;
   const trimmed = value.trim();
@@ -181,6 +219,30 @@ const isLikelyId = (value) => {
   }
   if (/^\d+$/.test(trimmed)) return true;
   return false;
+};
+
+const isDeletedPlaceholderName = (value) => {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  return (
+    normalized === "deleted user" ||
+    normalized === "user deleted" ||
+    normalized === "deleted account" ||
+    normalized === "account deleted" ||
+    normalized === "deactivated user" ||
+    normalized === "deactivated account"
+  );
+};
+
+const sanitizeDisplayName = (value) => {
+  if (value === null || value === undefined) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  const lowered = trimmed.toLowerCase();
+  if (lowered === "null" || lowered === "undefined") return "";
+  if (isDeletedPlaceholderName(trimmed)) return "";
+  return trimmed;
 };
 
 const resolvePostAuthorEntity = (post) =>
@@ -205,14 +267,19 @@ const resolvePostAuthorId = (post) => {
     post?.postedById ||
     post?.creatorId ||
     "";
-  if (direct) return direct;
+  if (direct) {
+    return isLikelyId(String(direct)) ? String(direct) : "";
+  }
   const entity = resolvePostAuthorEntity(post);
-  return entity?._id || entity?.id || entity || "";
+  const entityId = entity?._id || entity?.id || entity || "";
+  return isLikelyId(String(entityId)) ? String(entityId) : "";
 };
 
 const resolvePostAuthorName = (post, entity) => {
-  if (typeof entity === "string") return isLikelyId(entity) ? "" : entity;
-  return (
+  if (typeof entity === "string") {
+    return isLikelyId(entity) ? "" : sanitizeDisplayName(entity);
+  }
+  const candidate =
     post?.authorDisplayName ||
     post?.authorName ||
     post?.authorFullName ||
@@ -223,8 +290,8 @@ const resolvePostAuthorName = (post, entity) => {
     entity?.fullName ||
     entity?.username ||
     entity?.name ||
-    ""
-  );
+    "";
+  return sanitizeDisplayName(candidate);
 };
 
 const resolvePostAuthorPic = (post, entity) => {
@@ -234,10 +301,39 @@ const resolvePostAuthorPic = (post, entity) => {
     post?.authorAvatar ||
     post?.userProfilePic ||
     post?.userAvatar ||
+    post?.authorPhoto ||
+    post?.authorPhotoUrl ||
+    post?.authorImage ||
+    post?.authorImageUrl ||
+    post?.authorPicture ||
+    post?.authorPictureUrl ||
     entity?.profilePicUrl ||
     entity?.profilePic ||
     entity?.avatarUrl ||
     entity?.avatar ||
+    entity?.photoUrl ||
+    entity?.photo ||
+    entity?.imageUrl ||
+    entity?.image ||
+    entity?.pictureUrl ||
+    entity?.picture ||
+    ""
+  );
+};
+
+const resolveAvatarUrl = (author, fallback) => {
+  return (
+    author?.profilePicUrl ||
+    author?.profilePic ||
+    author?.avatarUrl ||
+    author?.avatar ||
+    author?.photoUrl ||
+    author?.photo ||
+    author?.imageUrl ||
+    author?.image ||
+    author?.pictureUrl ||
+    author?.picture ||
+    fallback ||
     ""
   );
 };
@@ -248,12 +344,18 @@ const resolvePostAuthorVerified = (post, entity) =>
       post?.authorVerified ||
       post?.userIsVerified ||
       post?.userVerified ||
+      post?.isVerifiedCommunity ||
+      post?.verifiedCommunity ||
+      post?.communityVerified ||
       post?.isVerified ||
       post?.verified ||
       post?.is_verified ||
       post?.verification?.status === "verified" ||
       (entity && typeof entity === "object"
         ? entity.isVerified ||
+          entity.isVerifiedCommunity ||
+          entity.verifiedCommunity ||
+          entity.communityVerified ||
           entity.verified ||
           entity.is_verified ||
           entity.verification?.status === "verified"
@@ -262,7 +364,8 @@ const resolvePostAuthorVerified = (post, entity) =>
 
 function Post({ post, onOpen, badge }) {
   const { currentUser } = useAuth();
-  const { cacheUser, getUserFromCache, updatePost, addBlockedUser } = useApp();
+  const { cacheUser, getUserFromCache, updatePost, addBlockedUser, prefetchUserProfile } = useApp();
+  const navigate = useNavigate();
   const [author, setAuthor] = useState(null);
   const [optimisticLiked, setOptimisticLiked] = useState(null);
   const [optimisticLikesCount, setOptimisticLikesCount] = useState(null);
@@ -310,15 +413,26 @@ function Post({ post, onOpen, badge }) {
   const postId = post._id || post.id || post.postId || post.post_id;
   const postUrl = `${window.location.origin}/feed?post=${postId}`;
   const postMediaUrl = resolvePostMediaUrl(post);
+  const explicitAspect = resolvePostAspectRatio(post);
+  const [mediaAspect, setMediaAspect] = useState(explicitAspect || "4:5");
+  useEffect(() => {
+    setMediaAspect(explicitAspect || "4:5");
+  }, [explicitAspect, postId]);
+  const effectiveAspect = explicitAspect || mediaAspect || "4:5";
+  const mediaAspectStyle = useMemo(
+    () => ({ "--media-aspect": resolveAspectRatioString(effectiveAspect) }),
+    [effectiveAspect]
+  );
+  const canDetectAspect = !explicitAspect;
   const postThumbnail = postMediaUrl;
   const isVideo =
     isVideoUrl(postMediaUrl) ||
     String(post.mediaType || post.type || "").toLowerCase().includes("video");
   const optimizedPostMedia = isVideo
     ? getOptimizedVideoUrl(postMediaUrl)
-    : getOptimizedMediaUrl(postMediaUrl, { width: 600 });
+    : getOptimizedFillUrl(postMediaUrl, { width: 900, aspectRatio: effectiveAspect });
   const postSrcSet = !isVideo ? getMediaSrcSet(postMediaUrl) : null;
-  const avatarUrl = getOptimizedMediaUrl(author?.profilePicUrl, { width: 80, height: 80 });
+  const avatarUrl = getOptimizedMediaUrl(resolveAvatarUrl(author, authorPic), { width: 80, height: 80 });
   const postPreviewText =
     post.content && post.content.length > 0
       ? post.content.slice(0, 80)
@@ -330,7 +444,51 @@ function Post({ post, onOpen, badge }) {
     Boolean(author?.isVerified ?? resolvePostAuthorVerified(post, authorEntity));
   const authorDisplayName = post.isAnonymous
     ? "Anonymous Student"
-    : author?.displayName || "User";
+    : sanitizeDisplayName(author?.displayName) ||
+      sanitizeDisplayName(authorName) ||
+      "User";
+  const handleOpenProfile = useCallback(() => {
+    if (post.isAnonymous) return;
+    const targetId =
+      authorId || author?.id || author?._id || post.authorId || post.author?._id || post.author;
+    if (targetId) {
+      const cachedAuthor = authorId ? getUserFromCache(authorId) : null;
+      prefetchUserProfile?.(targetId, cachedAuthor || author || authorEntity);
+      const preview = buildUserPreview(
+        { ...(cachedAuthor || {}), ...(authorEntity || {}), ...(author || {}) },
+        {
+        _id: targetId,
+        fullName: author?.fullName || author?.name || authorName,
+        displayName: author?.displayName || authorDisplayName || authorName,
+        username: author?.username,
+        profilePicUrl: resolveAvatarUrl(author, authorPic),
+        isVerified: authorIsVerified,
+        isVerifiedCommunity: author?.isVerifiedCommunity,
+        }
+      );
+      navigate(`/profile/${targetId}`, { state: { userPreview: preview } });
+    }
+  }, [
+    navigate,
+    post.isAnonymous,
+    authorId,
+    author?.id,
+    author?._id,
+    post.authorId,
+    post.author,
+    author?.fullName,
+    author?.name,
+    authorName,
+    author?.displayName,
+    authorDisplayName,
+    author?.username,
+    author?.profilePicUrl,
+    authorPic,
+    authorIsVerified,
+    author?.isVerifiedCommunity,
+    getUserFromCache,
+    prefetchUserProfile,
+  ]);
 
   useEffect(() => {
     const loadAuthor = async () => {
@@ -347,15 +505,21 @@ function Post({ post, onOpen, badge }) {
         return;
       }
 
+      const hasDeletedLabel = isDeletedPlaceholderName(authorName);
       if (authorName || authorPic) {
+        const previewName = hasDeletedLabel
+          ? ""
+          : authorName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "";
+        const previewAvatar = resolveAvatarUrl(authorEntity, authorPic) || ANONYMOUS_AVATAR;
         setAuthor({
           id: authorId,
-          displayName:
-            authorName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-          profilePicUrl: authorPic || ANONYMOUS_AVATAR,
+          displayName: previewName || "User",
+          profilePicUrl: previewAvatar,
           isVerified: resolvePostAuthorVerified(post, authorEntity),
         });
-        return;
+        if (previewName) {
+          return;
+        }
       }
 
       if (!user) {
@@ -632,10 +796,22 @@ function Post({ post, onOpen, badge }) {
   const isOwner = String(authorId) === String(currentUser?.id);
   const badgeLabel = typeof badge === "string" ? badge : badge?.text;
   const badgeTone = typeof badge === "object" && badge?.tone ? badge.tone : "";
+  const rawCaption = typeof post.content === "string" ? post.content : post.content ? String(post.content) : "";
+  const captionText = rawCaption.trim();
+  const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
+  const isCaptionLong = captionText.length > CAPTION_PREVIEW_LENGTH;
+  const visibleCaption =
+    isCaptionLong && !isCaptionExpanded
+      ? `${captionText.slice(0, CAPTION_PREVIEW_LENGTH).trimEnd()}…`
+      : captionText;
 
   useEffect(() => {
     postRef.current = post;
   }, [post]);
+
+  useEffect(() => {
+    setIsCaptionExpanded(false);
+  }, [postId]);
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -662,24 +838,8 @@ function Post({ post, onOpen, badge }) {
             viewSentRef.current = true;
             markViewRecorded(postId);
 
-            const baseViews = resolvePostViewsCount(postRef.current);
-            const optimisticViews = baseViews + 1;
-            updatePost(postId, {
-              viewsCount: optimisticViews,
-              viewCount: optimisticViews,
-            });
-
             try {
-              const response = await recordPostView(postId);
-              const nextViews = resolvePostViewsCount(
-                response?.post || response?.data || response || null
-              );
-              if (Number.isFinite(nextViews) && nextViews > 0) {
-                updatePost(postId, {
-                  viewsCount: nextViews,
-                  viewCount: nextViews,
-                });
-              }
+              await recordPostView(postId);
             } catch {
               // Ignore view recording errors to avoid blocking UX.
             }
@@ -701,52 +861,56 @@ function Post({ post, onOpen, badge }) {
       }
       observer.disconnect();
     };
-  }, [currentUser?.id, postId, updatePost]);
+  }, [currentUser?.id, postId]);
 
   return (
     <>
       <Motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="glass-card glass-hover rounded-3xl p-5 transition-all duration-300 ease-out relative"
+        className="glass-card glass-hover rounded-3xl p-5 lg:p-3 transition-all duration-300 ease-out relative flex flex-col"
         ref={cardRef}
       >
         {showMenu && (
           <div className="absolute inset-0 rounded-3xl bg-black/25 backdrop-blur-sm z-10 pointer-events-none" />
         )}
-        <div className="flex items-center mb-3">
-          <img
-            src={avatarUrl || ANONYMOUS_AVATAR}
-            alt={author?.displayName}
-            className="w-10 h-10 rounded-full mr-3 object-cover"
-            loading="lazy"
-            decoding="async"
-          />
-          <div>
-            <p className="font-semibold text-[#faf0e6] flex items-center">
-              {authorDisplayName}
-              {authorIsVerified && <BlueTick />}
-            </p>
-            <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
-              <span>{formatTime(post.createdAt)}</span>
-              {badgeLabel && (
-                <span
-                  className={`inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6] ${badgeTone}`}
-                >
-                  {badgeLabel}
-                </span>
-              )}
-              {collegeTagName && (
-                <>
-                  <span className="text-[#b9b4c7]">|</span>
-                  <span className="inline-flex items-center gap-1 max-w-[220px] truncate">
-                    <i className="fa-solid fa-school text-[10px]"></i>
-                    <span className="truncate">{collegeTagName}</span>
+        <div className="flex items-center mb-2 lg:mb-1">
+          <button
+            type="button"
+            onClick={handleOpenProfile}
+            className="flex items-center text-left"
+            disabled={post.isAnonymous}
+          >
+            <img
+              src={avatarUrl || ANONYMOUS_AVATAR}
+              alt={author?.displayName}
+              className="w-10 h-10 rounded-full mr-3 object-cover"
+              loading="lazy"
+              decoding="async"
+            />
+            <div>
+              <p className="font-semibold text-[#faf0e6] flex items-center">
+                {authorDisplayName}
+                {authorIsVerified && <BlueTick />}
+              </p>
+              <small className="text-[#b9b4c7] flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                <span className="whitespace-nowrap">{formatTime(post.createdAt)}</span>
+                {badgeLabel && (
+                  <span
+                    className={`inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6] ${badgeTone}`}
+                  >
+                    {badgeLabel}
                   </span>
-                </>
-              )}
-            </small>
-          </div>
+                )}
+                {collegeTagName && (
+                  <span className="inline-flex items-center gap-1 min-w-0 max-w-[200px] sm:max-w-[240px]">
+                    <i className="fa-solid fa-school text-[10px] shrink-0"></i>
+                    <span className="truncate min-w-0">{collegeTagName}</span>
+                  </span>
+                )}
+              </small>
+            </div>
+          </button>
           <div className="ml-auto relative z-20" ref={menuRef}>
             <Motion.button
               type="button"
@@ -790,27 +954,48 @@ function Post({ post, onOpen, badge }) {
           </div>
         </div>
 
-        {post.content && (
-          <p className="text-[#faf0e6] mb-4 whitespace-pre-wrap">{post.content}</p>
+        {captionText && (
+          <p className="text-[#faf0e6] text-base lg:text-sm mb-3 lg:mb-2 whitespace-pre-wrap">
+            {visibleCaption}
+            {isCaptionLong && (
+              <button
+                type="button"
+                className="ml-2 text-xs text-[#b9b4c7] hover:text-[#faf0e6] hover:underline underline-offset-2"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setIsCaptionExpanded((prev) => !prev);
+                }}
+              >
+                {isCaptionExpanded ? "View less" : "View more"}
+              </button>
+            )}
+          </p>
         )}
 
         {postMediaUrl && (
           <div
-            className="mb-4 rounded-2xl overflow-hidden border border-white/10 relative"
+            className="mb-3 lg:mb-2 rounded-2xl overflow-hidden border border-white/10 relative bg-black/20 aspect-[var(--media-aspect)] lg:aspect-[5/4]"
             onDoubleClick={(event) => {
               event.preventDefault();
               handleMediaDoubleTap();
             }}
             onTouchEnd={handleMediaTouchEnd}
-            style={{ touchAction: "manipulation" }}
+            style={{ touchAction: "manipulation", ...mediaAspectStyle }}
           >
             {isVideo ? (
               <video
                 src={optimizedPostMedia || postMediaUrl}
-                className="w-full max-h-96 object-cover"
+                className="w-full h-full object-cover"
                 muted
                 playsInline
                 preload="metadata"
+                onLoadedMetadata={(event) => {
+                  if (!canDetectAspect) return;
+                  const { videoWidth, videoHeight } = event.currentTarget;
+                  if (videoWidth && videoHeight) {
+                    setMediaAspect(detectAspectRatio(videoWidth, videoHeight));
+                  }
+                }}
               />
             ) : (
               <img
@@ -818,9 +1003,16 @@ function Post({ post, onOpen, badge }) {
                 srcSet={postSrcSet || undefined}
                 sizes="(max-width: 640px) 90vw, (max-width: 1024px) 70vw, 800px"
                 alt="Post media"
-                className="w-full max-h-96 object-cover"
+                className="w-full h-full object-cover"
                 loading="lazy"
                 decoding="async"
+                onLoad={(event) => {
+                  if (!canDetectAspect) return;
+                  const { naturalWidth, naturalHeight } = event.currentTarget;
+                  if (naturalWidth && naturalHeight) {
+                    setMediaAspect(detectAspectRatio(naturalWidth, naturalHeight));
+                  }
+                }}
               />
             )}
             {mediaLikePulse > 0 && (
@@ -836,10 +1028,10 @@ function Post({ post, onOpen, badge }) {
           </div>
         )}
 
-        <div className="flex justify-around text-[#b9b4c7] pt-4 border-t border-white/10">
+        <div className="flex justify-around text-[#b9b4c7] pt-2 lg:pt-1 border-t border-white/10 lg:text-sm">
           <Motion.button
             onClick={handleLike}
-            className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] px-2 ${
+            className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] lg:min-h-[38px] px-2 ${
               isLiked ? "text-red-300" : ""
             }`}
           >

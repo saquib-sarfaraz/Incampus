@@ -7,7 +7,6 @@ import { searchAll, searchUsers, likePost } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
-import UserProfileModal from "../components/profile/UserProfileModal";
 import CommentModal from "../components/feed/CommentModal";
 import PostModal from "../components/profile/PostModal";
 import ShareSheet from "../components/common/ShareSheet";
@@ -42,12 +41,15 @@ import {
   formatCommunityType,
   resolveCommunityDescription,
   resolveCommunityName,
+  buildUserPreview,
 } from "../utils/userProfile";
 import { getOptimizedMediaUrl, getOptimizedVideoUrl, getMediaSrcSet } from "../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const SEARCH_DEBOUNCE_MS = 150;
 const SEARCH_CACHE_LIMIT = 5;
+const SEARCH_CACHE_TTL = 60 * 1000;
+const TRENDING_TTL = 60 * 1000;
 const TRENDING_WINDOW_OPTIONS = [
   { id: "48h", label: "Last 48 Hours", hours: 48 },
   { id: "7d", label: "Last 7 Days", hours: 168 },
@@ -139,15 +141,24 @@ const resolveAuthorVerified = (item, cachedUser, isAnonymous) => {
       item?.authorVerified ||
       item?.userIsVerified ||
       item?.userVerified ||
+      item?.isVerifiedCommunity ||
+      item?.verifiedCommunity ||
+      item?.communityVerified ||
       item?.isVerified ||
       item?.verified ||
       item?.is_verified ||
       item?.verification?.status === "verified" ||
       entity?.isVerified ||
+      entity?.isVerifiedCommunity ||
+      entity?.verifiedCommunity ||
+      entity?.communityVerified ||
       entity?.verified ||
       entity?.is_verified ||
       entity?.verification?.status === "verified" ||
       cachedUser?.isVerified ||
+      cachedUser?.isVerifiedCommunity ||
+      cachedUser?.verifiedCommunity ||
+      cachedUser?.communityVerified ||
       cachedUser?.verified ||
       cachedUser?.is_verified ||
       cachedUser?.verification?.status === "verified"
@@ -458,6 +469,9 @@ const isUserVerified = (user) => {
   if (!user || typeof user !== "object") return false;
   return Boolean(
     user.isVerified ||
+      user.isVerifiedCommunity ||
+      user.verifiedCommunity ||
+      user.communityVerified ||
       user.verified ||
       user.is_verified ||
       user.verifiedBadge ||
@@ -528,6 +542,7 @@ export default function Trending() {
     loadStories,
     updatePost,
     getUserFromCache,
+    prefetchUserProfile,
     isUserBlocked,
     getFriendStatus,
     ensureFriendStatus,
@@ -552,7 +567,6 @@ export default function Trending() {
   const [trendingRefreshing, setTrendingRefreshing] = useState(false);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [selectedUser, setSelectedUser] = useState(null);
   const [selectedPost, setSelectedPost] = useState(null);
   const [commentPost, setCommentPost] = useState(null);
   const [sharePost, setSharePost] = useState(null);
@@ -565,11 +579,21 @@ export default function Trending() {
   const searchAbortRef = useRef(null);
   const searchRequestRef = useRef(0);
   const searchCacheRef = useRef(new Map());
+  const trendingBuiltAtRef = useRef(0);
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
     setFriendActionLoading((prev) => ({ ...prev, [userId]: value }));
   }, []);
+
+  const handlePrefetchProfile = useCallback(
+    (user) => {
+      const targetId = user?._id || user?.id;
+      if (!targetId) return;
+      prefetchUserProfile?.(targetId, user);
+    },
+    [prefetchUserProfile]
+  );
 
   const handleAddFriend = useCallback(
     async (userId) => {
@@ -750,6 +774,42 @@ export default function Trending() {
     topResult,
   ]);
 
+  const searchSuggestions = useMemo(() => {
+    const suggestions = [];
+    const seen = new Set();
+    const source = Array.isArray(searchUsersResults)
+      ? searchUsersResults.slice(0, 6)
+      : [];
+    source.forEach((user) => {
+      const name =
+        resolveCommunityName(user) ||
+        user.displayName ||
+        user.fullName ||
+        user.username ||
+        "";
+      if (!name) return;
+      const username = user.username ? `@${user.username}` : "";
+      const value = user.username || name;
+      if (seen.has(value)) return;
+      seen.add(value);
+      suggestions.push({
+        label: name,
+        meta: username,
+        value,
+        kind: resolveUserType(user) === "community" ? "community" : "person",
+      });
+    });
+    if (!suggestions.length && trimmedSearchQuery) {
+      suggestions.push({
+        label: `Search "${trimmedSearchQuery}"`,
+        meta: "",
+        value: trimmedSearchQuery,
+        kind: "query",
+      });
+    }
+    return suggestions;
+  }, [searchUsersResults, trimmedSearchQuery]);
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (searchRef.current && !searchRef.current.contains(event.target)) {
@@ -765,7 +825,7 @@ export default function Trending() {
     if (!query) return;
     const cache = searchCacheRef.current;
     if (cache.has(query)) cache.delete(query);
-    cache.set(query, data);
+    cache.set(query, { data, ts: Date.now() });
     if (cache.size > SEARCH_CACHE_LIMIT) {
       const oldestKey = cache.keys().next().value;
       cache.delete(oldestKey);
@@ -778,14 +838,21 @@ export default function Trending() {
       const cache = searchCacheRef.current;
       if (!cache.size) return null;
       let bestKey = "";
-      cache.forEach((_, key) => {
+      const now = Date.now();
+      cache.forEach((value, key) => {
+        if (!value || typeof value !== "object") return;
+        if (now - value.ts > SEARCH_CACHE_TTL) {
+          cache.delete(key);
+          return;
+        }
         if (query.startsWith(key) && key.length > bestKey.length) {
           bestKey = key;
         }
       });
       if (!bestKey) return null;
       const base = cache.get(bestKey);
-      const baseUsers = Array.isArray(base?.users) ? base.users : [];
+      const baseData = base?.data || base;
+      const baseUsers = Array.isArray(baseData?.users) ? baseData.users : [];
       const filteredUsers = rankUsersByQuery(baseUsers, query);
       if (filteredUsers.length === 0) return null;
       return {
@@ -819,9 +886,15 @@ export default function Trending() {
 
     const cached = searchCacheRef.current.get(normalizedSearchQuery);
     if (cached) {
-      setSearchData(cached);
-      setSearchLoading(false);
-      return;
+      const now = Date.now();
+      const cachedData = cached?.data || cached;
+      const cachedTs = cached?.ts || 0;
+      if (cachedTs && now - cachedTs <= SEARCH_CACHE_TTL) {
+        setSearchData(cachedData);
+        setSearchLoading(false);
+        return;
+      }
+      searchCacheRef.current.delete(normalizedSearchQuery);
     }
 
     const prefixCached = getCachedPrefixResults(normalizedSearchQuery);
@@ -974,7 +1047,11 @@ export default function Trending() {
     storiesArrayRef.current = storiesArray;
   }, [storiesArray]);
 
-  const rebuildTrendingSnapshot = useCallback(() => {
+  const rebuildTrendingSnapshot = useCallback(({ force = false } = {}) => {
+    const now = Date.now();
+    if (!force && trendingBuiltAtRef.current && now - trendingBuiltAtRef.current < TRENDING_TTL) {
+      return;
+    }
     const entries = [];
     const postsList = postsArrayRef.current || [];
     const storiesList = storiesArrayRef.current || [];
@@ -1006,6 +1083,7 @@ export default function Trending() {
     });
 
     setTrendingSnapshot(entries);
+    trendingBuiltAtRef.current = now;
     setTrendingNeedsRefresh(false);
   }, []);
 
@@ -1014,7 +1092,7 @@ export default function Trending() {
     setTrendingRefreshing(true);
     try {
       await Promise.all([loadPosts?.(), loadStories?.()]);
-      requestAnimationFrame(() => rebuildTrendingSnapshot());
+      requestAnimationFrame(() => rebuildTrendingSnapshot({ force: true }));
       setTrendingNeedsRefresh(false);
     } finally {
       setTrendingRefreshing(false);
@@ -1029,7 +1107,7 @@ export default function Trending() {
 
   useEffect(() => {
     if (trendingWindow) {
-      rebuildTrendingSnapshot();
+      rebuildTrendingSnapshot({ force: true });
     }
   }, [trendingWindow, rebuildTrendingSnapshot]);
 
@@ -1861,6 +1939,8 @@ export default function Trending() {
     const userId = user._id || user.id;
     const hasUserId = userId !== undefined && userId !== null && userId !== "";
     const userKey = hasUserId ? String(userId) : `user-${variant}-${index ?? "unknown"}`;
+    const cachedUser = hasUserId ? getUserFromCache?.(userId) : null;
+    const previewSource = { ...(cachedUser || {}), ...(user || {}) };
     const userType = resolveUserType(user);
     const isCommunity = userType === "community";
     const userTypeBadge = formatUserType(userType);
@@ -1924,7 +2004,27 @@ export default function Trending() {
         <div className="flex flex-col sm:flex-row items-start gap-3">
           <button
             type="button"
-            onClick={() => setSelectedUser(user)}
+            onMouseEnter={() => handlePrefetchProfile(previewSource)}
+            onFocus={() => handlePrefetchProfile(previewSource)}
+            onPointerDown={() => handlePrefetchProfile(previewSource)}
+            onClick={() => {
+              handlePrefetchProfile(previewSource);
+              navigate(`/profile/${userId}`, {
+                state: {
+                  userPreview: buildUserPreview(previewSource, {
+                    _id: userId,
+                    fullName: user.fullName || user.name,
+                    displayName,
+                    username: user.username,
+                    profilePicUrl: user.profilePicUrl,
+                    isVerified,
+                    isVerifiedCommunity: user.isVerifiedCommunity,
+                    university: user.university,
+                    college: user.college,
+                  }),
+                },
+              });
+            }}
             className="flex items-start gap-3 text-left flex-1 min-w-0"
           >
             <img
@@ -2030,9 +2130,29 @@ export default function Trending() {
 
                 <button
                   type="button"
-                  onClick={() => setSelectedUser(user)}
+                  onMouseEnter={() => handlePrefetchProfile(previewSource)}
+                  onFocus={() => handlePrefetchProfile(previewSource)}
+                  onPointerDown={() => handlePrefetchProfile(previewSource)}
+                  onClick={() => {
+                    handlePrefetchProfile(previewSource);
+                    navigate(`/profile/${userId}`, {
+                      state: {
+                        userPreview: buildUserPreview(previewSource, {
+                          _id: userId,
+                          fullName: user.fullName || user.name,
+                          displayName,
+                          username: user.username,
+                          profilePicUrl: user.profilePicUrl,
+                          isVerified,
+                          isVerifiedCommunity: user.isVerifiedCommunity,
+                          university: user.university,
+                          college: user.college,
+                        }),
+                      },
+                    });
+                  }}
                   className="h-7 w-7 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
-                  aria-label="More actions"
+                  aria-label="View profile"
                 >
                   <i className="fa-solid fa-circle-info text-[11px]"></i>
                 </button>
@@ -2220,6 +2340,41 @@ export default function Trending() {
                   </button>
                 ))}
               </div>
+
+              {searchSuggestions.length > 0 && (
+                <div className="border-b border-white/10 px-4 py-3 bg-white/5">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                    Suggestions
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {searchSuggestions.map((item) => (
+                      <button
+                        key={`${item.kind}-${item.value}`}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery(item.value);
+                          setShowSearchResults(true);
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1 text-xs text-[#faf0e6] hover:bg-white/20 transition-colors"
+                      >
+                        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/10 text-[10px] text-[#faf0e6]">
+                          <i
+                            className={`fa-solid ${
+                              item.kind === "community"
+                                ? "fa-users"
+                                : item.kind === "person"
+                                  ? "fa-user"
+                                  : "fa-magnifying-glass"
+                            }`}
+                          ></i>
+                        </span>
+                        <span>{item.label}</span>
+                        {item.meta && <span className="text-[10px] text-[#b9b4c7]">{item.meta}</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="max-h-[28rem] overflow-y-auto px-4 py-4 space-y-6">
                 {searchError ? (
@@ -2501,12 +2656,6 @@ export default function Trending() {
         />
       )}
 
-      <UserProfileModal
-        isOpen={!!selectedUser}
-        user={selectedUser}
-        onClose={() => setSelectedUser(null)}
-        currentUser={currentUser}
-      />
 
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
       <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
