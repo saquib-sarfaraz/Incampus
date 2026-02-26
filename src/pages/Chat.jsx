@@ -3,25 +3,34 @@ import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
+import { buildUserPreview } from "../utils/userProfile";
 import {
   getChatMessages,
   getGroupChatMessages,
+  getChatGroups,
   getPendingRequests,
   getUserById,
   sendChatMessage,
   markChatSeen,
   reportMessage,
   blockUser,
+  requestGroupJoin,
+  approveGroupJoin,
+  rejectGroupJoin,
+  deleteChatMessage,
 } from "../services/api";
-import { getSocket, ensureSocketConnected } from "../services/socket";
+import { getSocket, ensureSocketConnected, joinSocket } from "../services/socket";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import ReportModal from "../components/moderation/ReportModal";
 import PostModal from "../components/profile/PostModal";
 import BlueTick from "../components/common/BlueTick";
+import CreateGroupModal from "../components/chat/CreateGroupModal";
+import GroupProfileModal from "../components/chat/GroupProfileModal";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const DEFAULT_GROUP_AVATAR = "/incampus-icon.svg";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const CONTACTS_CACHE_KEY = "incampus:chat:contacts";
 const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
@@ -154,6 +163,167 @@ const writeRequestsCache = (userId, requests) => {
 
 const isGroupChatId = (chatId) => String(chatId || "").startsWith("group:");
 
+const resolveGroupIdValue = (value) => {
+  if (!value) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value);
+  if (typeof value === "object") {
+    return String(
+      value._id || value.id || value.groupId || value.group_id || value.group || ""
+    );
+  }
+  return "";
+};
+
+const ensureGroupRoomId = (value) => {
+  const raw = resolveGroupIdValue(value);
+  if (!raw) return "";
+  return raw.startsWith("group:") ? raw : `group:${raw}`;
+};
+
+const resolveGroupApiId = (group) => {
+  if (!group) return "";
+  if (group.apiId) return String(group.apiId);
+  if (typeof group === "object") {
+    const candidate = group._id || group.id || group.groupId || group.group_id;
+    if (candidate) return String(candidate);
+  }
+  if (typeof group === "string") {
+    if (!group.startsWith("group:")) return group;
+    const stripped = group.slice(6);
+    if (
+      stripped.startsWith("college:") ||
+      stripped.startsWith("global") ||
+      stripped.startsWith("campus:")
+    ) {
+      return "";
+    }
+    return stripped;
+  }
+  return "";
+};
+
+const resolveGroupRequestMeta = (request) => {
+  if (!request || typeof request !== "object") {
+    return { isGroup: false, groupId: "", groupApiId: "", groupName: "" };
+  }
+  const typeRaw = String(
+    request.type || request.requestType || request.kind || request.category || ""
+  )
+    .trim()
+    .toLowerCase();
+  const groupObject =
+    request.group && typeof request.group === "object" ? request.group : null;
+  const groupCandidate =
+    request.groupId ||
+    request.group_id ||
+    request.group ||
+    request.groupRef ||
+    request.groupRefId ||
+    request.groupIdRef ||
+    request.chatId ||
+    request.chat_id ||
+    request.roomId ||
+    groupObject ||
+    "";
+  const groupId = groupCandidate ? ensureGroupRoomId(groupCandidate) : "";
+  const groupApiId = groupCandidate ? resolveGroupApiId(groupCandidate) : "";
+  const groupName =
+    groupObject?.name ||
+    groupObject?.title ||
+    request.groupName ||
+    request.group_title ||
+    request.communityName ||
+    "";
+  const isGroup =
+    typeRaw.includes("group") ||
+    typeRaw.includes("community") ||
+    Boolean(groupApiId) ||
+    (groupId && groupId.startsWith("group:"));
+  return { isGroup, groupId, groupApiId, groupName };
+};
+
+const normalizeGroupItem = (group, currentUserId, fallbackRank = 10) => {
+  if (!group) return null;
+  const chatId = ensureGroupRoomId(group);
+  if (!chatId) return null;
+  const apiId = resolveGroupApiId(group);
+  const isSystemGroup = Boolean(group?.isSystemGroup) || !apiId;
+  const resolveMemberId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (typeof value === "object") {
+      return String(
+        value._id || value.id || value.userId || value.user_id || value.memberId || ""
+      );
+    }
+    return "";
+  };
+  const displayName =
+    group.displayName ||
+    group.name ||
+    group.title ||
+    group.groupName ||
+    group.communityName ||
+    "Group";
+  const membersRaw = group.members || group.memberIds || group.member_ids || [];
+  const adminsRaw = group.admins || group.adminIds || group.admin_ids || [];
+  const requestsRaw = group.joinRequests || group.join_requests || [];
+  const memberIds = Array.isArray(membersRaw)
+    ? membersRaw.map(resolveMemberId).filter(Boolean)
+    : [];
+  const adminIds = Array.isArray(adminsRaw)
+    ? adminsRaw.map(resolveMemberId).filter(Boolean)
+    : [];
+  const requestIds = Array.isArray(requestsRaw)
+    ? requestsRaw.map(resolveMemberId).filter(Boolean)
+    : [];
+  const isMember =
+    group.isMember ??
+    (currentUserId
+      ? memberIds.some((id) => String(id) === String(currentUserId)) || isSystemGroup
+      : isSystemGroup);
+  const isAdmin =
+    group.isAdmin ??
+    (currentUserId
+      ? adminIds.some((id) => String(id) === String(currentUserId)) ||
+        String(resolveMemberId(group.createdBy || group.created_by)) ===
+          String(currentUserId)
+      : false);
+  const isPending =
+    group.isPending ??
+    (currentUserId
+      ? requestIds.some((id) => String(id) === String(currentUserId))
+      : false);
+  const visibility =
+    group.visibility ||
+    (group.isPrivate ? "private" : group.isPublic ? "public" : "public");
+  return {
+    id: chatId,
+    apiId,
+    displayName,
+    profilePicUrl:
+      group.profilePicUrl ||
+      group.profileImage ||
+      group.avatarUrl ||
+      group.avatar ||
+      group.image ||
+      DEFAULT_GROUP_AVATAR,
+    isGroup: true,
+    isSystemGroup,
+    isMember,
+    isAdmin,
+    isPending,
+    visibility,
+    memberCount:
+      group.memberCount ??
+      group.membersCount ??
+      group.member_count ??
+      (Array.isArray(group.members) ? group.members.length : undefined),
+    rank: group.rank ?? fallbackRank,
+    raw: group,
+  };
+};
+
 const isAnonymousUser = (userData) =>
   Boolean(
     userData?.isAnonymous ||
@@ -224,14 +394,30 @@ const ChatMessage = memo(function ChatMessage({
   isMine,
   isActiveGroupChat,
   isDirectChat,
+  isMobile,
   onOpenSharedPost,
   onReport,
+  onDelete,
+  canDelete,
   resolveMessageSender,
+  onOpenProfile,
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const isSharedPost = msg.messageType === "shared_post" || msg.type === "shared_post";
   const previewText = resolveMessagePreview(msg);
   const previewThumb = msg.postThumbnail;
   const senderInfo = !isMine && isActiveGroupChat ? resolveMessageSender(msg) : null;
+  const senderProfileId = senderInfo?.id || resolveMessageSenderId(msg);
+  const isDeleted = Boolean(
+    msg.isDeleted ||
+      msg.deleted ||
+      msg.is_deleted ||
+      msg.deletedAt ||
+      msg.deleted_at ||
+      msg.status === "deleted"
+  );
+  const canReport = !isMine && !isDeleted;
+  const showMenu = (canDelete && !isDeleted) || canReport;
   return (
     <Motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -240,7 +426,11 @@ const ChatMessage = memo(function ChatMessage({
     >
       <div className="message-bubble">
         {senderInfo && (
-          <div className="mb-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => onOpenProfile?.(senderProfileId, senderInfo)}
+            className="mb-2 flex items-center gap-2 text-left"
+          >
             <img
               src={senderInfo.avatar || ANONYMOUS_AVATAR}
               alt={senderInfo.name}
@@ -252,9 +442,11 @@ const ChatMessage = memo(function ChatMessage({
               {senderInfo.name}
               {senderInfo.isVerified && <BlueTick className="text-[10px]" />}
             </span>
-          </div>
+          </button>
         )}
-        {isSharedPost ? (
+        {isDeleted ? (
+          <span className="text-xs italic text-[#b9b4c7]">Message deleted</span>
+        ) : isSharedPost ? (
           <button
             type="button"
             onClick={() => onOpenSharedPost(msg)}
@@ -302,15 +494,97 @@ const ChatMessage = memo(function ChatMessage({
               {msg.seenAt ? "Seen" : msg.deliveredAt ? "Delivered" : "Sent"}
             </span>
           )}
-          {!isMine && (
-            <button
-              type="button"
-              onClick={() => onReport(msg)}
-              className="text-amber-300 hover:text-amber-200 text-[10px]"
-              title="Report message"
-            >
-              <i className="fa-solid fa-flag"></i>
-            </button>
+          {showMenu && (
+            <>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setMenuOpen((prev) => !prev);
+                  }}
+                  className="p-1 text-white/60 hover:text-white transition"
+                  aria-haspopup="menu"
+                  aria-expanded={menuOpen}
+                  title="More actions"
+                >
+                  ⋮
+                </button>
+                {!isMobile && menuOpen && (
+                  <div className="absolute right-0 mt-2 w-36 max-w-[90vw] bg-[#1a120b]/95 backdrop-blur-md border border-white/10 rounded-xl shadow-lg z-50">
+                    {canDelete && !isDeleted && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setMenuOpen(false);
+                          onDelete?.(msg);
+                        }}
+                        className="block w-full text-left px-4 py-2 text-red-400 hover:bg-white/5"
+                      >
+                        Delete
+                      </button>
+                    )}
+                    {canReport && (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setMenuOpen(false);
+                          onReport(msg);
+                        }}
+                        className="block w-full text-left px-4 py-2 text-yellow-400 hover:bg-white/5"
+                      >
+                        Report
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+              {isMobile && menuOpen && (
+                <div
+                  className="fixed inset-0 z-[70] bg-black/50 backdrop-blur-sm flex items-end"
+                  onClick={() => setMenuOpen(false)}
+                >
+                  <div
+                    className="w-full bg-[#1a120b] rounded-t-2xl p-4 space-y-2"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {canReport && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onReport(msg);
+                        }}
+                        className="w-full text-left px-3 py-3 rounded-xl text-yellow-300 hover:bg-white/5"
+                      >
+                        Report
+                      </button>
+                    )}
+                    {canDelete && !isDeleted && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setMenuOpen(false);
+                          onDelete?.(msg);
+                        }}
+                        className="w-full text-left px-3 py-3 rounded-xl text-red-400 hover:bg-white/5"
+                      >
+                        Delete
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setMenuOpen(false)}
+                      className="w-full text-left px-3 py-3 rounded-xl text-[#b9b4c7] hover:bg-white/5"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </span>
       </div>
@@ -400,11 +674,15 @@ const GroupListItem = memo(function GroupListItem({
   unreadCount,
   lastMessageText,
   lastMessageAt,
+  visibility,
+  isMember,
+  isPending,
   onOpen,
 }) {
   const handleClick = useCallback(() => {
     if (groupId) onOpen(groupId);
   }, [groupId, onOpen]);
+  const isPrivate = visibility === "private";
   return (
     <Motion.div
       onClick={handleClick}
@@ -427,18 +705,29 @@ const GroupListItem = memo(function GroupListItem({
       </div>
       <div className="flex-1 min-w-0">
         <p
-          className={`text-sm text-[#faf0e6] truncate ${
+          className={`text-sm text-[#faf0e6] whitespace-normal break-words ${
             unreadCount > 0 ? "font-bold" : "font-semibold"
           }`}
         >
-          {displayName}
+          <span className="inline-flex items-center gap-1 flex-wrap">
+            {displayName}
+            {isPrivate && (
+              <i className="fa-solid fa-lock text-[10px] text-[#b9b4c7]" />
+            )}
+          </span>
         </p>
         <p
           className={`text-xs truncate ${
             unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
           }`}
         >
-          {lastMessageText}
+          {!isMember
+            ? isPending
+              ? "Join request pending"
+              : isPrivate
+                ? "Private group"
+                : "Tap to request access"
+            : lastMessageText}
         </p>
       </div>
       <div className="flex flex-col items-end gap-1">
@@ -464,9 +753,13 @@ const MessageList = memo(function MessageList({
   currentUserId,
   isActiveGroupChat,
   isDirectChat,
+  isMobile,
   onOpenSharedPost,
   onReport,
+  onDelete,
+  canDeleteMessage,
   resolveMessageSender,
+  onOpenProfile,
   messagesEndRef,
 }) {
   if (messages.length === 0) {
@@ -477,7 +770,12 @@ const MessageList = memo(function MessageList({
   return (
     <>
       {messages.map((msg) => {
-        const isMine = msg.from === currentUserId;
+        const senderId = resolveMessageSenderId(msg);
+        const isMine =
+          senderId && currentUserId && String(senderId) === String(currentUserId);
+        const canDelete = typeof canDeleteMessage === "function"
+          ? canDeleteMessage(msg)
+          : false;
         return (
           <ChatMessage
             key={messageKey(msg)}
@@ -485,9 +783,13 @@ const MessageList = memo(function MessageList({
             isMine={isMine}
             isActiveGroupChat={isActiveGroupChat}
             isDirectChat={isDirectChat}
+            isMobile={isMobile}
             onOpenSharedPost={onOpenSharedPost}
             onReport={onReport}
+            onDelete={onDelete}
+            canDelete={canDelete}
             resolveMessageSender={resolveMessageSender}
+            onOpenProfile={onOpenProfile}
           />
         );
       })}
@@ -594,7 +896,20 @@ export default function Chat() {
     sendFriendRequest,
     acceptFriend,
     rejectFriend,
+    prefetchUserProfile,
   } = useApp();
+  const handleOpenProfile = useCallback(
+    (userId, preview) => {
+      if (!userId) return;
+      const cachedUser = getUserFromCache?.(userId);
+      prefetchUserProfile?.(userId, cachedUser || preview);
+      const previewUser = buildUserPreview({ ...(cachedUser || {}), ...(preview || {}) }, {
+        _id: userId,
+      });
+      navigate(`/profile/${userId}`, { state: { userPreview: previewUser } });
+    },
+    [navigate, prefetchUserProfile, getUserFromCache]
+  );
   const [activeTab, setActiveTab] = useState("contacts");
   const [contacts, setContacts] = useState(() => {
     if (typeof window === "undefined") return [];
@@ -613,6 +928,10 @@ export default function Chat() {
   const [presenceMap, setPresenceMap] = useState({});
   const [typingMap, setTypingMap] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [showGroupProfile, setShowGroupProfile] = useState(false);
+  const [serverGroups, setServerGroups] = useState([]);
+  const [groupsLoading, setGroupsLoading] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
@@ -625,6 +944,7 @@ export default function Chat() {
   });
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [friendRequestLoading, setFriendRequestLoading] = useState(false);
+  const [groupRequestLoading, setGroupRequestLoading] = useState(false);
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -649,6 +969,24 @@ export default function Chat() {
     () => (resolvedFriendIds || []).map((id) => String(id)).sort().join("|"),
     [resolvedFriendIds]
   );
+  const canCreateGroup = useMemo(() => {
+    const role = String(currentUser?.role || "");
+    return role === "super_admin" || (role === "community_admin" && currentUser?.isVerifiedCommunity);
+  }, [currentUser?.role, currentUser?.isVerifiedCommunity]);
+
+  const { groupRequests, friendRequests } = useMemo(() => {
+    const group = [];
+    const friend = [];
+    requests.forEach((req) => {
+      const meta = resolveGroupRequestMeta(req);
+      if (meta.isGroup) {
+        group.push({ req, meta });
+      } else {
+        friend.push({ req, meta });
+      }
+    });
+    return { groupRequests: group, friendRequests: friend };
+  }, [requests]);
 
   useEffect(() => {
     if (!currentUser?.id) return;
@@ -661,6 +999,92 @@ export default function Chat() {
     if (cachedRequests && cachedRequests.length) {
       setRequests(cachedRequests);
     }
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setServerGroups([]);
+      return;
+    }
+    const candidates = [
+      currentUser?.groups,
+      currentUser?.groupMemberships,
+      currentUser?.groupIds,
+    ].filter(Boolean);
+    const normalized = [];
+    candidates.forEach((entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach((item) => {
+          const normalizedItem =
+            typeof item === "string" || typeof item === "number"
+              ? normalizeGroupItem({ id: item, isMember: true }, currentUser?.id)
+              : normalizeGroupItem(item, currentUser?.id);
+          if (normalizedItem) normalized.push(normalizedItem);
+        });
+      } else {
+        const normalizedItem =
+          typeof entry === "string" || typeof entry === "number"
+            ? normalizeGroupItem({ id: entry, isMember: true }, currentUser?.id)
+            : normalizeGroupItem(entry, currentUser?.id);
+        if (normalizedItem) normalized.push(normalizedItem);
+      }
+    });
+    const deduped = [];
+    const seen = new Set();
+    normalized.forEach((item) => {
+      const key = String(item.id);
+      if (seen.has(key)) return;
+      seen.add(key);
+      deduped.push(item);
+    });
+    if (deduped.length) {
+      setServerGroups(deduped);
+    }
+  }, [currentUser?.id, currentUser?.groups, currentUser?.groupMemberships, currentUser?.groupIds]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let active = true;
+    setGroupsLoading(true);
+    getChatGroups()
+      .then((data) => {
+        if (!active) return;
+        const list = Array.isArray(data) ? data : [];
+        const normalized = list
+          .map((item, index) => normalizeGroupItem(item, currentUser?.id, 10 + index))
+          .filter(Boolean);
+        if (normalized.length === 0) return;
+        setServerGroups((prev) => {
+          const mergedMap = new Map(prev.map((item) => [String(item.id), item]));
+          normalized.forEach((item) => {
+            const key = String(item.id);
+            const existing = mergedMap.get(key);
+            if (!existing) {
+              mergedMap.set(key, item);
+              return;
+            }
+            const merged = { ...existing, ...item };
+            if (existing.isMember && item.isMember !== true) {
+              merged.isMember = true;
+            }
+            if (existing.isAdmin && item.isAdmin !== true) {
+              merged.isAdmin = true;
+            }
+            if (existing.isPending && !item.isPending) {
+              merged.isPending = true;
+            }
+            mergedMap.set(key, merged);
+          });
+          return Array.from(mergedMap.values());
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setGroupsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [currentUser?.id]);
 
   const handleReportMessage = useCallback((msg) => {
@@ -678,9 +1102,9 @@ export default function Chat() {
         context: "chat",
       });
       alert("Thanks for reporting. Our team will review it.");
+      setReportTarget(null);
     } catch (error) {
       alert(error.message || "Failed to report message");
-      throw error;
     }
   };
 
@@ -894,9 +1318,15 @@ export default function Chat() {
       const cached = getUserFromCache(contact.id);
       return Boolean(
         contact.isVerified ||
+          contact.isVerifiedCommunity ||
+          contact.verifiedCommunity ||
+          contact.communityVerified ||
           contact.verified ||
           contact.is_verified ||
           cached?.isVerified ||
+          cached?.isVerifiedCommunity ||
+          cached?.verifiedCommunity ||
+          cached?.communityVerified ||
           cached?.verified ||
           cached?.is_verified
       );
@@ -951,11 +1381,17 @@ export default function Chat() {
         ANONYMOUS_AVATAR;
       const isVerified = Boolean(
         senderEntity?.isVerified ||
+          senderEntity?.isVerifiedCommunity ||
+          senderEntity?.verifiedCommunity ||
+          senderEntity?.communityVerified ||
           senderEntity?.verified ||
           senderEntity?.is_verified ||
           msg.senderVerified ||
           msg.userVerified ||
           cached?.isVerified ||
+          cached?.isVerifiedCommunity ||
+          cached?.verifiedCommunity ||
+          cached?.communityVerified ||
           cached?.verified ||
           cached?.is_verified
       );
@@ -1135,6 +1571,38 @@ export default function Chat() {
     });
   }, []);
 
+  const handleDeleteMessage = useCallback(
+    async (msg) => {
+      if (!msg || !activeChatId) return;
+      const messageId = msg._id || msg.id || msg.messageId;
+      if (!messageId) return;
+      if (!confirm("Delete this message?")) return;
+      try {
+        await deleteChatMessage(messageId, { chatId: activeChatId });
+      } catch (_error) {
+        void _error;
+      } finally {
+        patchMessages(
+          activeChatId,
+          (item) => {
+            const itemId = item._id || item.id || item.messageId;
+            return (
+              (itemId && String(itemId) === String(messageId)) ||
+              messageKey(item) === messageKey(msg)
+            );
+          },
+          (item) => ({
+            ...item,
+            isDeleted: true,
+            deletedAt: new Date().toISOString(),
+            text: "",
+          })
+        );
+      }
+    },
+    [activeChatId, patchMessages]
+  );
+
   const resolveChatIdFromPayload = useCallback(
     (payload) => {
       const message = payload?.message || payload;
@@ -1270,7 +1738,12 @@ export default function Chat() {
               profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
               isOnline: userData.isOnline,
               lastSeen: userData.lastSeen || userData.last_seen || "",
-              isVerified: Boolean(userData.isVerified),
+              isVerified: Boolean(
+                userData.isVerified ||
+                  userData.isVerifiedCommunity ||
+                  userData.verifiedCommunity ||
+                  userData.communityVerified
+              ),
             };
           }
         }
@@ -1493,7 +1966,12 @@ export default function Chat() {
                     embeddedUser.profile_pic ||
                     ANONYMOUS_AVATAR,
                   friends: embeddedUser.friends || [],
-                  isVerified: Boolean(embeddedUser.isVerified),
+                  isVerified: Boolean(
+                    embeddedUser.isVerified ||
+                      embeddedUser.isVerifiedCommunity ||
+                      embeddedUser.verifiedCommunity ||
+                      embeddedUser.communityVerified
+                  ),
                 }
               : null;
           if (!user && userId) {
@@ -1516,7 +1994,12 @@ export default function Chat() {
                     userData.profile_pic ||
                     ANONYMOUS_AVATAR,
                   friends: userData.friends || [],
-                  isVerified: Boolean(userData.isVerified),
+                  isVerified: Boolean(
+                    userData.isVerified ||
+                      userData.isVerifiedCommunity ||
+                      userData.verifiedCommunity ||
+                      userData.communityVerified
+                  ),
                 };
               }
           }
@@ -1582,7 +2065,12 @@ export default function Chat() {
                       sender?.profile_pic ||
                       ANONYMOUS_AVATAR,
                     friends: sender?.friends || [],
-                    isVerified: Boolean(sender?.isVerified),
+                    isVerified: Boolean(
+                      sender?.isVerified ||
+                        sender?.isVerifiedCommunity ||
+                        sender?.verifiedCommunity ||
+                        sender?.communityVerified
+                    ),
                   }
                 : {
                     id: senderId,
@@ -1688,19 +2176,31 @@ export default function Chat() {
     markMessagesSeen(activeChatId);
 
     const socket = getSocket();
-    if (socket) {
+    const isGroupChat = String(activeChatId).startsWith("group:");
+    const isSystemGroupChat =
+      String(activeChatId).startsWith("group:global") ||
+      String(activeChatId).startsWith("group:college:");
+    const isMemberForActive =
+      !isGroupChat ||
+      isSystemGroupChat ||
+      serverGroups.some(
+        (group) =>
+          String(group.id) === String(activeChatId) && group.isMember !== false
+      );
+    const shouldJoin = !isGroupChat || isMemberForActive;
+    if (socket && shouldJoin) {
       socket.emit("chat:joinRoom", { roomId: activeChatId });
     }
 
     return () => {
-      if (socket) {
+      if (socket && shouldJoin) {
         socket.emit("chat:leaveRoom", { roomId: activeChatId });
       }
       if (typeof window !== "undefined" && window.__activeChatRoom === activeChatId) {
         window.__activeChatRoom = null;
       }
     };
-  }, [activeChatId, refreshChatMessages, markChatRead, markMessagesSeen]);
+  }, [activeChatId, refreshChatMessages, markChatRead, markMessagesSeen, serverGroups]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -1709,6 +2209,18 @@ export default function Chat() {
 
     const socket = getSocket();
     const isGroupChat = String(activeChatId).startsWith("group:");
+    if (isGroupChat && !isActiveGroupMember) {
+      showToast({
+        id: `group-locked-${activeChatId}`,
+        title: "Join required",
+        message: isActiveGroupPending
+          ? "Your join request is pending approval."
+          : isActiveGroupPrivate
+            ? "This group is private."
+            : "Request access to start chatting.",
+      });
+      return;
+    }
     if (!isGroupChat && !canChat(activeChatId)) {
       showToast({
         id: `chat-blocked-${activeChatId}`,
@@ -1771,9 +2283,16 @@ export default function Chat() {
       resolveFriendId(request?.userId);
     const requestId = request?._id || request?.id || request?.requestId;
     if (!requesterId && !requestId) return;
+    const groupMeta = resolveGroupRequestMeta(request);
 
     try {
-      await acceptFriend(request);
+      if (groupMeta.isGroup) {
+        const groupApiId = groupMeta.groupApiId || resolveGroupApiId(groupMeta.groupId);
+        if (!groupApiId || !requesterId) return;
+        await approveGroupJoin(groupApiId, requesterId);
+      } else {
+        await acceptFriend(request);
+      }
       setRequests((prev) =>
         prev.filter((req) => {
           const id = req?._id || req?.id || req?.requestId;
@@ -1788,6 +2307,17 @@ export default function Chat() {
             resolveFriendId(req?.user?.id) ||
             resolveFriendId(req?.user?._id) ||
             resolveFriendId(req?.userId);
+          if (groupMeta.isGroup) {
+            const reqGroup = resolveGroupRequestMeta(req);
+            if (!reqGroup.isGroup) return true;
+            const sameGroup =
+              (reqGroup.groupApiId && groupMeta.groupApiId &&
+                String(reqGroup.groupApiId) === String(groupMeta.groupApiId)) ||
+              (reqGroup.groupId && groupMeta.groupId &&
+                String(reqGroup.groupId) === String(groupMeta.groupId));
+            const sameUser = requesterId ? String(fromId) === String(requesterId) : false;
+            return !(sameGroup && sameUser);
+          }
           return requesterId ? String(fromId) !== String(requesterId) : true;
         })
       );
@@ -1797,7 +2327,18 @@ export default function Chat() {
     }
   };
 
-  const handleIgnoreRequest = async (requesterId) => {
+  const handleIgnoreRequest = async (request) => {
+    const requesterId =
+      resolveFriendId(request?.requesterId) ||
+      resolveFriendId(request?.senderId) ||
+      resolveFriendId(request?.fromUserId) ||
+      resolveFriendId(request?.requester) ||
+      resolveFriendId(request?.sender) ||
+      resolveFriendId(request?.fromUser) ||
+      resolveFriendId(request?.user?.id) ||
+      resolveFriendId(request?.user?._id) ||
+      resolveFriendId(request?.userId);
+    const groupMeta = resolveGroupRequestMeta(request);
     setRequests((prev) =>
       prev.filter((req) => {
         const id =
@@ -1809,11 +2350,28 @@ export default function Chat() {
           resolveFriendId(req?.fromUser) ||
           resolveFriendId(req?.user) ||
           resolveFriendId(req?.userId);
+        if (groupMeta.isGroup) {
+          const reqGroup = resolveGroupRequestMeta(req);
+          if (!reqGroup.isGroup) return true;
+          const sameGroup =
+            (reqGroup.groupApiId && groupMeta.groupApiId &&
+              String(reqGroup.groupApiId) === String(groupMeta.groupApiId)) ||
+            (reqGroup.groupId && groupMeta.groupId &&
+              String(reqGroup.groupId) === String(groupMeta.groupId));
+          const sameUser = requesterId ? String(id) === String(requesterId) : false;
+          return !(sameGroup && sameUser);
+        }
         return requesterId ? String(id) !== String(requesterId) : true;
       })
     );
     try {
-      await rejectFriend(requesterId);
+      if (groupMeta.isGroup) {
+        const groupApiId = groupMeta.groupApiId || resolveGroupApiId(groupMeta.groupId);
+        if (!groupApiId || !requesterId) return;
+        await rejectGroupJoin(groupApiId, requesterId);
+      } else {
+        await rejectFriend(requesterId);
+      }
     } catch (_error) {
       void _error;
     }
@@ -1840,6 +2398,45 @@ export default function Chat() {
     }
   };
 
+  const handleRequestJoinGroup = async () => {
+    if (!activeChatUser?.isGroup) return;
+    if (isActiveGroupMember || isActiveGroupPending) return;
+    if (isActiveGroupPrivate || isActiveSystemGroup) {
+      showToast({
+        id: `group-private-${activeChatId}`,
+        title: "Private group",
+        message: "Only admins can add members to this group.",
+      });
+      return;
+    }
+    const groupApiId = activeChatUser?.apiId || activeChatUser?.groupId || activeChatId;
+    if (!groupApiId) return;
+    setGroupRequestLoading(true);
+    try {
+      await requestGroupJoin(groupApiId);
+      setServerGroups((prev) =>
+        prev.map((group) =>
+          String(group.id) === String(activeChatId)
+            ? { ...group, isPending: true }
+            : group
+        )
+      );
+      showToast({
+        id: `group-request-${activeChatId}`,
+        title: "Request sent",
+        message: "Your join request was sent.",
+      });
+    } catch (error) {
+      showToast({
+        id: `group-request-failed-${activeChatId}`,
+        title: "Request failed",
+        message: error.message || "Unable to send request.",
+      });
+    } finally {
+      setGroupRequestLoading(false);
+    }
+  };
+
   const handleOpenChat = useCallback(
     (chatId) => {
       setActiveChatId(chatId);
@@ -1850,6 +2447,48 @@ export default function Chat() {
       }
     },
     [setActiveChatId]
+  );
+
+  const handleGroupCreated = useCallback(
+    (group) => {
+      const normalized = normalizeGroupItem(
+        {
+          ...group,
+          isMember: true,
+          isAdmin: true,
+        },
+        currentUser?.id
+      );
+      if (!normalized) return;
+      setServerGroups((prev) => {
+        const exists = prev.some((item) => String(item.id) === String(normalized.id));
+        if (exists) return prev;
+        return [normalized, ...prev];
+      });
+      setActiveChatId(normalized.id);
+      setActiveTab("groups");
+    },
+    [currentUser?.id, setActiveChatId]
+  );
+
+  const handleGroupMembershipChange = useCallback((chatId, updates = {}) => {
+    if (!chatId) return;
+    setServerGroups((prev) =>
+      prev.map((group) =>
+        String(group.id) === String(chatId) ? { ...group, ...updates } : group
+      )
+    );
+  }, []);
+
+  const handleGroupDeleted = useCallback(
+    (chatId) => {
+      if (!chatId) return;
+      setServerGroups((prev) => prev.filter((group) => String(group.id) !== String(chatId)));
+      if (String(activeChatId) === String(chatId)) {
+        setActiveChatId(null);
+      }
+    },
+    [activeChatId, setActiveChatId]
   );
 
   const handleCloseChat = () => {
@@ -2075,14 +2714,38 @@ export default function Chat() {
 
   const groupContacts = useMemo(() => {
     const universityLabel = currentUser?.university || currentUser?.college || "";
-    const universitySlug = encodeURIComponent(String(universityLabel).toLowerCase());
+    const toSlug = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const collegeGroupId =
+      currentUser?.collegeGroupId ||
+      currentUser?.college_group_id ||
+      currentUser?.groupId ||
+      currentUser?.collegeGroup ||
+      "";
+    const collegeRoomId = collegeGroupId
+      ? String(collegeGroupId).startsWith("group:")
+        ? String(collegeGroupId)
+        : `group:college:${collegeGroupId}`
+      : universityLabel
+        ? `group:college:${toSlug(universityLabel)}`
+        : null;
+    const collegeDisplayName = universityLabel
+      ? `${universityLabel} Group`
+      : "College Group";
     return [
-      universityLabel
+      collegeRoomId
         ? {
-            id: `group:college:${universitySlug}`,
-            displayName: `${universityLabel} Group`,
-            profilePicUrl: "/incampus-icon.svg",
+            id: collegeRoomId,
+            displayName: collegeDisplayName,
+            profilePicUrl: DEFAULT_GROUP_AVATAR,
             isGroup: true,
+            isSystemGroup: true,
+            isMember: true,
+            visibility: "public",
             rank: 0,
             memberCount: currentUser?.collegeMemberCount || currentUser?.universityMemberCount,
           }
@@ -2090,8 +2753,11 @@ export default function Chat() {
       {
         id: "group:global",
         displayName: "InCampus Global",
-        profilePicUrl: "/incampus-icon.svg",
+        profilePicUrl: DEFAULT_GROUP_AVATAR,
         isGroup: true,
+        isSystemGroup: true,
+        isMember: true,
+        visibility: "public",
         rank: 1,
         memberCount: currentUser?.globalMemberCount,
       },
@@ -2102,11 +2768,32 @@ export default function Chat() {
     currentUser?.collegeMemberCount,
     currentUser?.universityMemberCount,
     currentUser?.globalMemberCount,
+    currentUser?.collegeGroupId,
+    currentUser?.college_group_id,
+    currentUser?.groupId,
+    currentUser?.collegeGroup,
   ]);
 
   const groupList = useMemo(() => {
-    return groupContacts.filter((group) => group?.id);
-  }, [groupContacts]);
+    const combined = [...groupContacts, ...serverGroups];
+    const seen = new Set();
+    return combined.filter((group) => {
+      if (!group?.id) return false;
+      const key = String(group.id);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [groupContacts, serverGroups]);
+
+  useEffect(() => {
+    if (!serverGroups.length) return;
+    serverGroups.forEach((group) => {
+      if (group?.id && group.isMember !== false) {
+        joinSocket(String(group.id));
+      }
+    });
+  }, [serverGroups]);
 
   const allContacts = useMemo(() => {
     return [...groupList, ...contacts];
@@ -2438,11 +3125,44 @@ export default function Chat() {
   const currentUserId = currentUser?.id;
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
   const isChatOpen = Boolean(activeChatId);
+  useEffect(() => {
+    if (!activeChatUser?.isGroup && showGroupProfile) {
+      setShowGroupProfile(false);
+    }
+  }, [activeChatUser?.isGroup, showGroupProfile]);
+  const isActiveGroup = Boolean(activeChatUser?.isGroup);
+  const isMemberFromUserGroups = useMemo(() => {
+    if (!activeChatId || !String(activeChatId).startsWith("group:")) return false;
+    const candidates = []
+      .concat(currentUser?.groups || [])
+      .concat(currentUser?.groupMemberships || [])
+      .concat(currentUser?.groupIds || []);
+    return candidates.some((entry) => {
+      const resolved = ensureGroupRoomId(entry);
+      return resolved && String(resolved) === String(activeChatId);
+    });
+  }, [
+    activeChatId,
+    currentUser?.groups,
+    currentUser?.groupMemberships,
+    currentUser?.groupIds,
+  ]);
+  const isActiveGroupMember = isActiveGroup
+    ? activeChatUser?.isMember !== false || isMemberFromUserGroups
+    : true;
+  const isActiveGroupPending = Boolean(isActiveGroup && activeChatUser?.isPending);
+  const activeGroupVisibility = isActiveGroup ? activeChatUser?.visibility || "public" : "public";
+  const isActiveGroupPrivate = isActiveGroup && activeGroupVisibility === "private";
+  const isActiveSystemGroup = Boolean(isActiveGroup && activeChatUser?.isSystemGroup);
+  const isSuperAdmin = currentUser?.role === "super_admin";
+  const isActiveGroupAdmin = Boolean(
+    isActiveGroup && (isSuperAdmin || activeChatUser?.isAdmin)
+  );
   const friendStatus = activeChatUser?.isGroup
     ? "friends"
     : getFriendStatus(activeChatUser?.id || activeChatId);
   const canChatActive = activeChatUser?.isGroup
-    ? true
+    ? isActiveGroupMember
     : canChat(activeChatUser?.id || activeChatId);
   const activeChatName = resolveContactName(activeChatUser);
   const activeChatVerified = resolveContactVerified(activeChatUser);
@@ -2452,6 +3172,19 @@ export default function Chat() {
   const activeTyping = activeChatId ? typingMap[activeChatId] : null;
   const showTyping = Boolean(activeTyping && activeTyping.userId);
   const isDirectChat = !activeChatUser?.isGroup;
+  const canDeleteMessage = useCallback(
+    (msg) => {
+      if (!msg) return false;
+      const senderId = resolveMessageSenderId(msg);
+      const isMine =
+        senderId && currentUserId && String(senderId) === String(currentUserId);
+      if (isMine) return true;
+      if (isSuperAdmin) return true;
+      if (isActiveGroupChat && isActiveGroupAdmin) return true;
+      return false;
+    },
+    [currentUserId, isSuperAdmin, isActiveGroupChat, isActiveGroupAdmin]
+  );
 
   const contactsList = useMemo(() => {
     return [...contacts].sort((a, b) => {
@@ -2516,37 +3249,64 @@ export default function Chat() {
     });
   }, [contactsList, chatMeta, getPresence, resolveContactName, resolveContactVerified, handleOpenChat]);
 
-  const groupItems = useMemo(() => {
-    return groupsSorted.map((group, index) => {
-      const groupId =
-        group.id ||
-        group._id ||
-        group.groupId ||
-        group.group_id ||
-        "";
-      const groupKey = groupId || `group-${index}`;
-      const meta = chatMeta[groupId] || {};
-      const unreadCount = meta.unreadCount || 0;
-      const memberCount = group.memberCount ?? group.members?.length;
-      const lastMessageText =
-        truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
-        "Campus group channel";
-      const avatarUrl = group.profilePicUrl || "/incampus-icon.svg";
-      return (
-        <GroupListItem
-          key={String(groupKey)}
-          groupId={groupId}
-          avatarUrl={avatarUrl}
-          displayName={group.displayName}
-          memberCount={memberCount}
-          unreadCount={unreadCount}
-          lastMessageText={lastMessageText}
-          lastMessageAt={meta.lastMessageAt}
-          onOpen={handleOpenChat}
-        />
-      );
+  const { memberGroups, exploreGroups } = useMemo(() => {
+    const member = [];
+    const explore = [];
+    groupsSorted.forEach((group) => {
+      if (!group) return;
+      const isMember = group.isMember !== false || group.isSystemGroup;
+      if (isMember) {
+        member.push(group);
+        return;
+      }
+      const visibility = String(group.visibility || "public").toLowerCase();
+      if (visibility === "private" && !group.isPending) return;
+      explore.push(group);
     });
-  }, [groupsSorted, chatMeta, handleOpenChat]);
+    return { memberGroups: member, exploreGroups: explore };
+  }, [groupsSorted]);
+
+  const renderGroupItems = useCallback(
+    (groups) =>
+      groups.map((group, index) => {
+        const groupId =
+          group.id ||
+          group._id ||
+          group.groupId ||
+          group.group_id ||
+          "";
+        const groupKey = groupId || `group-${index}`;
+        const meta = chatMeta[groupId] || {};
+        const unreadCount = meta.unreadCount || 0;
+        const memberCount = group.memberCount ?? group.members?.length;
+        const lastMessageText =
+          truncateMessage(resolveMessagePreview(meta.lastMessage)) ||
+          "Campus group channel";
+        const avatarUrl = group.profilePicUrl || group.avatarUrl || DEFAULT_GROUP_AVATAR;
+        const displayName =
+          group.displayName || group.name || group.title || group.groupName || "Group";
+        const visibility = group.visibility || "public";
+        const isMember = group.isMember !== false;
+        const isPending = Boolean(group.isPending);
+        return (
+          <GroupListItem
+            key={String(groupKey)}
+            groupId={groupId}
+            avatarUrl={avatarUrl}
+            displayName={displayName}
+            memberCount={memberCount}
+            unreadCount={unreadCount}
+            lastMessageText={lastMessageText}
+            lastMessageAt={meta.lastMessageAt}
+            visibility={visibility}
+            isMember={isMember}
+            isPending={isPending}
+            onOpen={handleOpenChat}
+          />
+        );
+      }),
+    [chatMeta, handleOpenChat]
+  );
 
   useEffect(() => {
     if (activeChatId) {
@@ -2639,10 +3399,57 @@ export default function Chat() {
                 className="h-full overflow-y-auto p-4 space-y-2"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
-                {groupsSorted.length === 0 ? (
+                {canCreateGroup && (
+                  <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+                    <div>
+                      <p className="text-xs font-semibold text-[#faf0e6]">Create group</p>
+                      <p className="text-[10px] text-[#b9b4c7]">
+                        Official or community groups
+                      </p>
+                    </div>
+                    <Motion.button
+                      type="button"
+                      onClick={() => setShowGroupModal(true)}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                      className="h-9 w-9 rounded-full bg-[#5c5470] text-[#faf0e6] shadow-[0_4px_14px_rgba(92,84,112,0.35)] transition-all duration-200 ease-out hover:bg-[#7a6f8f] hover:shadow-[0_6px_18px_rgba(92,84,112,0.45)] active:scale-95"
+                      aria-label="Create group"
+                    >
+                      <i className="fa-solid fa-plus text-sm"></i>
+                    </Motion.button>
+                  </div>
+                )}
+                {groupsLoading ? (
+                  <p className="text-center text-[#b9b4c7] mt-6">Loading groups...</p>
+                ) : groupsSorted.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
                 ) : (
-                  groupItems
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7] px-1">
+                        Your Groups
+                      </p>
+                      {memberGroups.length === 0 ? (
+                        <p className="text-center text-[#b9b4c7] text-xs mt-2">
+                          No groups joined yet
+                        </p>
+                      ) : (
+                        renderGroupItems(memberGroups)
+                      )}
+                    </div>
+                    <div className="space-y-2 pt-2 border-t border-white/10">
+                      <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7] px-1">
+                        Explore Public Groups
+                      </p>
+                      {exploreGroups.length === 0 ? (
+                        <p className="text-center text-[#b9b4c7] text-xs mt-2">
+                          No public groups right now
+                        </p>
+                      ) : (
+                        renderGroupItems(exploreGroups)
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
             </div>
@@ -2659,92 +3466,198 @@ export default function Chat() {
                 className="h-full overflow-y-auto p-4 space-y-2"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
-                {requests.length === 0 ? (
+                {groupRequests.length + friendRequests.length === 0 ? (
                   <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
                 ) : (
-                  requests.map((req, index) => {
-                    const requestUser =
-                      (req.user && typeof req.user === "object" ? req.user : null) ||
-                      (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
-                      (req.sender && typeof req.sender === "object" ? req.sender : null) ||
-                      (req.requester && typeof req.requester === "object"
-                        ? req.requester
-                        : null) ||
-                      null;
-                    const requestDisplayName =
-                      requestUser?.displayName ||
-                      requestUser?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
-                      requestUser?.username ||
-                      "User";
-                    const requestAvatar =
-                      requestUser?.profilePicUrl ||
-                      requestUser?.profilePic ||
-                      requestUser?.profile_pic ||
-                      ANONYMOUS_AVATAR;
-                    const requesterId =
-                      resolveFriendId(req?.requesterId) ||
-                      resolveFriendId(req?.senderId) ||
-                      resolveFriendId(req?.fromUserId) ||
-                      resolveFriendId(req?.requester) ||
-                      resolveFriendId(req?.sender) ||
-                      resolveFriendId(req?.fromUser) ||
-                      resolveFriendId(req?.user) ||
-                      resolveFriendId(req?.userId);
-                    const requestKey = req._id || req.id || requesterId || "req";
-                    const requesterFriends = requestUser?.friends || [];
-                    const mutualCount = requesterFriends.filter((id) =>
-                      resolvedFriendIdSet.has(resolveFriendId(id))
-                    ).length;
-                    return (
-                      <div
-                        key={`${requestKey}-${index}`}
-                        className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center flex-grow gap-3">
-                            <img
-                              src={requestAvatar}
-                              alt={requestDisplayName}
-                              className="w-10 h-10 rounded-full object-cover"
-                              loading="lazy"
-                              decoding="async"
-                            />
-                            <div className="flex-grow">
-                              <p className="font-semibold text-sm text-[#faf0e6]">
-                                {requestDisplayName}
-                              </p>
-                              <p className="text-xs text-[#b9b4c7]">
-                                {mutualCount > 0
-                                  ? `${mutualCount} mutual friends`
-                                  : "No mutual friends"}
-                              </p>
-                            </div>
-                          </div>
-                          <span className="text-[10px] text-[#b9b4c7]">
-                            {req.type === "group" ? "Group Request" : "Friend Request"}
+                  <div className="space-y-4">
+                    {groupRequests.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between px-1">
+                          <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                            Group Requests
+                          </p>
+                          <span className="text-[11px] text-[#b9b4c7]">
+                            {groupRequests.length}
                           </span>
                         </div>
-                        <div className="flex gap-2">
-                          <Motion.button
-                            onClick={() => handleAcceptRequest(req)}
-                            className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
-                          >
-                            Accept
-                          </Motion.button>
-                          <Motion.button
-                            onClick={() => handleIgnoreRequest(requesterId)}
-                            className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
-                            whileHover={{ scale: 1.05 }}
-                            whileTap={{ scale: 0.95 }}
-                          >
-                            Ignore
-                          </Motion.button>
-                        </div>
+                        {groupRequests.map(({ req, meta }, index) => {
+                          const requestUser =
+                            (req.user && typeof req.user === "object" ? req.user : null) ||
+                            (req.fromUser && typeof req.fromUser === "object"
+                              ? req.fromUser
+                              : null) ||
+                            (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+                            (req.requester && typeof req.requester === "object"
+                              ? req.requester
+                              : null) ||
+                            null;
+                          const requestDisplayName =
+                            requestUser?.displayName ||
+                            requestUser?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                            requestUser?.username ||
+                            "User";
+                          const requestAvatar =
+                            requestUser?.profilePicUrl ||
+                            requestUser?.profilePic ||
+                            requestUser?.profile_pic ||
+                            ANONYMOUS_AVATAR;
+                          const requesterId =
+                            resolveFriendId(req?.requesterId) ||
+                            resolveFriendId(req?.senderId) ||
+                            resolveFriendId(req?.fromUserId) ||
+                            resolveFriendId(req?.requester) ||
+                            resolveFriendId(req?.sender) ||
+                            resolveFriendId(req?.fromUser) ||
+                            resolveFriendId(req?.user) ||
+                            resolveFriendId(req?.userId);
+                          const requestKey = req._id || req.id || requesterId || "req";
+                          return (
+                            <div
+                              key={`${requestKey}-group-${index}`}
+                              className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center flex-grow gap-3">
+                                  <img
+                                    src={requestAvatar}
+                                    alt={requestDisplayName}
+                                    className="w-10 h-10 rounded-full object-cover"
+                                    loading="lazy"
+                                    decoding="async"
+                                  />
+                                  <div className="flex-grow">
+                                    <p className="font-semibold text-sm text-[#faf0e6]">
+                                      {requestDisplayName}
+                                    </p>
+                                    <p className="text-xs text-[#b9b4c7]">Group join request</p>
+                                  </div>
+                                </div>
+                                <span className="text-[10px] text-[#b9b4c7]">Group Request</span>
+                              </div>
+                              {meta.groupName && (
+                                <p className="text-[11px] text-[#b9b4c7]">
+                                  Group: {meta.groupName}
+                                </p>
+                              )}
+                              <div className="flex gap-2">
+                                <Motion.button
+                                  onClick={() => handleAcceptRequest(req)}
+                                  className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                >
+                                  Accept
+                                </Motion.button>
+                                <Motion.button
+                                  onClick={() => handleIgnoreRequest(req)}
+                                  className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                >
+                                  Ignore
+                                </Motion.button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })
+                    )}
+                    {friendRequests.length > 0 && (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between px-1">
+                          <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                            Friend Requests
+                          </p>
+                          <span className="text-[11px] text-[#b9b4c7]">
+                            {friendRequests.length}
+                          </span>
+                        </div>
+                        {friendRequests.map(({ req }, index) => {
+                          const requestUser =
+                            (req.user && typeof req.user === "object" ? req.user : null) ||
+                            (req.fromUser && typeof req.fromUser === "object"
+                              ? req.fromUser
+                              : null) ||
+                            (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+                            (req.requester && typeof req.requester === "object"
+                              ? req.requester
+                              : null) ||
+                            null;
+                          const requestDisplayName =
+                            requestUser?.displayName ||
+                            requestUser?.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") ||
+                            requestUser?.username ||
+                            "User";
+                          const requestAvatar =
+                            requestUser?.profilePicUrl ||
+                            requestUser?.profilePic ||
+                            requestUser?.profile_pic ||
+                            ANONYMOUS_AVATAR;
+                          const requesterId =
+                            resolveFriendId(req?.requesterId) ||
+                            resolveFriendId(req?.senderId) ||
+                            resolveFriendId(req?.fromUserId) ||
+                            resolveFriendId(req?.requester) ||
+                            resolveFriendId(req?.sender) ||
+                            resolveFriendId(req?.fromUser) ||
+                            resolveFriendId(req?.user) ||
+                            resolveFriendId(req?.userId);
+                          const requestKey = req._id || req.id || requesterId || "req";
+                          const requesterFriends = requestUser?.friends || [];
+                          const mutualCount = requesterFriends.filter((id) =>
+                            resolvedFriendIdSet.has(resolveFriendId(id))
+                          ).length;
+                          return (
+                            <div
+                              key={`${requestKey}-friend-${index}`}
+                              className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center flex-grow gap-3">
+                                  <img
+                                    src={requestAvatar}
+                                    alt={requestDisplayName}
+                                    className="w-10 h-10 rounded-full object-cover"
+                                    loading="lazy"
+                                    decoding="async"
+                                  />
+                                  <div className="flex-grow">
+                                    <p className="font-semibold text-sm text-[#faf0e6]">
+                                      {requestDisplayName}
+                                    </p>
+                                    <p className="text-xs text-[#b9b4c7]">
+                                      {mutualCount > 0
+                                        ? `${mutualCount} mutual friends`
+                                        : "No mutual friends"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <span className="text-[10px] text-[#b9b4c7]">Friend Request</span>
+                              </div>
+                              <div className="flex gap-2">
+                                <Motion.button
+                                  onClick={() => handleAcceptRequest(req)}
+                                  className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                >
+                                  Accept
+                                </Motion.button>
+                                <Motion.button
+                                  onClick={() => handleIgnoreRequest(req)}
+                                  className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
+                                  whileHover={{ scale: 1.05 }}
+                                  whileTap={{ scale: 0.95 }}
+                                >
+                                  Ignore
+                                </Motion.button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -2778,35 +3691,76 @@ export default function Chat() {
                       <i className="fa-solid fa-arrow-left"></i>
                     </button>
                   )}
-                  <img
-                    src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
-                    alt={activeChatName}
-                    className="w-10 h-10 rounded-full object-cover"
-                  />
-                  <div>
-                    <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
-                      <span className="flex items-center">
-                        {activeChatName || "Chat"}
-                        {activeChatVerified && <BlueTick className="text-[12px]" />}
-                      </span>
-                      {!activeChatUser?.isGroup && activePresence.isOnline && (
-                        <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                      )}
-                    </p>
-                    <p className="text-xs text-[#b9b4c7]">
-                      {activeChatUser?.isGroup
-                        ? showTyping
-                          ? "Someone is typing..."
-                          : "Group channel"
-                        : showTyping
-                          ? "Typing..."
-                          : activePresence.isOnline
-                            ? "Online"
-                            : formatLastSeen(activePresence.lastSeen)}
-                    </p>
-                  </div>
+                  {activeChatUser?.isGroup ? (
+                    <>
+                      <img
+                        src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
+                        alt={activeChatName}
+                        className="w-10 h-10 rounded-full object-cover"
+                      />
+                      <div>
+                        <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
+                          <span className="flex items-center">
+                            {activeChatName || "Chat"}
+                            {activeChatVerified && <BlueTick className="text-[12px]" />}
+                          </span>
+                        </p>
+                        <p className="text-xs text-[#b9b4c7]">
+                          {showTyping ? "Someone is typing..." : "Group channel"}
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleOpenProfile(
+                          activeChatUser?.id ||
+                            activeChatUser?._id ||
+                            activeChatUser?.userId ||
+                            activeChatUser?.user_id,
+                          activeChatUser
+                        )
+                      }
+                      className="flex items-center gap-3 text-left"
+                    >
+                      <img
+                        src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
+                        alt={activeChatName}
+                        className="w-10 h-10 rounded-full object-cover"
+                      />
+                      <div>
+                        <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
+                          <span className="flex items-center">
+                            {activeChatName || "Chat"}
+                            {activeChatVerified && <BlueTick className="text-[12px]" />}
+                          </span>
+                          {activePresence.isOnline && (
+                            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                          )}
+                        </p>
+                        <p className="text-xs text-[#b9b4c7]">
+                          {showTyping
+                            ? "Typing..."
+                            : activePresence.isOnline
+                              ? "Online"
+                              : formatLastSeen(activePresence.lastSeen)}
+                        </p>
+                      </div>
+                    </button>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {activeChatUser?.isGroup && (
+                    <button
+                      type="button"
+                      onClick={() => setShowGroupProfile(true)}
+                      className="h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm text-[#b9b4c7] hover:text-[#faf0e6] transition-colors"
+                      title="Group info"
+                    >
+                      <i className="fa-solid fa-circle-info" />
+                    </button>
+                  )}
                   {isMobile && (
                     <button
                       type="button"
@@ -2851,7 +3805,11 @@ export default function Chat() {
                   isDirectChat={isDirectChat}
                   onOpenSharedPost={handleOpenSharedPost}
                   onReport={handleReportMessage}
+                  onDelete={handleDeleteMessage}
+                  canDeleteMessage={canDeleteMessage}
+                  isMobile={isMobile}
                   resolveMessageSender={resolveMessageSender}
+                  onOpenProfile={handleOpenProfile}
                   messagesEndRef={messagesEndRef}
                 />
               </div>
@@ -2860,6 +3818,27 @@ export default function Chat() {
                 id="chat-input-bar"
                 className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
               >
+                {activeChatUser?.isGroup && !isActiveGroupMember && (
+                  <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
+                    <span>
+                      {isActiveGroupPending
+                        ? "Join request pending approval."
+                        : isActiveGroupPrivate
+                          ? "Private group. Admins can add members."
+                          : "Request access to join this group."}
+                    </span>
+                    {!isActiveGroupPending && !isActiveGroupPrivate && (
+                      <button
+                        type="button"
+                        onClick={handleRequestJoinGroup}
+                        disabled={groupRequestLoading}
+                        className="rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60"
+                      >
+                        {groupRequestLoading ? "Sending..." : "Request Join"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
                   <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
                     <span>Only friends can message.</span>
@@ -2940,6 +3919,18 @@ export default function Chat() {
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
+      <CreateGroupModal
+        isOpen={showGroupModal}
+        onClose={() => setShowGroupModal(false)}
+        onCreated={handleGroupCreated}
+      />
+      <GroupProfileModal
+        isOpen={showGroupProfile && Boolean(activeChatUser?.isGroup)}
+        group={activeChatUser}
+        onClose={() => setShowGroupProfile(false)}
+        onMembershipChange={handleGroupMembershipChange}
+        onDeleted={handleGroupDeleted}
+      />
       {sharedPost && (
         <PostModal
           post={sharedPost}

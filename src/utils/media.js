@@ -1,5 +1,10 @@
 export const compressImageFile = (file, options = {}) => {
-  const { maxDimension = 1600, quality = 0.85, minSize = 500 * 1024 } = options;
+  const {
+    maxWidth = 1080,
+    maxHeight = 1350,
+    quality = 0.78,
+    minSize = 500 * 1024,
+  } = options;
 
   if (!file || !file.type || !file.type.startsWith("image/")) {
     return Promise.resolve(file);
@@ -15,7 +20,11 @@ export const compressImageFile = (file, options = {}) => {
 
     reader.onload = () => {
       image.onload = () => {
-        const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+        const scale = Math.min(
+          1,
+          maxWidth / Math.max(image.width, 1),
+          maxHeight / Math.max(image.height, 1)
+        );
         const targetWidth = Math.round(image.width * scale);
         const targetHeight = Math.round(image.height * scale);
 
@@ -97,4 +106,122 @@ export const getMediaSrcSet = (url, widths = [240, 360, 480, 600]) => {
   return widths
     .map((width) => `${getOptimizedMediaUrl(url, { width })} ${width}w`)
     .join(", ");
+};
+
+const ASPECT_RATIO_MAP = {
+  "1:1": 1,
+  "4:5": 4 / 5,
+  "1.91:1": 1.91,
+};
+
+export const resolveAspectRatioValue = (ratio) => {
+  if (!ratio) return null;
+  if (typeof ratio === "number" && Number.isFinite(ratio)) return ratio;
+  const normalized = String(ratio).trim();
+  if (ASPECT_RATIO_MAP[normalized]) return ASPECT_RATIO_MAP[normalized];
+  if (normalized.includes(":")) {
+    const [w, h] = normalized.split(":").map((value) => Number(value));
+    if (Number.isFinite(w) && Number.isFinite(h) && h !== 0) {
+      return w / h;
+    }
+  }
+  const numeric = Number(normalized);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+export const resolveAspectRatioString = (ratio) => {
+  const value = resolveAspectRatioValue(ratio);
+  if (!value) return "4 / 5";
+  if (String(ratio).trim() === "1.91:1") return "1.91 / 1";
+  if (String(ratio).trim() === "4:5") return "4 / 5";
+  if (String(ratio).trim() === "1:1") return "1 / 1";
+  if (value >= 1) return `${value} / 1`;
+  return `1 / ${Number((1 / value).toFixed(3))}`;
+};
+
+export const detectAspectRatio = (width, height) => {
+  if (!width || !height) return "4:5";
+  if (width === height) return "1:1";
+  if (width > height * 1.2) return "1.91:1";
+  return "4:5";
+};
+
+export const createCroppedImage = (file, aspectRatio, options = {}) => {
+  if (!file || !file.type || !file.type.startsWith("image/")) {
+    return Promise.resolve(file);
+  }
+  const ratioValue = resolveAspectRatioValue(aspectRatio);
+  if (!ratioValue) return Promise.resolve(file);
+  const { quality = 0.8 } = options;
+
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    const image = new Image();
+
+    reader.onload = () => {
+      image.onload = () => {
+        const imgRatio = image.width / image.height;
+        let cropWidth = image.width;
+        let cropHeight = image.height;
+
+        if (Math.abs(imgRatio - ratioValue) <= 0.02) {
+          resolve(file);
+          return;
+        }
+
+        if (imgRatio > ratioValue) {
+          cropWidth = Math.round(image.height * ratioValue);
+        } else if (imgRatio < ratioValue) {
+          cropHeight = Math.round(image.width / ratioValue);
+        }
+
+        const sx = Math.max(0, Math.round((image.width - cropWidth) / 2));
+        const sy = Math.max(0, Math.round((image.height - cropHeight) / 2));
+
+        const canvas = document.createElement("canvas");
+        canvas.width = cropWidth;
+        canvas.height = cropHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          resolve(file);
+          return;
+        }
+
+        ctx.drawImage(image, sx, sy, cropWidth, cropHeight, 0, 0, cropWidth, cropHeight);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              resolve(file);
+              return;
+            }
+            const croppedFile = new File(
+              [blob],
+              file.name.replace(/\.[^/.]+$/, ".jpg"),
+              { type: "image/jpeg" }
+            );
+            resolve(croppedFile);
+          },
+          "image/jpeg",
+          quality
+        );
+      };
+      image.onerror = () => resolve(file);
+      image.src = reader.result;
+    };
+
+    reader.onerror = () => resolve(file);
+    reader.readAsDataURL(file);
+  });
+};
+
+export const getOptimizedFillUrl = (url, options = {}) => {
+  const { width = 900, aspectRatio } = options;
+  const ratioValue = resolveAspectRatioValue(aspectRatio);
+  if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;
+  const height = ratioValue ? Math.round(width / ratioValue) : null;
+  const parts = ["f_auto", "q_auto", `w_${width}`];
+  if (height) parts.push(`h_${height}`);
+  parts.push("c_fill");
+  const transform = parts.join(",");
+  return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
 };

@@ -11,16 +11,132 @@ export const AuthProvider = ({ children }) => {
 
   const buildGroupRooms = useCallback((user) => {
     const universityLabel = user?.university || user?.college || user?.school || "";
-    const universitySlug = encodeURIComponent(String(universityLabel).toLowerCase());
+    const toSlug = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const collegeGroupId =
+      user?.collegeGroupId ||
+      user?.college_group_id ||
+      user?.groupId ||
+      user?.collegeGroup ||
+      "";
+    const collegeRoom = collegeGroupId
+      ? String(collegeGroupId).startsWith("group:")
+        ? String(collegeGroupId)
+        : `group:college:${collegeGroupId}`
+      : universityLabel
+        ? `group:college:${toSlug(universityLabel)}`
+        : null;
+    const resolveGroupId = (value) => {
+      if (!value) return "";
+      if (typeof value === "string" || typeof value === "number") return String(value);
+      if (typeof value === "object") {
+        return String(
+          value._id || value.id || value.groupId || value.group_id || value.group || ""
+        );
+      }
+      return "";
+    };
+    const ensureGroupRoomId = (value) => {
+      const raw = resolveGroupId(value);
+      if (!raw) return "";
+      return raw.startsWith("group:") ? raw : `group:${raw}`;
+    };
+    const groupCandidates = [
+      user?.groupIds,
+      user?.groupMemberships,
+      user?.groups,
+    ].filter(Boolean);
+    const extraRooms = new Set();
+    groupCandidates.forEach((entry) => {
+      if (Array.isArray(entry)) {
+        entry.forEach((item) => {
+          const roomId = ensureGroupRoomId(item);
+          if (roomId) extraRooms.add(roomId);
+        });
+      } else {
+        const roomId = ensureGroupRoomId(entry);
+        if (roomId) extraRooms.add(roomId);
+      }
+    });
+
     return [
       "group:global",
-      universityLabel ? `group:college:${universitySlug}` : null,
+      collegeRoom,
+      ...Array.from(extraRooms),
     ].filter(Boolean);
   }, []);
 
   const normalizeUser = useCallback((user) => {
     const rawStudentType = resolveStudentType(user) || "student";
     const rawUserType = resolveUserType(user) || "student";
+    const rawRoleValue =
+      user?.role ||
+      user?.userRole ||
+      user?.user_role ||
+      user?.accountRole ||
+      user?.account_role ||
+      "";
+    const normalizedRoleValue = (() => {
+      const raw = String(rawRoleValue || "").trim().toLowerCase();
+      if (!raw) return "";
+      if (raw === "admin" || raw === "superadmin" || raw === "super_admin" || raw === "super-admin" || raw === "founder") {
+        return "super_admin";
+      }
+      if (raw === "communityadmin" || raw === "community_admin" || raw === "community-admin" || raw === "moderator") {
+        return "community_admin";
+      }
+      if (raw === "user" || raw === "member") return "user";
+      return rawRoleValue;
+    })();
+    const isSuperAdminFlag = Boolean(
+      user?.isSuperAdmin ||
+        user?.superAdmin ||
+        user?.super_admin ||
+        user?.adminLevel === "super"
+    );
+    const isCommunityAdminFlag = Boolean(
+      user?.isCommunityAdmin ||
+        user?.communityAdmin ||
+        user?.community_admin
+    );
+    const isAdminFlag = Boolean(user?.isAdmin || user?.admin);
+    const rawRole =
+      normalizedRoleValue ||
+      (isSuperAdminFlag ? "super_admin" : "") ||
+      (isCommunityAdminFlag ? "community_admin" : "") ||
+      (isAdminFlag
+        ? String(rawUserType).toLowerCase() === "community"
+          ? "community_admin"
+          : "super_admin"
+        : "") ||
+      "user";
+    let isVerifiedCommunity = Boolean(
+      user?.isVerifiedCommunity ||
+        user?.verifiedCommunity ||
+        user?.communityVerified ||
+        user?.is_community_verified ||
+        user?.verification?.community === "verified" ||
+        user?.verification?.community === true
+    );
+    if (!isVerifiedCommunity && rawRole === "community_admin") {
+      isVerifiedCommunity = Boolean(
+        user?.isVerified ||
+          user?.verified ||
+          user?.is_verified ||
+          user?.verification?.status === "verified"
+      );
+    }
+    const isVerified = Boolean(
+      user?.isVerified ||
+        user?.verified ||
+        user?.is_verified ||
+        user?.verification?.status === "verified" ||
+        isVerifiedCommunity
+    );
     const isCommunity = String(rawUserType).toLowerCase() === "community";
     const displayNameBase = isCommunity
       ? user?.communityName || user?.community_name || user?.fullName
@@ -35,7 +151,9 @@ export const AuthProvider = ({ children }) => {
         displayNameBase ||
         "User",
       profilePicUrl: user?.profilePicUrl,
-      isVerified: Boolean(user?.isVerified),
+      isVerified,
+      isVerifiedCommunity,
+      role: rawRole,
       friends: user?.friends || [],
       bio: user?.bio || "",
       university: user?.university || user?.college || user?.school || "",
@@ -53,6 +171,15 @@ export const AuthProvider = ({ children }) => {
       communityType: user?.communityType || user?.community_type || "",
       communityDescription: user?.communityDescription || user?.community_description || "",
       communityEmail: user?.communityEmail || user?.community_email || "",
+      trustScore: user?.trustScore ?? user?.trust_score,
+      usernameLastChangedAt:
+        user?.usernameLastChangedAt || user?.username_last_changed_at || "",
+      createdAt:
+        user?.createdAt ||
+        user?.created_at ||
+        user?.joinedAt ||
+        user?.createdOn ||
+        "",
       memberCount:
         user?.memberCount ||
         user?.membersCount ||

@@ -3,12 +3,23 @@ import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { createPost, searchColleges } from "../../services/api";
-import { compressImageFile } from "../../utils/media";
+import {
+  compressImageFile,
+  createCroppedImage,
+  detectAspectRatio,
+  resolveAspectRatioString,
+} from "../../utils/media";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 const THOUGHT_MIN_LENGTH = 3;
 const THOUGHT_MAX_LENGTH = 2000;
+const ASPECT_OPTIONS = [
+  { id: "auto", label: "Auto" },
+  { id: "1:1", label: "Square (1:1)" },
+  { id: "4:5", label: "Portrait (4:5)" },
+  { id: "1.91:1", label: "Landscape (1.91:1)" },
+];
 
 const normalizeCollege = (item) => {
   if (!item) return null;
@@ -67,6 +78,9 @@ export default function PostCreator() {
   const [mediaFile, setMediaFile] = useState(null);
   const [mediaPreview, setMediaPreview] = useState(null);
   const [imageLoading, setImageLoading] = useState(false);
+  const [aspectChoice, setAspectChoice] = useState("auto");
+  const [detectedAspect, setDetectedAspect] = useState("4:5");
+  const [showMediaMenu, setShowMediaMenu] = useState(false);
   const [collegeInput, setCollegeInput] = useState("");
   const [selectedColleges, setSelectedColleges] = useState([]);
   const [colleges, setColleges] = useState([]);
@@ -77,7 +91,17 @@ export default function PostCreator() {
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const mediaMenuRef = useRef(null);
+  const textRef = useRef(null);
   const isThought = postMode === "thought";
+  const effectiveAspect = useMemo(
+    () => (aspectChoice === "auto" ? detectedAspect : aspectChoice),
+    [aspectChoice, detectedAspect]
+  );
+  const previewAspectStyle = useMemo(
+    () => ({ aspectRatio: resolveAspectRatioString(effectiveAspect) }),
+    [effectiveAspect]
+  );
   const defaultCollege = useMemo(() => {
     if (!currentUser) return null;
     const name =
@@ -158,6 +182,17 @@ export default function PostCreator() {
   }, [mediaPreview]);
 
   useEffect(() => {
+    if (!showMediaMenu) return undefined;
+    const handleClick = (event) => {
+      if (mediaMenuRef.current && !mediaMenuRef.current.contains(event.target)) {
+        setShowMediaMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showMediaMenu]);
+
+  useEffect(() => {
     if (!isThought) return;
     if (mediaFile || mediaPreview) {
       setMediaFile(null);
@@ -167,6 +202,9 @@ export default function PostCreator() {
       setMediaPreview(null);
       setImageLoading(false);
       setMediaError("");
+      setAspectChoice("auto");
+      setDetectedAspect("4:5");
+      setShowMediaMenu(false);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -193,14 +231,17 @@ export default function PostCreator() {
       setMediaError("Only JPG, PNG, or WEBP images are supported.");
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      setMediaError("Please upload an image under 10MB.");
+    if (file.size > 20 * 1024 * 1024) {
+      setMediaError("Maximum upload size is 20MB.");
       return;
     }
     setMediaError("");
     const processed = await compressImageFile(file);
     setMediaFile(processed);
     setImageLoading(true);
+    setAspectChoice("auto");
+    setDetectedAspect("4:5");
+    setShowMediaMenu(false);
     setMediaPreview((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(processed);
@@ -241,6 +282,14 @@ export default function PostCreator() {
     setLoading(true);
 
     try {
+      let finalMedia = mediaFile;
+      if (!isThought && mediaFile) {
+        try {
+          finalMedia = await createCroppedImage(mediaFile, effectiveAspect);
+        } catch {
+          finalMedia = mediaFile;
+        }
+      }
       await createPost(
         {
           content: trimmedText,
@@ -251,6 +300,7 @@ export default function PostCreator() {
           collegeTagName,
           collegeTagId,
           collegeTags,
+          aspectRatio: !isThought && mediaFile ? effectiveAspect : undefined,
           authorCollegeId:
             currentUser.collegeGroupId ||
             currentUser.college_group_id ||
@@ -258,7 +308,7 @@ export default function PostCreator() {
             currentUser.collegeGroup ||
             "",
         },
-        isThought ? null : mediaFile
+        isThought ? null : finalMedia
       );
 
       setText("");
@@ -271,6 +321,9 @@ export default function PostCreator() {
       setIsAnonymous(false);
       setPostMode("post");
       setVisibility("universal");
+      setAspectChoice("auto");
+      setDetectedAspect("4:5");
+      setShowMediaMenu(false);
       setCollegeInput("");
       setSelectedColleges([]);
       setShowCollegeDropdown(false);
@@ -299,10 +352,20 @@ export default function PostCreator() {
     setMediaPreview(null);
     setImageLoading(false);
     setMediaError("");
+    setAspectChoice("auto");
+    setDetectedAspect("4:5");
+    setShowMediaMenu(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
   };
+
+  const handlePreviewLoad = useCallback((event) => {
+    setImageLoading(false);
+    const { naturalWidth, naturalHeight } = event.currentTarget;
+    const detected = detectAspectRatio(naturalWidth, naturalHeight);
+    setDetectedAspect(detected);
+  }, []);
 
   const userAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
   const isCollegeSelected = useCallback(
@@ -419,6 +482,7 @@ export default function PostCreator() {
               className="w-10 h-10 rounded-full object-cover"
             />
             <textarea
+              ref={textRef}
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder={
@@ -586,24 +650,92 @@ export default function PostCreator() {
                   <p className="mt-4 text-sm text-[#faf0e6] whitespace-pre-wrap">{text}</p>
                 )}
                 {mediaPreview && (
-                  <div className="relative mt-4 overflow-hidden rounded-2xl border border-white/10">
+                  <div
+                    className="relative mt-4 overflow-hidden rounded-2xl border border-white/10 bg-black/20"
+                    style={previewAspectStyle}
+                  >
                     {imageLoading && (
                       <div className="absolute inset-0 animate-pulse bg-white/10"></div>
                     )}
                     <img
                       src={mediaPreview}
                       alt="Preview"
-                      className="w-full max-h-96 object-cover"
-                      onLoad={() => setImageLoading(false)}
+                      className="w-full h-full object-cover"
+                      onLoad={handlePreviewLoad}
                       onError={() => setImageLoading(false)}
                     />
-                    <button
-                      type="button"
-                      onClick={removeImage}
-                      className="absolute top-2 right-2 rounded-full bg-black/60 text-white p-2 hover:bg-red-500 transition-colors"
+                    <div
+                      ref={mediaMenuRef}
+                      className="absolute top-3 right-3 flex flex-col items-end gap-2"
                     >
-                      <i className="fa-solid fa-times"></i>
-                    </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowMediaMenu((prev) => !prev)}
+                        className="h-8 w-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                        aria-label="Media options"
+                      >
+                        <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
+                      </button>
+                      {showMediaMenu && (
+                        <div className="w-52 rounded-2xl glass-card border border-white/10 overflow-hidden">
+                          <div className="px-3 pt-3 pb-2">
+                            <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                              Media options
+                            </p>
+                          </div>
+                          <div className="px-3 pb-2">
+                            <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7] mb-2">
+                              Aspect ratio
+                            </p>
+                            <div className="space-y-1">
+                              {ASPECT_OPTIONS.map((option) => (
+                                <button
+                                  key={option.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setAspectChoice(option.id);
+                                    setShowMediaMenu(false);
+                                  }}
+                                  className={`w-full flex items-center justify-between rounded-xl px-2.5 py-2 text-xs transition-colors ${
+                                    aspectChoice === option.id
+                                      ? "bg-white/15 text-[#faf0e6]"
+                                      : "text-[#b9b4c7] hover:bg-white/10 hover:text-[#faf0e6]"
+                                  }`}
+                                >
+                                  <span>
+                                    {option.id === "auto"
+                                      ? `Auto (${detectedAspect})`
+                                      : option.label}
+                                  </span>
+                                  {aspectChoice === option.id && (
+                                    <i className="fa-solid fa-check text-[10px]"></i>
+                                  )}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              textRef.current?.focus();
+                              setShowMediaMenu(false);
+                            }}
+                            className="w-full text-left px-4 py-2 text-xs text-[#b9b4c7] hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-pen mr-2"></i>
+                            Add caption
+                          </button>
+                          <button
+                            type="button"
+                            onClick={removeImage}
+                            className="w-full text-left px-4 py-2 text-xs text-rose-200 hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-trash-can mr-2"></i>
+                            Remove image
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </Motion.div>
