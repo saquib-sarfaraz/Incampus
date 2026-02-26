@@ -221,17 +221,32 @@ export default function StoryBar() {
     if (story?.authorIsVerified !== undefined || story?.authorVerified !== undefined) {
       return Boolean(story.authorIsVerified || story.authorVerified);
     }
-    if (story?.author?.isVerified !== undefined) {
-      return Boolean(story.author.isVerified);
+    if (story?.author?.isVerified !== undefined || story?.author?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        story.author.isVerified ||
+          story.author.isVerifiedCommunity ||
+          story.author.verifiedCommunity ||
+          story.author.communityVerified
+      );
     }
     if (story?.userIsVerified !== undefined || story?.userVerified !== undefined) {
       return Boolean(story.userIsVerified || story.userVerified);
     }
-    if (entity?.isVerified !== undefined) {
-      return Boolean(entity.isVerified);
+    if (entity?.isVerified !== undefined || entity?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        entity.isVerified ||
+          entity.isVerifiedCommunity ||
+          entity.verifiedCommunity ||
+          entity.communityVerified
+      );
     }
-    if (cachedUser?.isVerified !== undefined) {
-      return Boolean(cachedUser.isVerified);
+    if (cachedUser?.isVerified !== undefined || cachedUser?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        cachedUser.isVerified ||
+          cachedUser.isVerifiedCommunity ||
+          cachedUser.verifiedCommunity ||
+          cachedUser.communityVerified
+      );
     }
     if (story?.verification?.status) {
       return story.verification.status === "verified";
@@ -239,7 +254,14 @@ export default function StoryBar() {
     if (entity?.verification?.status) {
       return entity.verification.status === "verified";
     }
-    return Boolean(story?.isVerified || story?.verified || story?.is_verified);
+    return Boolean(
+      story?.isVerified ||
+        story?.isVerifiedCommunity ||
+        story?.verifiedCommunity ||
+        story?.communityVerified ||
+        story?.verified ||
+        story?.is_verified
+    );
   }, []);
 
   const resolveStoryCampus = useCallback((story, cachedUser) => {

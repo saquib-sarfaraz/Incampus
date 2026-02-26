@@ -6,6 +6,7 @@ import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 import { preloadChatPage } from "../../utils/preloadRoutes";
 import BlueTick from "./BlueTick";
+import { buildUserPreview } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -36,6 +37,9 @@ const resolveActorAvatar = (actor) => {
 const resolveActorVerified = (actor) => {
   return Boolean(
     actor?.isVerified ||
+      actor?.isVerifiedCommunity ||
+      actor?.verifiedCommunity ||
+      actor?.communityVerified ||
       actor?.verified ||
       actor?.is_verified ||
       actor?.verification?.status === "verified"
@@ -75,7 +79,12 @@ const formatTimeAgo = (dateValue) => {
   return `${Math.floor(diff / day)}d`;
 };
 
-const NotificationItem = memo(function NotificationItem({ notif }) {
+const NotificationItem = memo(function NotificationItem({
+  notif,
+  getUserFromCache,
+  prefetchUserProfile,
+}) {
+  const navigate = useNavigate();
   const actor = resolveActor(notif);
   const actorName = resolveActorName(actor);
   const actorAvatar = resolveActorAvatar(actor);
@@ -85,11 +94,51 @@ const NotificationItem = memo(function NotificationItem({ notif }) {
     notif.createdAt || notif.created_at || notif.timestamp
   );
   const isVerified = resolveActorVerified(actor);
+  const actorId =
+    actor?._id ||
+    actor?.id ||
+    actor?.userId ||
+    actor?.user_id ||
+    actor?.profileId ||
+    "";
+  const cachedActor = actorId ? getUserFromCache?.(actorId) : null;
   return (
     <div
-      className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
+      className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm cursor-pointer ${
         isUnread ? "bg-white/5" : ""
       }`}
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        if (actorId) {
+          prefetchUserProfile?.(actorId, cachedActor || actor);
+          const preview = buildUserPreview({ ...cachedActor, ...actor }, {
+            _id: actorId,
+            fullName: actor?.fullName || actor?.name,
+            displayName: actorName,
+            username: actor?.username,
+            profilePicUrl: actorAvatar,
+            isVerified,
+            isVerifiedCommunity: actor?.isVerifiedCommunity,
+          });
+          navigate(`/profile/${actorId}`, { state: { userPreview: preview } });
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && actorId) {
+          prefetchUserProfile?.(actorId, cachedActor || actor);
+          const preview = buildUserPreview({ ...cachedActor, ...actor }, {
+            _id: actorId,
+            fullName: actor?.fullName || actor?.name,
+            displayName: actorName,
+            username: actor?.username,
+            profilePicUrl: actorAvatar,
+            isVerified,
+            isVerifiedCommunity: actor?.isVerifiedCommunity,
+          });
+          navigate(`/profile/${actorId}`, { state: { userPreview: preview } });
+        }
+      }}
     >
       <div className="flex items-center gap-3">
         <img
@@ -120,13 +169,15 @@ const NotificationItem = memo(function NotificationItem({ notif }) {
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { logout } = useAuth();
+  const { logout, currentUser } = useAuth();
   const {
     notifications,
     setNotifications,
     feedScope,
     setFeedScope,
     chatUnreadTotal,
+    getUserFromCache,
+    prefetchUserProfile,
   } = useApp();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showFeedSwitcher, setShowFeedSwitcher] = useState(false);
@@ -153,9 +204,16 @@ export default function Header() {
           notif.notificationId ||
           notif.notification_id ||
           `notif-${index}`;
-        return <NotificationItem key={String(notifKey)} notif={notif} />;
+        return (
+          <NotificationItem
+            key={String(notifKey)}
+            notif={notif}
+            getUserFromCache={getUserFromCache}
+            prefetchUserProfile={prefetchUserProfile}
+          />
+        );
       }),
-    [notifications]
+    [notifications, getUserFromCache, prefetchUserProfile]
   );
 
   const markAllReadOptimistic = () => {
@@ -188,7 +246,15 @@ export default function Header() {
     }
   };
 
-  const isActive = (path) => location.pathname === path;
+  const isActive = (path) => {
+    if (path === "/profile") {
+      return location.pathname.startsWith("/profile");
+    }
+    return location.pathname === path;
+  };
+  const currentUserId =
+    currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
+  const profilePath = currentUserId ? `/profile/${currentUserId}` : "/profile";
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/10 bg-[#1a120b]/80 backdrop-blur-xl">
@@ -339,7 +405,7 @@ export default function Header() {
             </div>
 
             <Motion.button
-              onClick={() => navigate("/profile")}
+              onClick={() => navigate(profilePath)}
               className={`rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/profile")
                   ? "bg-white/10 text-[#faf0e6]"

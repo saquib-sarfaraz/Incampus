@@ -1,8 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
-import { getUserById, getFriendCount, reportUser, blockUser } from "../../services/api";
+import {
+  getUserById,
+  getUserProfileBundle,
+  getFriendCount,
+  reportUser,
+  blockUser,
+} from "../../services/api";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
 import PostModal from "./PostModal";
@@ -19,9 +25,11 @@ import {
   formatCommunityType,
   resolveCommunityDescription,
   resolveMemberCount,
+  resolveCommunityEmail,
 } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const relationshipCache = new Map();
 
 const resolvePostMediaUrl = (post) => {
   if (!post) return "";
@@ -67,20 +75,73 @@ const UserProfileModalContent = ({
   user,
   onClose,
   currentUser,
+  variant = "modal",
 }) => {
-  const { posts, loadPosts, addBlockedUser, canChat } = useApp();
+  const {
+    posts,
+    loadPosts,
+    addBlockedUser,
+    canChat,
+    getUserFromCache,
+    cacheUser,
+    getFriendStatus,
+    ensureFriendStatus,
+    sendFriendRequest,
+    acceptFriend,
+  } = useApp();
   const navigate = useNavigate();
   const [showReport, setShowReport] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
   const [profileLoading, setProfileLoading] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
+  const [profilePosts, setProfilePosts] = useState([]);
+  const [profilePostsCount, setProfilePostsCount] = useState(null);
+  const [relationshipStatus, setRelationshipStatus] = useState("none");
+  const [relationshipLoading, setRelationshipLoading] = useState(false);
+  const [relationshipActionLoading, setRelationshipActionLoading] = useState(false);
+  const lastUserIdRef = useRef(null);
+  const lastFetchRef = useRef({ id: null, ts: 0 });
+  const cacheUserRef = useRef(cacheUser);
+  const getUserFromCacheRef = useRef(getUserFromCache);
 
   const baseUserId = user?._id || user?.id;
 
   useEffect(() => {
-    setProfileUser(user);
+    cacheUserRef.current = cacheUser;
+  }, [cacheUser]);
+
+  useEffect(() => {
+    getUserFromCacheRef.current = getUserFromCache;
+  }, [getUserFromCache]);
+
+  useEffect(() => {
+    if (!user) return;
+    setProfileUser((prev) => {
+      const prevId = prev?._id || prev?.id;
+      const nextId = user?._id || user?.id;
+      const hasDetails = Boolean(
+        user?.username ||
+          user?.fullName ||
+          user?.displayName ||
+          user?.profilePicUrl ||
+          user?.communityName ||
+          user?.college ||
+          user?.university
+      );
+      if (prev && String(prevId) === String(nextId) && !hasDetails) {
+        return prev;
+      }
+      return user;
+    });
   }, [user]);
+
+  useEffect(() => {
+    if (!baseUserId) return;
+    const cachedUser = getUserFromCacheRef.current?.(baseUserId);
+    if (!cachedUser) return;
+    setProfileUser((prev) => ({ ...cachedUser, ...prev }));
+  }, [baseUserId]);
 
   useEffect(() => {
     loadPosts();
@@ -90,8 +151,49 @@ const UserProfileModalContent = ({
     let isActive = true;
     const loadProfile = async () => {
       if (!baseUserId) return;
+      const isNewUser = String(lastUserIdRef.current || "") !== String(baseUserId);
+      lastUserIdRef.current = baseUserId;
+      const lastFetch = lastFetchRef.current;
+      const sameUser = String(lastFetch.id || "") === String(baseUserId);
+      const now = Date.now();
+      if (sameUser && now - (lastFetch.ts || 0) < 1500) {
+        return;
+      }
+      lastFetchRef.current = { id: baseUserId, ts: now };
       setProfileLoading(true);
-      let data = await getUserById(baseUserId);
+      const cachedUser = getUserFromCacheRef.current?.(baseUserId);
+      let bundle = await getUserProfileBundle(baseUserId);
+      let data = bundle?.user || null;
+      if (bundle?.publicPosts) {
+        setProfilePosts(bundle.publicPosts);
+        setProfilePostsCount(bundle.publicPostsCount ?? null);
+      } else if (isNewUser) {
+        setProfilePosts([]);
+        setProfilePostsCount(null);
+      }
+      const postsForProfile = Array.isArray(bundle?.publicPosts)
+        ? bundle.publicPosts
+        : [];
+      const postAuthor =
+        postsForProfile.length > 0
+          ? postsForProfile[0]?.author ||
+            postsForProfile[0]?.user ||
+            postsForProfile[0]?.owner ||
+            postsForProfile[0]?.createdBy ||
+            null
+          : null;
+      if (postAuthor && typeof postAuthor === "object") {
+        data = data ? { ...postAuthor, ...data } : postAuthor;
+      }
+      if (!data) {
+        data = await getUserById(baseUserId);
+      }
+      if (cachedUser) {
+        data = data ? { ...cachedUser, ...data } : cachedUser;
+      }
+      if (data) {
+        cacheUserRef.current?.(data);
+      }
       if (data) {
         const rawCount =
           data.friendCount ??
@@ -122,11 +224,39 @@ const UserProfileModalContent = ({
 
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
-  const isVerified = Boolean(resolvedUser?.isVerified);
+  const normalizeUserId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (typeof value === "object") {
+      return String(value._id || value.id || "");
+    }
+    return "";
+  };
+  const resolvedUserIdValue = normalizeUserId(resolvedUserId);
+  const isVerified = Boolean(
+    resolvedUser?.isVerified ||
+      resolvedUser?.isVerifiedCommunity ||
+      resolvedUser?.verifiedCommunity ||
+      resolvedUser?.communityVerified
+  );
   const resolvedUsername = String(resolvedUser?.username || "").trim();
+  const shouldShowUpdating =
+    profileLoading &&
+    !resolvedUser?.fullName &&
+    !resolvedUser?.displayName &&
+    !resolvedUsername;
 
   const publicPosts = useMemo(() => {
     if (!resolvedUserId) return [];
+    if (profilePosts.length > 0) {
+      return profilePosts
+        .filter((post) => {
+          if (isPostAnonymous(post)) return false;
+          if (!isPostPublic(post)) return false;
+          return true;
+        })
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    }
     const list = Array.isArray(posts) ? posts : [];
     return list
       .filter((post) => {
@@ -137,16 +267,23 @@ const UserProfileModalContent = ({
         return true;
       })
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [posts, resolvedUserId]);
+  }, [posts, resolvedUserId, profilePosts]);
 
   if (!resolvedUser) return null;
   const isSelf = String(resolvedUserId) === String(currentUser?.id);
   const userType = resolveUserType(resolvedUser);
   const isCommunity = userType === "community";
-  const userTypeBadge = formatUserType(userType);
+  const rawAccountType = String(
+    resolvedUser?.accountType ||
+      resolvedUser?.account_type ||
+      resolvedUser?.userType ||
+      resolvedUser?.user_type ||
+      resolvedUser?.type ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
   const studentTypeLabel = formatStudentType(resolveStudentType(resolvedUser));
-  const showStudentTypeBadge = !isCommunity && studentTypeLabel !== userTypeBadge;
-  const collegeLabel = resolveCollegeName(resolvedUser) || (isCommunity ? "" : "College");
   const bioText = resolveUserBio(resolvedUser) || "No bio shared yet.";
   const communityName = resolveCommunityName(resolvedUser);
   const communityTypeLabel = formatCommunityType(resolveCommunityType(resolvedUser));
@@ -167,18 +304,95 @@ const UserProfileModalContent = ({
   const showFriendCount = Number.isFinite(resolvedFriendCount);
   const memberCount = Number(resolveMemberCount(resolvedUser) || 0);
   const fallbackPublicCount = Number(
-    resolvedUser.publicPostCount ||
-      resolvedUser.publicPostsCount ||
-      resolvedUser.postCount ||
+    profilePostsCount ??
+      resolvedUser.publicPostCount ??
+      resolvedUser.publicPostsCount ??
+      resolvedUser.postCount ??
       0
   );
   const publicPostCount = publicPosts.length > 0 ? publicPosts.length : fallbackPublicCount;
-  const canMessage = Boolean(resolvedUserId) && (isSelf || canChat(resolvedUserId));
+  const contactEmail = resolveCommunityEmail(resolvedUser);
+  const roleLower = String(resolvedUser?.role || "").toLowerCase();
+  const communitySignals = [
+    resolvedUser?.communityName,
+    resolvedUser?.community_name,
+    resolvedUser?.communityType,
+    resolvedUser?.community_type,
+    resolvedUser?.communityDescription,
+    resolvedUser?.community_description,
+    resolvedUser?.organizationName,
+    resolvedUser?.orgName,
+    resolvedUser?.orgType,
+    resolvedUser?.clubName,
+    resolvedUser?.club_type,
+  ].filter(Boolean);
+  const isCommunityAccount =
+    isCommunity ||
+    rawAccountType === "community" ||
+    roleLower.includes("community") ||
+    communitySignals.length > 0;
+  const resolvedUserType = isCommunityAccount ? "community" : userType;
+  const userTypeBadge = formatUserType(resolvedUserType);
+  const showStudentTypeBadge =
+    !isCommunityAccount && studentTypeLabel !== userTypeBadge;
+  const collegeLabel =
+    resolveCollegeName(resolvedUser) || (isCommunityAccount ? "" : "College");
+  const canMessage =
+    Boolean(resolvedUserIdValue) && (isSelf || canChat(resolvedUserIdValue));
 
   const handleMessage = () => {
     if (!canMessage) return;
     navigate("/chat");
     onClose?.();
+  };
+
+  const handleAddFriend = async () => {
+    if (!resolvedUserIdValue) return;
+    if (relationshipActionLoading || relationshipStatus === "pending_sent") return;
+    if (relationshipStatus === "friends") return;
+    setRelationshipActionLoading(true);
+    try {
+      await sendFriendRequest?.(resolvedUserIdValue);
+      setRelationshipStatus("pending_sent");
+      relationshipCache.set(resolvedUserIdValue, "pending_sent");
+    } catch (error) {
+      alert(error?.message || "Failed to send friend request");
+    } finally {
+      setRelationshipActionLoading(false);
+    }
+  };
+
+  const handleAcceptFriend = async () => {
+    if (!resolvedUserIdValue) return;
+    if (relationshipActionLoading || relationshipStatus === "friends") return;
+    setRelationshipActionLoading(true);
+    try {
+      await acceptFriend?.(resolvedUserIdValue);
+      setRelationshipStatus("friends");
+      relationshipCache.set(resolvedUserIdValue, "friends");
+    } catch (error) {
+      alert(error?.message || "Failed to accept request");
+    } finally {
+      setRelationshipActionLoading(false);
+    }
+  };
+
+  const handleConnectCommunity = () => {
+    if (!contactEmail) {
+      alert("No contact email available for this community.");
+      return;
+    }
+    const subject = encodeURIComponent("Community Connection Request");
+    const body = encodeURIComponent(
+      "Hi, I would like to connect with your community on InCampus."
+    );
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+      contactEmail
+    )}&su=${subject}&body=${body}`;
+    const opened = window.open(gmailUrl, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      window.location.href = `mailto:${contactEmail}?subject=${subject}&body=${body}`;
+    }
   };
 
   const handleReportUser = () => {
@@ -214,27 +428,65 @@ const UserProfileModalContent = ({
     }
   };
 
-  return (
-    <>
-      <Motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-0 sm:p-4"
-        onClick={onClose}
-      >
-        <Motion.div
-          initial={{ y: 30, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 30, opacity: 0 }}
-          transition={{ type: "spring", damping: 26, stiffness: 240 }}
-          className="relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-3xl glass-card rounded-none sm:rounded-3xl p-6 sm:p-8 overflow-y-auto"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-4 mb-6">
+  useEffect(() => {
+    if (!resolvedUserIdValue || isSelf || isCommunityAccount) return;
+    if (relationshipCache.has(resolvedUserIdValue)) {
+      setRelationshipStatus(relationshipCache.get(resolvedUserIdValue));
+      setRelationshipLoading(false);
+      return;
+    }
+    const immediateStatus = getFriendStatus?.(resolvedUserIdValue) || "none";
+    setRelationshipStatus(immediateStatus);
+    let active = true;
+    setRelationshipLoading(true);
+    Promise.resolve(ensureFriendStatus?.(resolvedUserIdValue))
+      .then((status) => {
+        if (!active || !status) return;
+        setRelationshipStatus(status);
+        relationshipCache.set(resolvedUserIdValue, status);
+      })
+      .finally(() => {
+        if (active) setRelationshipLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    resolvedUserIdValue,
+    isSelf,
+    isCommunityAccount,
+    getFriendStatus,
+    ensureFriendStatus,
+  ]);
+
+  const panelClass =
+    variant === "modal"
+      ? "relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-3xl glass-card rounded-none sm:rounded-3xl p-6 sm:p-8 overflow-y-auto"
+      : "relative w-full max-w-3xl glass-card rounded-3xl p-6 sm:p-8 shadow-2xl mx-auto";
+
+  const panel = (
+    <Motion.div
+      initial={{ y: 30, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: 30, opacity: 0 }}
+      transition={{ type: "spring", damping: 26, stiffness: 240 }}
+      className={panelClass}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-start justify-between gap-4 mb-6">
             <div className="flex items-center gap-4">
               <img
-                src={resolvedUser.profilePicUrl || ANONYMOUS_AVATAR}
+                src={
+                  resolvedUser.profilePicUrl ||
+                  resolvedUser.profilePic ||
+                  resolvedUser.avatarUrl ||
+                  resolvedUser.avatar ||
+                  resolvedUser.photoUrl ||
+                  resolvedUser.photo ||
+                  resolvedUser.imageUrl ||
+                  resolvedUser.image ||
+                  ANONYMOUS_AVATAR
+                }
                 alt={communityName || resolvedUser.fullName || resolvedUser.username}
                 className="h-14 w-14 rounded-full object-cover"
               />
@@ -266,7 +518,7 @@ const UserProfileModalContent = ({
                     <span className="text-xs text-[#b9b4c7]">{communityTypeLabel}</span>
                   )}
                 </div>
-                {profileLoading && (
+                {shouldShowUpdating && (
                   <p className="text-[10px] text-[#b9b4c7] mt-1">Updating profile...</p>
                 )}
               </div>
@@ -392,18 +644,67 @@ const UserProfileModalContent = ({
           </div>
 
           {!isSelf && (
-            <div className="sticky bottom-0 left-0 right-0 mt-6 bg-gradient-to-t from-[#120f0a]/95 via-[#120f0a]/85 to-transparent pt-4">
+            <div className="profile-actions sticky bottom-0 left-0 right-0 mt-6 bg-gradient-to-t from-[#120f0a]/95 via-[#120f0a]/85 to-transparent pt-4">
               <div className="flex items-center gap-2">
-                <button
-                  onClick={handleMessage}
-                  disabled={!canMessage}
-                  className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
-                    canMessage ? "" : "opacity-60 cursor-not-allowed"
-                  }`}
-                >
-                  <i className="fa-solid fa-message mr-2"></i>
-                  {canMessage ? "Message" : "Friends only"}
-                </button>
+                {isCommunityAccount ? (
+                  <button
+                    onClick={handleConnectCommunity}
+                    disabled={!contactEmail || relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      contactEmail && !relationshipActionLoading
+                        ? ""
+                        : "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-link mr-2"></i>
+                    Connect
+                  </button>
+                ) : relationshipStatus === "friends" ? (
+                  <button
+                    onClick={handleMessage}
+                    disabled={!canMessage}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      canMessage ? "" : "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-message mr-2"></i>
+                    Message
+                  </button>
+                ) : relationshipStatus === "pending_received" ? (
+                  <button
+                    onClick={handleAcceptFriend}
+                    disabled={relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      relationshipActionLoading ? "opacity-60 cursor-not-allowed" : ""
+                    }`}
+                  >
+                    <i className="fa-solid fa-user-check mr-2"></i>
+                    Accept Friend
+                  </button>
+                ) : relationshipStatus === "pending_sent" ? (
+                  <button
+                    disabled
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-hourglass-half mr-2"></i>
+                    Request Sent
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleAddFriend}
+                    disabled={relationshipLoading || relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      relationshipLoading || relationshipActionLoading
+                        ? "opacity-60 cursor-not-allowed"
+                        : ""
+                    }`}
+                  >
+                    <i className="fa-solid fa-user-plus mr-2"></i>
+                    Add Friend
+                  </button>
+                )}
                 <button
                   onClick={() => setOptionsOpen(true)}
                   className="h-11 w-11 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
@@ -412,10 +713,31 @@ const UserProfileModalContent = ({
                   <i className="fa-solid fa-circle-info"></i>
                 </button>
               </div>
+              {isCommunityAccount && contactEmail && (
+                <p className="mt-2 text-[10px] text-[#b9b4c7] text-center">
+                  Official email: {contactEmail}
+                </p>
+              )}
             </div>
           )}
+    </Motion.div>
+  );
+
+  return (
+    <>
+      {variant === "modal" ? (
+        <Motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-0 sm:p-4"
+          onClick={onClose}
+        >
+          {panel}
         </Motion.div>
-      </Motion.div>
+      ) : (
+        <div className="w-full px-4 py-6 sm:py-8">{panel}</div>
+      )}
 
       <AnimatePresence>
         {optionsOpen && (
@@ -498,6 +820,7 @@ export default function UserProfileModal({
   user,
   onClose,
   currentUser,
+  variant = "modal",
 }) {
   if (!user) return null;
   const userKey = user._id || user.id || "user";
@@ -510,6 +833,7 @@ export default function UserProfileModal({
           user={user}
           onClose={onClose}
           currentUser={currentUser}
+          variant={variant}
         />
       )}
     </AnimatePresence>

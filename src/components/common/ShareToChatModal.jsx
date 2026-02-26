@@ -40,7 +40,25 @@ export default function ShareToChatModal({
 
   const groups = useMemo(() => {
     const college = currentUser?.university || currentUser?.college || "";
-    const slug = encodeURIComponent(String(college).toLowerCase());
+    const toSlug = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const collegeGroupId =
+      currentUser?.collegeGroupId ||
+      currentUser?.college_group_id ||
+      currentUser?.groupId ||
+      currentUser?.collegeGroup ||
+      "";
+    const collegeRoomId = collegeGroupId
+      ? String(collegeGroupId).startsWith("group:")
+        ? String(collegeGroupId)
+        : `group:college:${collegeGroupId}`
+      : college
+        ? `group:college:${toSlug(college)}`
+        : "";
     return [
       {
         id: "group:global",
@@ -49,17 +67,17 @@ export default function ShareToChatModal({
         avatar: "/incampus-icon.svg",
         subtitle: "Global group",
       },
-      college
+      collegeRoomId
         ? {
-            id: `group:college:${slug}`,
-            label: `${college} Group`,
+            id: collegeRoomId,
+            label: college ? `${college} Group` : "College Group",
             type: "group",
             avatar: "/incampus-icon.svg",
             subtitle: "College group",
           }
         : null,
     ].filter(Boolean);
-  }, [currentUser?.university, currentUser?.college]);
+  }, [currentUser?.university, currentUser?.college, currentUser?.collegeGroupId, currentUser?.college_group_id, currentUser?.groupId, currentUser?.collegeGroup]);
 
   useEffect(() => {
     if (!isOpen) return;

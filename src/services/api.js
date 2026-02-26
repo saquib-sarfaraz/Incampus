@@ -170,6 +170,13 @@ const apiFetch = async (path, options = {}) => {
   }
 
   try {
+    const resolvedCache =
+      cache !== undefined
+        ? cache
+        : method.toUpperCase() === "GET"
+          ? "no-store"
+          : undefined;
+
     const res = await fetch(buildUrl(path, params), {
       method,
       headers: finalHeaders,
@@ -180,7 +187,7 @@ const apiFetch = async (path, options = {}) => {
             ? body
             : JSON.stringify(body),
       signal,
-      cache,
+      cache: resolvedCache,
     });
 
     const data = await parseResponse(res);
@@ -236,9 +243,32 @@ const normalizeList = (data, keys = []) => {
 };
 
 const userRequestCache = new Map();
+const userProfileBundleCache = new Map();
+const userProfileBundleRequestCache = new Map();
+const USER_PROFILE_BUNDLE_TTL_MS = 60 * 1000;
+const USER_PROFILE_BUNDLE_CACHE_LIMIT = 50;
 let cachedPostCommentsEndpointMissing = false;
 let cachedFriendCountEndpointMissing = false;
 let cachedFriendListEndpointMissing = false;
+
+const getCachedProfileBundle = (cacheKey) => {
+  const entry = userProfileBundleCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > USER_PROFILE_BUNDLE_TTL_MS) {
+    userProfileBundleCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+};
+
+const setCachedProfileBundle = (cacheKey, data) => {
+  if (!data) return;
+  userProfileBundleCache.set(cacheKey, { data, ts: Date.now() });
+  if (userProfileBundleCache.size > USER_PROFILE_BUNDLE_CACHE_LIMIT) {
+    const oldestKey = userProfileBundleCache.keys().next().value;
+    if (oldestKey) userProfileBundleCache.delete(oldestKey);
+  }
+};
 
 // Auth APIs
 export const login = async (username, password) => {
@@ -304,10 +334,28 @@ export const resetPassword = async (tokenOrPayload, password) => {
   });
 };
 
+const normalizeUser = (user) => {
+  if (!user || typeof user !== "object") return user;
+  const resolvedAvatar =
+    user.profilePicUrl ||
+    user.profilePic ||
+    user.avatarUrl ||
+    user.avatar ||
+    user.photoUrl ||
+    user.photo ||
+    user.imageUrl ||
+    user.image ||
+    "";
+  if (resolvedAvatar && !user.profilePicUrl) {
+    return { ...user, profilePicUrl: resolvedAvatar };
+  }
+  return user;
+};
+
 // User APIs
 export const getCurrentUser = async () => {
   const data = await apiFetch("/users/me");
-  return data?.user || data;
+  return normalizeUser(data?.user || data);
 };
 
 export const getUserById = async (userId) => {
@@ -320,7 +368,17 @@ export const getUserById = async (userId) => {
   const request = (async () => {
     try {
       const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
-      return data?.user || data;
+      const resolved =
+        (
+        data?.user ||
+        data?.profile ||
+        data?.data?.user ||
+        data?.data?.profile ||
+        data?.data?.item ||
+        data?.item ||
+        data
+        );
+      return normalizeUser(resolved);
     } catch (_error) {
       void _error;
       return null;
@@ -332,6 +390,61 @@ export const getUserById = async (userId) => {
     return await request;
   } finally {
     userRequestCache.delete(cacheKey);
+  }
+};
+
+export const getUserProfileBundle = async (userId) => {
+  if (!userId) return null;
+  const cacheKey = String(userId);
+  const cached = getCachedProfileBundle(cacheKey);
+  if (cached) return cached;
+  if (userProfileBundleRequestCache.has(cacheKey)) {
+    return userProfileBundleRequestCache.get(cacheKey);
+  }
+
+  const request = (async () => {
+    try {
+      const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
+      const user = normalizeUser(
+        data?.user ||
+          data?.profile ||
+          data?.data?.user ||
+          data?.data?.profile ||
+          data?.data?.item ||
+          data?.item ||
+          data
+      );
+      const publicPosts =
+        data?.publicPosts ||
+        data?.public_posts ||
+        data?.posts ||
+        data?.data?.publicPosts ||
+        data?.data?.posts ||
+        [];
+      const publicPostsCount =
+        data?.publicPostsCount ||
+        data?.publicPostCount ||
+        data?.public_posts_count ||
+        (Array.isArray(publicPosts) ? publicPosts.length : 0);
+      const bundle = {
+        user,
+        publicPosts: Array.isArray(publicPosts) ? publicPosts : [],
+        publicPostsCount,
+        raw: data,
+      };
+      setCachedProfileBundle(cacheKey, bundle);
+      return bundle;
+    } catch (_error) {
+      void _error;
+      return null;
+    }
+  })();
+
+  userProfileBundleRequestCache.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    userProfileBundleRequestCache.delete(cacheKey);
   }
 };
 
@@ -549,6 +662,145 @@ export const autoAssignGroups = async (payload) => {
   });
 };
 
+export const createGroup = async (payload = {}, imageFile) => {
+  if (!payload) return null;
+  const body = { ...payload };
+  if (!imageFile) {
+    return apiFetchWithFallback(
+      ["/groups/create", "/group/create", "/groups"],
+      {
+        method: "POST",
+        body,
+      }
+    );
+  }
+  const formData = new FormData();
+  Object.entries(body).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    formData.append(key, value);
+  });
+  formData.append("profileImage", imageFile);
+  formData.append("image", imageFile);
+  return apiFetchWithFallback(
+    ["/groups/create", "/group/create", "/groups"],
+    {
+      method: "POST",
+      body: formData,
+      isFormData: true,
+    }
+  );
+};
+
+const safeDecodeParam = (value) => {
+  if (!value) return "";
+  let result = String(value);
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const decoded = decodeURIComponent(result);
+      if (decoded === result) break;
+      result = decoded;
+    } catch {
+      break;
+    }
+  }
+  return result;
+};
+
+const encodeGroupParam = (value) => encodeURIComponent(safeDecodeParam(value));
+
+export const getGroupDetails = async (groupId) => {
+  if (!groupId) return null;
+  const safeId = safeDecodeParam(groupId);
+  const encodedId = encodeGroupParam(safeId);
+  if (safeId.startsWith("group:college:")) {
+    const collegeGroupId = safeId.replace("group:college:", "");
+    const normalizedCollegeId = collegeGroupId
+      ? collegeGroupId
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+      : "";
+    const encodedCollegeId = encodeGroupParam(normalizedCollegeId || collegeGroupId);
+    return apiFetchWithFallback(
+      [
+        `/groups/college/${encodedCollegeId}`,
+        `/groups/${encodedId}`,
+        `/group/${encodedId}`,
+        `/groups/details/${encodedId}`,
+      ],
+      {}
+    );
+  }
+  return apiFetchWithFallback(
+    [`/groups/${encodedId}`, `/group/${encodedId}`, `/groups/details/${encodedId}`],
+    {}
+  );
+};
+
+export const requestGroupJoin = async (groupId) => {
+  if (!groupId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/request`,
+      `/groups/${encodedId}/join`,
+      `/groups/${encodedId}/join-request`,
+    ],
+    { method: "POST" }
+  );
+};
+
+export const approveGroupJoin = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/approve`,
+      `/groups/${encodedId}/requests/approve`,
+      `/groups/${encodedId}/join/approve`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const rejectGroupJoin = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/reject`,
+      `/groups/${encodedId}/requests/reject`,
+      `/groups/${encodedId}/join/reject`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const removeGroupMember = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/members/remove`,
+      `/groups/${encodedId}/members/${encodeURIComponent(userId)}`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const addGroupMember = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/members/add`,
+      `/groups/${encodedId}/members`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
 export const setupCollege = async (payload) => {
   return apiFetch("/users/setup-college", {
     method: "POST",
@@ -599,6 +851,9 @@ export const createPost = async (postData, imageFile) => {
   if (postData.collegeTagId) {
     payload.collegeTagId = postData.collegeTagId;
   }
+  if (postData.aspectRatio) {
+    payload.aspectRatio = postData.aspectRatio;
+  }
 
   if (!imageFile) {
     return apiFetch("/posts", {
@@ -635,6 +890,9 @@ export const createPost = async (postData, imageFile) => {
   }
   if (payload.collegeTagId) {
     formData.append("collegeTagId", payload.collegeTagId);
+  }
+  if (payload.aspectRatio) {
+    formData.append("aspectRatio", payload.aspectRatio);
   }
   formData.append("image", imageFile);
 
@@ -936,7 +1194,7 @@ export const getGroupChatMessages = async (groupId, params) => {
   if (!groupId) return { messages: [] };
   const resolvedParams = params === undefined ? { last24h: true } : params;
   try {
-    return await apiFetch(`/chat/group/${encodeURIComponent(groupId)}`, {
+    return await apiFetch(`/chat/group/${encodeGroupParam(groupId)}`, {
       params: resolvedParams,
     });
   } catch {
@@ -1606,6 +1864,58 @@ export const reportMessage = async (messageId, payload = {}) => {
 
 export const reportUser = async (userId, payload = {}) => {
   return reportContent({ targetType: "user", targetId: userId, ...payload });
+};
+
+export const deleteChatMessage = async (messageId, payload = {}) => {
+  if (!messageId) return null;
+  const encodedId = encodeGroupParam(messageId);
+  const deletePaths = [
+    `/chat/messages/${encodedId}`,
+    `/chat/message/${encodedId}`,
+    `/messages/${encodedId}`,
+    `/chat/messages/${encodedId}/delete`,
+    `/chat/message/${encodedId}/delete`,
+    `/chat/delete/${encodedId}`,
+  ];
+  try {
+    return await apiFetchWithFallback(deletePaths, {
+      method: "DELETE",
+      body: payload,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+  return apiFetchWithFallback(deletePaths, {
+    method: "POST",
+    body: payload,
+  });
+};
+
+export const deleteGroup = async (groupId, payload = {}) => {
+  if (!groupId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  const deletePaths = [
+    `/groups/${encodedId}`,
+    `/group/${encodedId}`,
+    `/groups/${encodedId}/delete`,
+    `/group/${encodedId}/delete`,
+  ];
+  try {
+    return await apiFetchWithFallback(deletePaths, {
+      method: "DELETE",
+      body: payload,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+  return apiFetchWithFallback(deletePaths, {
+    method: "POST",
+    body: payload,
+  });
 };
 
 export const blockUser = async (userId, payload = {}) => {
