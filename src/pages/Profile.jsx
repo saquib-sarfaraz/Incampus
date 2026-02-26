@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
@@ -33,11 +34,13 @@ import {
   resolveCommunityName,
   resolveCommunityDescription,
   resolveMemberCount,
+  buildUserPreview,
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const HELP_CENTER_URL = "https://incampus-help.online";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
+const USERNAME_REGEX = /^[a-z0-9_]{3,30}$/;
 
 const getPasswordStrength = (value = "") => {
   const hasLetter = /[A-Za-z]/.test(value);
@@ -61,6 +64,9 @@ const getPasswordStrength = (value = "") => {
 
 export default function Profile() {
   const { currentUser, setCurrentUser, logout } = useAuth();
+  const { userId } = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
   const {
     posts,
     loadPosts,
@@ -72,13 +78,22 @@ export default function Profile() {
     friendMap,
     updateAuthorProfile,
     removePost,
+    prefetchUserProfile,
   } = useApp();
+  const previewUser = location.state?.userPreview;
+  const cachedProfileUser = useMemo(
+    () => (userId ? getUserFromCache?.(userId) : null),
+    [getUserFromCache, userId]
+  );
+  const initialProfileUser = previewUser || cachedProfileUser || (userId ? { _id: userId } : null);
   const [userPosts, setUserPosts] = useState([]);
   const [selectedPost, setSelectedPost] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [bio, setBio] = useState("");
   const [settingsName, setSettingsName] = useState("");
+  const [settingsUsername, setSettingsUsername] = useState("");
   const [settingsBio, setSettingsBio] = useState("");
+  const [usernameError, setUsernameError] = useState("");
   const [educationCollege, setEducationCollege] = useState("");
   const [educationYear, setEducationYear] = useState("");
   const [educationType, setEducationType] = useState("student");
@@ -99,8 +114,16 @@ export default function Profile() {
   const friendsLoadRequestRef = useRef(0);
   const friendsCountsLoadedRef = useRef(false);
   const friendsIdsKeyRef = useRef("");
-  const [selectedUser, setSelectedUser] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [savingBio, setSavingBio] = useState(false);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [savingEducation, setSavingEducation] = useState(false);
+  const [savingPassword, setSavingPassword] = useState(false);
+  const [savingPhoto, setSavingPhoto] = useState(false);
+  const resolvedCurrentUserId =
+    currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
+  const isViewingOtherUser = Boolean(
+    userId && (!resolvedCurrentUserId || String(userId) !== String(resolvedCurrentUserId))
+  );
   const [toast, setToast] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const fileInputRef = useRef(null);
@@ -116,7 +139,16 @@ export default function Profile() {
   const profileDisplayName = isCommunity
     ? communityName || "Community"
     : currentUser?.displayName || currentUser?.fullName || "User";
-  const showVerifiedTick = Boolean(currentUser?.isVerified);
+  const showVerifiedTick = Boolean(
+    currentUser?.isVerified || currentUser?.isVerifiedCommunity
+  );
+
+  useEffect(() => {
+    if (previewUser && previewUser._id) {
+      cacheUser?.(previewUser);
+    }
+  }, [previewUser, cacheUser]);
+
   const memberCount = Number(resolveMemberCount(currentUser) || 0);
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded || Object.keys(friendMap || {}).length > 0) return friendIds;
@@ -131,24 +163,55 @@ export default function Profile() {
   const settingsBaseName = isCommunity
     ? resolveCommunityName(currentUser) || currentUser?.fullName || ""
     : currentUser?.fullName || currentUser?.displayName || "";
+  const settingsBaseUsername = currentUser?.username || "";
   const settingsBaseBio = isCommunity
     ? resolveCommunityDescription(currentUser) || ""
     : currentUser?.bio || "";
+  const normalizedUsername = settingsUsername.trim().toLowerCase();
+  const usernameChanged =
+    normalizedUsername !== String(settingsBaseUsername || "").trim();
+  const isUsernameValid = !usernameChanged || USERNAME_REGEX.test(normalizedUsername);
   const settingsChanged =
     settingsName.trim() !== String(settingsBaseName || "").trim() ||
+    normalizedUsername !== String(settingsBaseUsername || "").trim() ||
     settingsBio.trim() !== String(settingsBaseBio || "").trim() ||
     privacyPublic !== (currentUser?.privacyPublic ?? true);
   const canSaveSettings =
     settingsChanged &&
     settingsName.trim().length > 1 &&
-    !loading;
+    isUsernameValid &&
+    !savingSettings;
   const canUpdatePassword =
-    !loading &&
+    !savingPassword &&
     newPassword.length >= 8 &&
     passwordStrength.hasLetter &&
     passwordStrength.hasNumber &&
     confirmPassword.length > 0 &&
     passwordsMatch;
+  const trustScoreValue = useMemo(() => {
+    const raw = Number(currentUser?.trustScore ?? currentUser?.trust_score);
+    return Number.isFinite(raw) ? raw : 100;
+  }, [currentUser?.trustScore, currentUser?.trust_score]);
+  const warningsValue = useMemo(() => {
+    const raw = Number(
+      currentUser?.warnings ??
+        currentUser?.warningCount ??
+        currentUser?.warningsCount ??
+        0
+    );
+    return Number.isFinite(raw) ? raw : 0;
+  }, [currentUser?.warnings, currentUser?.warningCount, currentUser?.warningsCount]);
+  const accountCreatedLabel = useMemo(() => {
+    const raw =
+      currentUser?.createdAt ||
+      currentUser?.created_at ||
+      currentUser?.joinedAt ||
+      currentUser?.createdOn;
+    if (!raw) return "—";
+    const date = new Date(raw);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleString("en-US", { month: "short", year: "numeric" });
+  }, [currentUser?.createdAt, currentUser?.created_at, currentUser?.joinedAt, currentUser?.createdOn]);
 
   const handleOpenHelp = useCallback(() => {
     if (typeof window === "undefined") return;
@@ -183,6 +246,7 @@ export default function Profile() {
       : currentUser.bio || "";
     setBio(resolvedBio);
     setSettingsName(resolvedName);
+    setSettingsUsername(currentUser.username || "");
     setSettingsBio(resolvedBio);
     setPrivacyPublic(currentUser.privacyPublic ?? true);
     const currentCollege = currentUser.university || currentUser.college || "";
@@ -300,28 +364,31 @@ export default function Profile() {
 
   const handleSaveBio = async () => {
     if (!currentUser) return;
-    setLoading(true);
+    setSavingBio(true);
     setSettingsSuccess("");
     setBioSuccess("");
+    const resolvedBio = bio.trim();
+    const previousBio = isCommunity
+      ? currentUser?.communityDescription || ""
+      : currentUser?.bio || "";
     try {
-      const resolvedBio = bio.trim();
       if (isCommunity) {
-        await updateUser({ communityDescription: resolvedBio });
-        setCurrentUser({ ...currentUser, communityDescription: resolvedBio });
+        setCurrentUser((prev) => ({ ...prev, communityDescription: resolvedBio }));
         setSettingsBio(resolvedBio);
         updateAuthorProfile(currentUser.id, {
           communityDescription: resolvedBio,
           displayName: resolveCommunityName(currentUser) || currentUser.displayName,
         });
+        await updateUser({ communityDescription: resolvedBio });
       } else {
-        await updateProfileInfo({ bio: resolvedBio });
-        setCurrentUser({ ...currentUser, bio: resolvedBio });
+        setCurrentUser((prev) => ({ ...prev, bio: resolvedBio }));
         setSettingsBio(resolvedBio);
         updateAuthorProfile(currentUser.id, {
           fullName: currentUser.fullName,
           displayName: currentUser.displayName || currentUser.fullName,
           bio: resolvedBio,
         });
+        await updateProfileInfo({ bio: resolvedBio });
       }
       const socket = getSocket();
       socket?.emit("user-profile-updated", {
@@ -339,60 +406,101 @@ export default function Profile() {
         setSettingsSuccess("");
       }, 2500);
     } catch (error) {
+      if (isCommunity) {
+        setCurrentUser((prev) => ({ ...prev, communityDescription: previousBio }));
+        setSettingsBio(previousBio);
+        updateAuthorProfile(currentUser.id, {
+          communityDescription: previousBio,
+          displayName: resolveCommunityName(currentUser) || currentUser.displayName,
+        });
+      } else {
+        setCurrentUser((prev) => ({ ...prev, bio: previousBio }));
+        setSettingsBio(previousBio);
+        updateAuthorProfile(currentUser.id, {
+          fullName: currentUser.fullName,
+          displayName: currentUser.displayName || currentUser.fullName,
+          bio: previousBio,
+        });
+      }
       alert(error.message || "Failed to update bio");
     } finally {
-      setLoading(false);
+      setSavingBio(false);
     }
   };
 
   const handleSaveSettings = async () => {
     if (!currentUser) return;
     if (!settingsChanged) return;
-    setLoading(true);
+    if (!isUsernameValid) {
+      setUsernameError("Username must be 3-30 characters and use a-z, 0-9, _.");
+      return;
+    }
+    setSavingSettings(true);
     setSettingsSuccess("");
+    setUsernameError("");
+    const resolvedName = settingsName.trim();
+    const resolvedUsername = normalizedUsername;
+    const resolvedBio = settingsBio.trim();
+    const previousSnapshot = {
+      fullName: currentUser.fullName || "",
+      displayName: currentUser.displayName || "",
+      bio: currentUser.bio || "",
+      communityName: currentUser.communityName || "",
+      communityDescription: currentUser.communityDescription || "",
+      privacyPublic: currentUser.privacyPublic,
+      username: currentUser.username || "",
+    };
     try {
-      const resolvedName = settingsName.trim();
-      const resolvedBio = settingsBio.trim();
       if (isCommunity) {
-        await updateUser({
-          communityName: resolvedName,
-          communityDescription: resolvedBio,
-          privacyPublic,
-        });
-        setCurrentUser({
-          ...currentUser,
+        setCurrentUser((prev) => ({
+          ...prev,
           communityName: resolvedName,
           displayName: resolvedName,
           communityDescription: resolvedBio,
           privacyPublic,
-        });
+          username: resolvedUsername || prev?.username,
+        }));
         setSettingsName(resolvedName);
+        if (usernameChanged) setSettingsUsername(resolvedUsername);
         setSettingsBio(resolvedBio);
         updateAuthorProfile(currentUser.id, {
           communityName: resolvedName,
           displayName: resolvedName,
           communityDescription: resolvedBio,
+          username: resolvedUsername || currentUser.username,
         });
+        const payload = {
+          communityName: resolvedName,
+          communityDescription: resolvedBio,
+          privacyPublic,
+        };
+        if (usernameChanged) payload.username = resolvedUsername;
+        await updateUser(payload);
       } else {
-        await updateProfileInfo({
-          fullName: resolvedName,
-          bio: resolvedBio,
-          privacyPublic,
-        });
-        setCurrentUser({
-          ...currentUser,
+        setCurrentUser((prev) => ({
+          ...prev,
           fullName: resolvedName,
           displayName: resolvedName,
           bio: resolvedBio,
           privacyPublic,
-        });
+          username: resolvedUsername || prev?.username,
+        }));
         setSettingsName(resolvedName);
+        if (usernameChanged) setSettingsUsername(resolvedUsername);
         setSettingsBio(resolvedBio);
         updateAuthorProfile(currentUser.id, {
           fullName: resolvedName,
           displayName: resolvedName,
           bio: resolvedBio,
+          username: resolvedUsername || currentUser.username,
         });
+        const payload = {
+          fullName: resolvedName,
+          bio: resolvedBio,
+          privacyPublic,
+        };
+        if (usernameChanged) payload.username = resolvedUsername;
+        await updateProfileInfo(payload);
       }
       const socket = getSocket();
       socket?.emit("user-profile-updated", {
@@ -402,20 +510,73 @@ export default function Profile() {
         bio: isCommunity ? undefined : resolvedBio,
         communityName: isCommunity ? resolvedName : undefined,
         communityDescription: isCommunity ? resolvedBio : undefined,
+        username: usernameChanged ? resolvedUsername : currentUser.username,
       });
       setSettingsSuccess("Settings updated!");
       setTimeout(() => setSettingsSuccess(""), 2500);
     } catch (error) {
-      alert(error.message || "Failed to update settings");
+      const errorMessage = error?.message || "Failed to update settings";
+      const isUsernameIssue = errorMessage.toLowerCase().includes("username");
+      if (isCommunity) {
+        setCurrentUser((prev) => ({
+          ...prev,
+          communityName: previousSnapshot.communityName,
+          displayName: previousSnapshot.communityName || previousSnapshot.displayName,
+          communityDescription: previousSnapshot.communityDescription,
+          privacyPublic: previousSnapshot.privacyPublic,
+          username: previousSnapshot.username,
+        }));
+        setSettingsName(previousSnapshot.communityName || settingsName);
+        setSettingsUsername(previousSnapshot.username || settingsUsername);
+        setSettingsBio(previousSnapshot.communityDescription || settingsBio);
+        updateAuthorProfile(currentUser.id, {
+          communityName: previousSnapshot.communityName,
+          displayName: previousSnapshot.communityName || previousSnapshot.displayName,
+          communityDescription: previousSnapshot.communityDescription,
+          username: previousSnapshot.username,
+        });
+      } else {
+        setCurrentUser((prev) => ({
+          ...prev,
+          fullName: previousSnapshot.fullName,
+          displayName: previousSnapshot.displayName || previousSnapshot.fullName,
+          bio: previousSnapshot.bio,
+          privacyPublic: previousSnapshot.privacyPublic,
+          username: previousSnapshot.username,
+        }));
+        setSettingsName(previousSnapshot.fullName || settingsName);
+        setSettingsUsername(previousSnapshot.username || settingsUsername);
+        setSettingsBio(previousSnapshot.bio || settingsBio);
+        updateAuthorProfile(currentUser.id, {
+          fullName: previousSnapshot.fullName,
+          displayName: previousSnapshot.displayName || previousSnapshot.fullName,
+          bio: previousSnapshot.bio,
+          username: previousSnapshot.username,
+        });
+      }
+      if (isUsernameIssue) {
+        setUsernameError(errorMessage);
+      } else {
+        alert(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      setSavingSettings(false);
     }
   };
 
-  const buildCollegeRoom = (collegeName) => {
+  const buildCollegeRoom = (collegeId, collegeName) => {
+    const rawId = collegeId || "";
+    if (rawId) {
+      const value = String(rawId);
+      return value.startsWith("group:") ? value : `group:college:${value}`;
+    }
     if (!collegeName) return null;
-    const slug = encodeURIComponent(String(collegeName).toLowerCase());
-    return `group:college:${slug}`;
+    const slug = String(collegeName)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug ? `group:college:${slug}` : null;
   };
 
   const handleSaveEducation = async () => {
@@ -424,9 +585,15 @@ export default function Profile() {
       alert("Please complete your education details.");
       return;
     }
-    setLoading(true);
+    setSavingEducation(true);
     try {
       const oldCollege = currentUser?.university || currentUser?.college || "";
+      const oldCollegeId =
+        currentUser?.collegeGroupId ||
+        currentUser?.college_group_id ||
+        currentUser?.groupId ||
+        currentUser?.collegeGroup ||
+        "";
       const isAlumniLevel = educationType === "alumni";
       const payload = {
         university: educationCollege.trim(),
@@ -442,26 +609,32 @@ export default function Profile() {
       const result = await updateEducationInfo(payload);
       const updated = result.user || result || {};
       const newCollege = updated.university || updated.college || educationCollege.trim();
+      const newCollegeId =
+        updated.collegeGroupId ||
+        updated.college_group_id ||
+        updated.groupId ||
+        updated.collegeGroup ||
+        "";
 
-      setCurrentUser({
-        ...currentUser,
+      setCurrentUser((prev) => ({
+        ...prev,
         university: newCollege,
         graduationYear: updated.graduationYear || educationYear,
         year: updated.year || educationYear,
         studentType: updated.studentType || updated.student_type || educationType,
         student_type: updated.student_type || educationType,
-        passoutYear: updated.passoutYear || updated.passout_year || currentUser?.passoutYear || "",
+        passoutYear: updated.passoutYear || updated.passout_year || prev?.passoutYear || "",
         collegeGroupId:
           updated.collegeGroupId ||
           updated.college_group_id ||
           updated.groupId ||
-          currentUser?.collegeGroupId ||
+          prev?.collegeGroupId ||
           null,
-      });
+      }));
 
       if (oldCollege && newCollege && oldCollege.toLowerCase() !== newCollege.toLowerCase()) {
-        const oldRoom = buildCollegeRoom(oldCollege);
-        const newRoom = buildCollegeRoom(newCollege);
+        const oldRoom = buildCollegeRoom(oldCollegeId, oldCollege);
+        const newRoom = buildCollegeRoom(newCollegeId, newCollege);
         if (oldRoom) leaveSocket(oldRoom);
         if (newRoom) joinSocket(newRoom);
         setFeedScope("college");
@@ -470,7 +643,7 @@ export default function Profile() {
     } catch (error) {
       alert(error.message || "Failed to update education");
     } finally {
-      setLoading(false);
+      setSavingEducation(false);
     }
   };
 
@@ -492,7 +665,7 @@ export default function Profile() {
       setPasswordError("Passwords do not match.");
       return;
     }
-    setLoading(true);
+    setSavingPassword(true);
     try {
       const result = await changePassword({ newPassword, confirmPassword });
       setNewPassword("");
@@ -517,37 +690,61 @@ export default function Profile() {
     } catch (error) {
       setPasswordError(error.message || "Failed to update password");
     } finally {
-      setLoading(false);
+      setSavingPassword(false);
     }
   };
 
   const handlePhotoUpload = async (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-
-    setLoading(true);
+    if (!file || !currentUser) return;
+    setSavingPhoto(true);
+    const previousUrl =
+      currentUser?.profilePicUrl ||
+      currentUser?.profilePic ||
+      currentUser?.avatarUrl ||
+      currentUser?.avatar ||
+      null;
+    const previewUrl = URL.createObjectURL(file);
+    let finalUrl = previewUrl;
+    setCurrentUser((prev) => ({ ...prev, profilePicUrl: previewUrl }));
+    updateAuthorProfile(currentUser.id, { profilePicUrl: previewUrl });
     try {
       const result = await uploadProfilePic(file);
-      setCurrentUser({ ...currentUser, profilePicUrl: result.profilePicUrl });
+      finalUrl =
+        result?.profilePicUrl ||
+        result?.profilePic ||
+        result?.url ||
+        result?.data?.profilePicUrl ||
+        previewUrl;
+      setCurrentUser((prev) => ({ ...prev, profilePicUrl: finalUrl }));
+      updateAuthorProfile(currentUser.id, { profilePicUrl: finalUrl });
       alert("Profile picture updated!");
     } catch (error) {
+      setCurrentUser((prev) => ({ ...prev, profilePicUrl: previousUrl }));
+      updateAuthorProfile(currentUser.id, { profilePicUrl: previousUrl });
       alert(error.message || "Upload failed");
     } finally {
-      setLoading(false);
+      setSavingPhoto(false);
+      if (previewUrl && previewUrl.startsWith("blob:") && previewUrl !== finalUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
     }
   };
 
   const handleDeletePhoto = async () => {
     if (!confirm("Delete profile picture?")) return;
-    setLoading(true);
+    setSavingPhoto(true);
     try {
       await deleteProfilePic();
-      setCurrentUser({ ...currentUser, profilePicUrl: null });
+      setCurrentUser((prev) => ({ ...prev, profilePicUrl: null }));
+      if (currentUser?.id) {
+        updateAuthorProfile(currentUser.id, { profilePicUrl: null });
+      }
       alert("Profile picture removed");
     } catch (error) {
       alert(error.message || "Delete failed");
     } finally {
-      setLoading(false);
+      setSavingPhoto(false);
     }
   };
 
@@ -711,9 +908,15 @@ export default function Profile() {
         ANONYMOUS_AVATAR;
       const baseVerified = Boolean(
         entity?.isVerified ||
+          entity?.isVerifiedCommunity ||
+          entity?.verifiedCommunity ||
+          entity?.communityVerified ||
           entity?.verified ||
           entity?.is_verified ||
           raw.isVerified ||
+          raw.isVerifiedCommunity ||
+          raw.verifiedCommunity ||
+          raw.communityVerified ||
           raw.verified ||
           raw.is_verified
       );
@@ -905,6 +1108,24 @@ export default function Profile() {
     }
   }, [isCommunity, activeTab]);
 
+  if (isViewingOtherUser) {
+    return (
+      <div className="min-h-[100dvh] bg-[#1a120b]">
+        <Header />
+        <main className="pt-4 pb-24 sm:pb-6">
+          <UserProfileModal
+            isOpen
+            variant="page"
+            user={initialProfileUser || { _id: userId }}
+            onClose={() => navigate(-1)}
+            currentUser={currentUser}
+          />
+        </main>
+        <BottomNav hidden={false} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen pb-24 sm:pb-0">
       <Header />
@@ -913,12 +1134,30 @@ export default function Profile() {
         <Motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass-card glass-hover rounded-3xl p-6 mb-6 transition-all duration-300 ease-out"
+          className="glass-card glass-hover rounded-3xl p-6 mb-6 transition-all duration-300 ease-out relative"
         >
+          <button
+            type="button"
+            onClick={() => setActiveTab("settings")}
+            className="sm:hidden absolute top-4 right-4 h-9 w-9 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] flex items-center justify-center hover:bg-white/10 transition-colors"
+            aria-label="Open settings"
+          >
+            <i className="fa-solid fa-gear text-sm"></i>
+          </button>
           <div className="flex flex-col items-center text-center">
             <div className="relative mb-4">
               <img
-                src={currentUser?.profilePicUrl || ANONYMOUS_AVATAR}
+                src={
+                  currentUser?.profilePicUrl ||
+                  currentUser?.profilePic ||
+                  currentUser?.avatarUrl ||
+                  currentUser?.avatar ||
+                  currentUser?.photoUrl ||
+                  currentUser?.photo ||
+                  currentUser?.imageUrl ||
+                  currentUser?.image ||
+                  ANONYMOUS_AVATAR
+                }
                 alt={currentUser?.displayName || "Profile"}
                 className="w-24 h-24 rounded-full object-cover mx-auto border border-[#b9b4c7]"
               />
@@ -982,6 +1221,8 @@ export default function Profile() {
               type="button"
               onClick={() => setActiveTab(tab.key)}
               className={`flex-1 rounded-full px-4 py-2 text-xs font-semibold transition-all ${
+                tab.key === "settings" ? "hidden sm:flex" : ""
+              } ${
                 activeTab === tab.key
                   ? "liquid-button text-[#faf0e6]"
                   : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
@@ -1022,7 +1263,7 @@ export default function Profile() {
                 )}
                 <Motion.button
                   onClick={handleSaveBio}
-                  disabled={loading}
+                  disabled={savingBio}
                   className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
@@ -1114,7 +1355,34 @@ export default function Profile() {
                   <button
                     key={friend.id || `friend-${index}`}
                     type="button"
-                    onClick={() => setSelectedUser(friend)}
+                    onClick={() => {
+                      const friendId = friend.id || friend._id || friend.userId || friend.user_id;
+                      if (friendId) {
+                        const cachedFriend = getUserFromCache?.(friendId);
+                        prefetchUserProfile?.(friendId, cachedFriend || friend);
+                        const preview = buildUserPreview({ ...(cachedFriend || {}), ...(friend || {}) }, {
+                          _id: friendId,
+                          fullName: friend.fullName || friend.name,
+                          displayName: friend.displayName || friend.fullName || friend.name,
+                          username: friend.username,
+                          profilePicUrl:
+                            friend.profilePicUrl ||
+                            friend.profilePic ||
+                            friend.avatarUrl ||
+                            friend.avatar ||
+                            friend.photoUrl ||
+                            friend.photo ||
+                            friend.imageUrl ||
+                            friend.image,
+                          isVerified: friend.isVerified,
+                          isVerifiedCommunity: friend.isVerifiedCommunity,
+                          communityName: friend.communityName,
+                          university: friend.university,
+                          college: friend.college,
+                        });
+                        navigate(`/profile/${friendId}`, { state: { userPreview: preview } });
+                      }
+                    }}
                     className="w-full flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left transition-all hover:bg-white/10"
                   >
                     <div className="flex items-center gap-3">
@@ -1182,6 +1450,31 @@ export default function Profile() {
                     }}
                     className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
                   />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                    Username
+                  </label>
+                  <input
+                    type="text"
+                    value={settingsUsername}
+                    onChange={(e) => {
+                      const value = e.target.value.toLowerCase().replace(/\s+/g, "");
+                      setSettingsUsername(value);
+                      if (settingsSuccess) setSettingsSuccess("");
+                      if (usernameError) setUsernameError("");
+                    }}
+                    placeholder="e.g. incampus_user"
+                    className="w-full rounded-xl px-3.5 py-2.5 text-sm glass-input"
+                  />
+                  {usernameChanged && !isUsernameValid && !usernameError && (
+                    <p className="text-[11px] text-amber-200">
+                      Use 3-30 lowercase letters, numbers, or underscore.
+                    </p>
+                  )}
+                  {usernameError && (
+                    <p className="text-[11px] text-amber-200">{usernameError}</p>
+                  )}
                 </div>
               </div>
               <div className="mt-4 space-y-1.5">
@@ -1344,7 +1637,7 @@ export default function Profile() {
                 <div className="mt-5 flex justify-end">
                   <Motion.button
                     onClick={handleSaveEducation}
-                    disabled={loading}
+                    disabled={savingEducation}
                     className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
@@ -1362,7 +1655,8 @@ export default function Profile() {
               <div className="flex flex-wrap gap-3">
                 <Motion.button
                   onClick={() => fileInputRef.current?.click()}
-                  className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full"
+                  disabled={savingPhoto}
+                  className="liquid-button text-white text-xs font-semibold px-4 py-2 rounded-full disabled:opacity-50"
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
@@ -1371,7 +1665,8 @@ export default function Profile() {
                 {currentUser?.profilePicUrl && (
                   <Motion.button
                     onClick={handleDeletePhoto}
-                    className="text-xs font-semibold px-4 py-2 rounded-full bg-red-500/80 text-white hover:bg-red-500 transition-colors"
+                    disabled={savingPhoto}
+                    className="text-xs font-semibold px-4 py-2 rounded-full bg-red-500/80 text-white hover:bg-red-500 transition-colors disabled:opacity-50"
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
@@ -1389,6 +1684,8 @@ export default function Profile() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <input
                     type="password"
+                    id="new-password"
+                    name="newPassword"
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     placeholder="New password"
@@ -1397,6 +1694,8 @@ export default function Profile() {
                   />
                   <input
                     type="password"
+                    id="confirm-password"
+                    name="confirmPassword"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Confirm password"
@@ -1440,6 +1739,41 @@ export default function Profile() {
                   </Motion.button>
                 </div>
               </form>
+            </div>
+
+            <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-[#faf0e6]">Account Overview</h3>
+                <span className="text-[10px] uppercase tracking-[0.25em] text-[#b9b4c7]">
+                  Read only
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                    Trust Score
+                  </p>
+                  <p className="mt-2 text-3xl font-semibold text-[#faf0e6] drop-shadow-[0_0_12px_rgba(92,84,112,0.45)]">
+                    {trustScoreValue}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                    Warnings
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-[#faf0e6]">
+                    {warningsValue}
+                  </p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
+                  <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                    Account Created
+                  </p>
+                  <p className="mt-2 text-base font-semibold text-[#faf0e6]">
+                    {accountCreatedLabel}
+                  </p>
+                </div>
+              </div>
             </div>
 
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
@@ -1503,12 +1837,6 @@ export default function Profile() {
           />
         )}
       </main>
-      <UserProfileModal
-        isOpen={!!selectedUser}
-        user={selectedUser}
-        onClose={() => setSelectedUser(null)}
-        currentUser={currentUser}
-      />
       {toast && (
         <Motion.div
           initial={{ opacity: 0, y: -10 }}

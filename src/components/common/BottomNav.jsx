@@ -1,11 +1,13 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
+import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { preloadChatPage } from "../../utils/preloadRoutes";
 
 export default function BottomNav({ hidden = false, onCreate, overlay = false }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { currentUser } = useAuth();
   const { chatUnreadTotal } = useApp();
 
   const normalizePath = (path = "") => (path.length > 1 ? path.replace(/\/+$/, "") : path);
@@ -15,14 +17,20 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
     if (normalized === "/feed") {
       return currentPath === "/feed" || currentPath === "/home";
     }
+    if (normalized.startsWith("/profile")) {
+      return currentPath.startsWith("/profile");
+    }
     return currentPath === normalized || currentPath.startsWith(`${normalized}/`);
   };
 
+  const currentUserId =
+    currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
+  const profilePath = currentUserId ? `/profile/${currentUserId}` : "/profile";
   const navItems = [
     { path: "/feed", icon: "fa-house", label: "Home" },
     { path: "/trending", icon: "fa-compass", label: "Trending" },
     { path: "/chat", icon: "fa-message", label: "Chat" },
-    { path: "/profile", icon: "fa-user", label: "Profile" },
+    { path: profilePath, icon: "fa-user", label: "Profile" },
   ];
 
   const handleCreate = (event) => {

@@ -14,6 +14,7 @@ import {
   rejectFriendRequest as apiRejectFriendRequest,
   cancelFriendRequest as apiCancelFriendRequest,
   removeFriend as apiRemoveFriend,
+  getUserProfileBundle,
 } from "../services/api";
 import { getSocket } from "../services/socket";
 import AppContext from "./appContextBase";
@@ -727,18 +728,83 @@ export const AppProvider = ({ children }) => {
 
   const cacheUser = useCallback((userData) => {
     if (!userData || !userData._id) return;
+    const resolvedAccountType =
+      userData?.accountType ||
+      userData?.account_type ||
+      userData?.userType ||
+      userData?.user_type ||
+      userData?.type ||
+      userData?.kind ||
+      "";
+    const resolvedStudentType =
+      userData?.studentType || userData?.student_type || userData?.student_type;
+    const resolvedCommunityName =
+      userData?.communityName || userData?.community_name || "";
+    const resolvedCommunityType =
+      userData?.communityType || userData?.community_type || "";
+    const resolvedCommunityEmail =
+      userData?.communityEmail ||
+      userData?.community_email ||
+      userData?.contactEmail ||
+      userData?.contact_email ||
+      userData?.email ||
+      userData?.mail ||
+      "";
+    const resolvedAvatar =
+      userData?.profilePicUrl ||
+      userData?.profilePic ||
+      userData?.avatarUrl ||
+      userData?.avatar ||
+      userData?.photoUrl ||
+      userData?.photo ||
+      userData?.imageUrl ||
+      userData?.image ||
+      "";
+    const isVerifiedCommunity = Boolean(
+      userData?.isVerifiedCommunity ||
+        userData?.verifiedCommunity ||
+        userData?.communityVerified ||
+        userData?.is_community_verified ||
+        userData?.verification?.community === "verified" ||
+        userData?.verification?.community === true
+    );
+    const isVerified = Boolean(
+      userData?.isVerified ||
+        userData?.verified ||
+        userData?.is_verified ||
+        userData?.verification?.status === "verified" ||
+        isVerifiedCommunity
+    );
     setUsersCache((prev) => ({
       ...prev,
       [userData._id]: {
         id: userData._id,
         name: userData.fullName,
         displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-        profilePicUrl: userData.profilePicUrl,
+        profilePicUrl: resolvedAvatar,
         username: userData.username,
-        isVerified: Boolean(userData?.isVerified),
+        accountType: resolvedAccountType,
+        userType: resolvedAccountType,
+        studentType: resolvedStudentType,
+        communityName: resolvedCommunityName,
+        communityType: resolvedCommunityType,
+        communityEmail: resolvedCommunityEmail,
+        isVerified,
+        isVerifiedCommunity,
       },
     }));
   }, []);
+
+  const prefetchUserProfile = useCallback(
+    async (userId, seedUser) => {
+      if (!userId) return null;
+      if (seedUser) cacheUser(seedUser);
+      const bundle = await getUserProfileBundle(userId);
+      if (bundle?.user) cacheUser(bundle.user);
+      return bundle;
+    },
+    [cacheUser]
+  );
 
   const getUserFromCache = useCallback(
     (userId) => {
@@ -765,9 +831,18 @@ export const AppProvider = ({ children }) => {
           ...(updates.isVerified !== undefined
             ? { isVerified: Boolean(updates.isVerified) }
             : {}),
+          ...(updates.isVerifiedCommunity !== undefined
+            ? { isVerifiedCommunity: Boolean(updates.isVerifiedCommunity) }
+            : {}),
           ...(updates.communityDescription !== undefined
             ? { communityDescription: updates.communityDescription }
             : {}),
+          ...(updates.accountType ? { accountType: updates.accountType } : {}),
+          ...(updates.userType ? { userType: updates.userType } : {}),
+          ...(updates.studentType ? { studentType: updates.studentType } : {}),
+          ...(updates.communityName ? { communityName: updates.communityName } : {}),
+          ...(updates.communityType ? { communityType: updates.communityType } : {}),
+          ...(updates.communityEmail ? { communityEmail: updates.communityEmail } : {}),
         },
       };
     });
@@ -1468,6 +1543,7 @@ export const AppProvider = ({ children }) => {
     loadStories,
     loadNotifications,
     cacheUser,
+    prefetchUserProfile,
     updateCachedUser,
     updateAuthorProfile,
     getUserFromCache,
