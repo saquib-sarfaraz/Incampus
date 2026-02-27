@@ -29,9 +29,8 @@ const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 90000;
 const COLLEGE_REFRESH_MS = 120000;
 const FEED_WINDOW_SIZE = 20;
-const FEED_WINDOW_STEP = 10;
-const FEED_SCROLL_EDGE = 220;
 const FEED_ESTIMATED_ITEM_HEIGHT = 420;
+const FEED_PREFETCH_THRESHOLD = 2;
 const FRIEND_BADGE = {
   text: "👥 Friend",
   tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
@@ -89,6 +88,15 @@ const resolvePostIdentity = (post) => {
   const authorId = getAuthorId(post);
   const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
   if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
+  return "";
+};
+
+const resolveCursorValue = (post) => {
+  if (!post) return "";
+  const id = post?._id || post?.id || post?.postId || post?.post_id;
+  if (id) return String(id);
+  const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
+  if (createdAt) return String(createdAt);
   return "";
 };
 
@@ -254,6 +262,29 @@ const getEngagementScore = (post) => {
 
 const resolveFeedOrderKey = (post) => resolvePostIdentity(post) || "";
 
+const normalizeRankedResponse = (response) => {
+  if (Array.isArray(response)) {
+    return { items: response, nextCursor: "", hasMore: undefined };
+  }
+  const items = Array.isArray(response?.items)
+    ? response.items
+    : Array.isArray(response?.posts)
+      ? response.posts
+      : Array.isArray(response?.data)
+        ? response.data
+        : [];
+  return {
+    items,
+    nextCursor: response?.nextCursor || response?.next_cursor || response?.cursor || "",
+    hasMore:
+      typeof response?.hasMore === "boolean"
+        ? response.hasMore
+        : typeof response?.data?.hasMore === "boolean"
+          ? response.data.hasMore
+          : undefined,
+  };
+};
+
 export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
     useApp();
@@ -278,9 +309,10 @@ export default function Feed() {
   const windowStartRef = useRef(0);
   const heightStatsRef = useRef({ total: 0, count: 0 });
   const heightMapRef = useRef(new Map());
-  const prefetchRef = useRef({ page: null, data: null, promise: null });
+  const prefetchRef = useRef({ cursor: "", data: null, promise: null });
   const rankedPostsRef = useRef([]);
   const rankedLoadingRef = useRef(false);
+  const rankedCursorRef = useRef("");
   const latestPostRef = useRef("");
   const sharedPostRef = useRef(null);
   const openedPostRef = useRef("");
@@ -300,8 +332,8 @@ export default function Feed() {
   const checkForNewPosts = useCallback(async () => {
     if (shouldFilterByCollege) return false;
     try {
-      const data = await fetchRankedFeedPage({ page: 1, limit: 1 });
-      const list = Array.isArray(data) ? data : [];
+      const response = await fetchRankedFeedPage({ page: 1, limit: 1 });
+      const { items: list } = normalizeRankedResponse(response);
       const latest = list[0];
       const latestId = latest ? resolvePostIdentity(latest) : "";
       if (!latestId) return false;
@@ -324,25 +356,25 @@ export default function Feed() {
     return () => clearInterval(interval);
   }, [checkForNewPosts, shouldFilterByCollege, refreshing]);
 
-  const consumePrefetch = useCallback((page) => {
+  const consumePrefetch = useCallback((cursor) => {
     const cached = prefetchRef.current;
-    if (cached.page !== page || !Array.isArray(cached.data)) return null;
-    prefetchRef.current = { page: null, data: null, promise: null };
+    if (cached.cursor !== cursor || !cached.data) return null;
+    prefetchRef.current = { cursor: "", data: null, promise: null };
     return cached.data;
   }, []);
 
-  const prefetchPage = useCallback(async (page) => {
-    if (!page || prefetchRef.current.page === page) return;
-    prefetchRef.current = { page, data: null, promise: null };
+  const prefetchPage = useCallback(async (cursor) => {
+    if (!cursor || prefetchRef.current.cursor === cursor) return;
+    prefetchRef.current = { cursor, data: null, promise: null };
     try {
-      const data = await fetchRankedFeedPage({ page, limit: FEED_PAGE_LIMIT });
-      const list = Array.isArray(data) ? data : [];
-      if (prefetchRef.current.page === page) {
-        prefetchRef.current = { page, data: list, promise: null };
+      const response = await fetchRankedFeedPage({ cursor, limit: FEED_PAGE_LIMIT });
+      const normalized = normalizeRankedResponse(response);
+      if (prefetchRef.current.cursor === cursor) {
+        prefetchRef.current = { cursor, data: normalized, promise: null };
       }
     } catch {
-      if (prefetchRef.current.page === page) {
-        prefetchRef.current = { page: null, data: null, promise: null };
+      if (prefetchRef.current.cursor === cursor) {
+        prefetchRef.current = { cursor: "", data: null, promise: null };
       }
     }
   }, []);
@@ -354,12 +386,18 @@ export default function Feed() {
       setRankedLoading(true);
       setRankedError("");
       try {
-        const prefetched = consumePrefetch(page);
-        const data = prefetched
+        const cursorParam = replace ? "" : rankedCursorRef.current || "";
+        const prefetched = consumePrefetch(cursorParam);
+        const params = {
+          limit: FEED_PAGE_LIMIT,
+          ...(cursorParam ? { cursor: cursorParam } : { page: page || 1 }),
+        };
+        const response = prefetched
           ? prefetched
-          : await fetchRankedFeedPage({ page, limit: FEED_PAGE_LIMIT });
-        const list = Array.isArray(data) ? data : [];
-        const basePosts = replace ? [] : rankedPostsRef.current;
+          : await fetchRankedFeedPage(params);
+        const { items: list, nextCursor, hasMore: hasMoreFromBackend } =
+          normalizeRankedResponse(response);
+        const basePosts = rankedPostsRef.current;
         const existingIds = new Set(
           basePosts.map((post) => resolvePostIdentity(post)).filter(Boolean)
         );
@@ -370,15 +408,26 @@ export default function Feed() {
           existingIds.add(id);
           return true;
         });
-        const nextPosts = replace ? uniqueList : [...basePosts, ...uniqueList];
-        const addedCount = uniqueList.length;
+        const nextPosts = replace
+          ? [...uniqueList, ...basePosts]
+          : [...basePosts, ...uniqueList];
+        const shouldPrimeCursor = basePosts.length === 0;
+        const resolvedCursor = nextCursor || resolveCursorValue(list[list.length - 1]);
+        if ((shouldPrimeCursor || !replace) && resolvedCursor) {
+          rankedCursorRef.current = resolvedCursor;
+        }
         rankedPostsRef.current = nextPosts;
         setRankedPosts(nextPosts);
-        const canLoadMore = addedCount > 0 && list.length >= FEED_PAGE_LIMIT;
-        setRankedHasMore(canLoadMore);
+        const canLoadMore =
+          typeof hasMoreFromBackend === "boolean"
+            ? hasMoreFromBackend
+            : list.length >= FEED_PAGE_LIMIT;
+        if (!replace || shouldPrimeCursor) {
+          setRankedHasMore(canLoadMore);
+        }
         setRankedPage(page);
-        if (canLoadMore) {
-          prefetchPage(page + 1);
+        if (canLoadMore && resolvedCursor && (!replace || shouldPrimeCursor)) {
+          prefetchPage(resolvedCursor);
         }
       } catch (error) {
         setRankedError(error?.message || "Unable to load feed.");
@@ -432,9 +481,10 @@ export default function Feed() {
       setRankedPage(1);
       setRankedHasMore(true);
       setRankedError("");
-      prefetchRef.current = { page: null, data: null, promise: null };
+      prefetchRef.current = { cursor: "", data: null, promise: null };
       rankedPostsRef.current = [];
       rankedLoadingRef.current = false;
+      rankedCursorRef.current = "";
     }
     loadRankedPage(1, { replace: !hasExisting });
   }, [shouldFilterByCollege, loadRankedPage]);
@@ -654,6 +704,8 @@ export default function Feed() {
   const hasMore = shouldFilterByCollege
     ? visibleCount < finalFeedPosts.length
     : rankedHasMore;
+  const showLoadMoreSkeletons =
+    !shouldFilterByCollege && rankedLoading && finalFeedPosts.length > 0 && hasMore;
   const displayedPosts = shouldFilterByCollege
     ? finalFeedPosts.slice(0, visibleCount)
     : finalFeedPosts;
@@ -783,6 +835,9 @@ export default function Feed() {
   const topSpacerHeight = windowStart * estimatedItemHeight;
   const bottomSpacerHeight =
     Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight;
+  const effectiveBottomSpacerHeight = showLoadMoreSkeletons
+    ? Math.min(bottomSpacerHeight, estimatedItemHeight * 2)
+    : bottomSpacerHeight;
 
   const renderedWindowedPosts = useMemo(() => {
     return windowedPosts.map((post, index) => {
@@ -835,6 +890,22 @@ export default function Feed() {
   }, [maxWindowStart, windowStart]);
 
   useEffect(() => {
+    if (shouldFilterByCollege) return;
+    if (rankedLoading || !rankedHasMore) return;
+    const remaining = displayedPosts.length - windowEnd;
+    if (remaining <= FEED_PREFETCH_THRESHOLD) {
+      loadMoreRanked();
+    }
+  }, [
+    shouldFilterByCollege,
+    rankedLoading,
+    rankedHasMore,
+    displayedPosts.length,
+    windowEnd,
+    loadMoreRanked,
+  ]);
+
+  useEffect(() => {
     setWindowStart(0);
     windowStartRef.current = 0;
     heightMapRef.current.clear();
@@ -869,21 +940,8 @@ export default function Feed() {
   );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const prev = windowStartRef.current;
-    if (prev === windowStart) return;
-    const delta = (windowStart - prev) * estimatedItemHeight;
-    const scrollEl = resolveScrollElement();
-    if (scrollEl && Number.isFinite(delta) && delta !== 0) {
-      const docEl = document.scrollingElement || document.documentElement;
-      if (scrollEl === docEl || scrollEl === document.body) {
-        docEl.scrollTop += delta;
-      } else {
-        scrollEl.scrollTop += delta;
-      }
-    }
     windowStartRef.current = windowStart;
-  }, [windowStart, estimatedItemHeight, resolveScrollElement]);
+  }, [windowStart]);
 
   const handleWindowScroll = useCallback(
     (event) => {
@@ -897,16 +955,25 @@ export default function Feed() {
         const metrics = getScrollMetrics(target);
         if (!metrics) return;
         const { scrollTop, scrollHeight, clientHeight } = metrics;
-        const nearBottom = scrollTop + clientHeight >= scrollHeight - FEED_SCROLL_EDGE;
-        const nearTop = scrollTop <= FEED_SCROLL_EDGE;
-        if (nearBottom && windowEnd < displayedPosts.length) {
-          setWindowStart((prev) => Math.min(prev + FEED_WINDOW_STEP, maxWindowStart));
-        } else if (nearTop && windowStart > 0) {
-          setWindowStart((prev) => Math.max(prev - FEED_WINDOW_STEP, 0));
+        const approxIndex = Math.floor(
+          scrollTop / Math.max(estimatedItemHeight, 1)
+        );
+        const buffer = Math.max(4, Math.floor(FEED_WINDOW_SIZE / 3));
+        const nextStart = Math.min(
+          maxWindowStart,
+          Math.max(0, approxIndex - buffer)
+        );
+        if (nextStart !== windowStart) {
+          setWindowStart(nextStart);
         }
       });
     },
-    [getScrollMetrics, windowEnd, displayedPosts.length, maxWindowStart, windowStart]
+    [
+      getScrollMetrics,
+      estimatedItemHeight,
+      maxWindowStart,
+      windowStart,
+    ]
   );
 
   useEffect(() => {
@@ -938,7 +1005,7 @@ export default function Feed() {
           loadMoreRanked();
         }
       },
-      { rootMargin: "200px" }
+      { rootMargin: "600px" }
     );
     observer.observe(loadMoreRef.current);
     return () => observer.disconnect();
@@ -1021,25 +1088,25 @@ export default function Feed() {
               </div>
               <StoryBar />
 
-              {showSkeletons ? (
-                <div className="space-y-4 lg:space-y-2">
-                  {[1, 2, 3].map((i) => (
-                    <div
-                      key={i}
-                      className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
-                    >
+      {showSkeletons ? (
+        <div className="space-y-4 lg:space-y-2">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
+            >
                       <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
                       <div className="h-28 bg-white/10 rounded mb-4"></div>
                       <div className="h-4 bg-white/10 rounded w-1/2"></div>
                     </div>
                   ))}
                 </div>
-              ) : showRankedError ? (
-                <div className="text-center py-12 glass-card rounded-3xl">
-                  <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
-                  <p className="text-[#b9b4c7]">{rankedError}</p>
-                </div>
-              ) : showEmptyState ? (
+      ) : showRankedError ? (
+        <div className="text-center py-12 glass-card rounded-3xl">
+          <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
+          <p className="text-[#b9b4c7]">{rankedError}</p>
+        </div>
+      ) : showEmptyState ? (
                 <div className="text-center py-12 glass-card rounded-3xl">
                   <i className="fa-solid fa-inbox text-3xl text-[#b9b4c7] mb-3"></i>
                   <p className="text-[#b9b4c7]">
@@ -1047,28 +1114,42 @@ export default function Feed() {
                   </p>
                 </div>
               ) : (
-                <div className="space-y-4 lg:space-y-2">
-                  {topSpacerHeight > 0 && (
-                    <div
-                      aria-hidden="true"
-                      style={{ height: `${topSpacerHeight}px` }}
-                    />
-                  )}
-                  {renderedWindowedPosts}
-                  {bottomSpacerHeight > 0 && (
-                    <div
-                      aria-hidden="true"
-                      style={{ height: `${bottomSpacerHeight}px` }}
-                    />
-                  )}
-                  {hasMore && (
-                    <div
-                      ref={loadMoreRef}
-                      className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
-                    >
-                      Loading more...
-                    </div>
-                  )}
+        <div className="space-y-4 lg:space-y-2">
+          {topSpacerHeight > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${topSpacerHeight}px` }}
+            />
+          )}
+          {renderedWindowedPosts}
+          {hasMore && (
+            <div
+              ref={loadMoreRef}
+              className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
+            >
+              Loading more...
+            </div>
+          )}
+          {showLoadMoreSkeletons && (
+            <div className="space-y-4 lg:space-y-2">
+              {[1, 2].map((i) => (
+                <div
+                  key={`feed-loading-${i}`}
+                  className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
+                >
+                  <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
+                  <div className="h-28 bg-white/10 rounded mb-4"></div>
+                  <div className="h-4 bg-white/10 rounded w-1/2"></div>
+                </div>
+              ))}
+            </div>
+          )}
+          {bottomSpacerHeight > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${effectiveBottomSpacerHeight}px` }}
+            />
+          )}
                 </div>
               )}
             </section>

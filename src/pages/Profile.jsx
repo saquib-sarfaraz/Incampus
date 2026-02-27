@@ -87,6 +87,7 @@ export default function Profile() {
   );
   const initialProfileUser = previewUser || cachedProfileUser || (userId ? { _id: userId } : null);
   const [userPosts, setUserPosts] = useState([]);
+  const [visiblePostsCount, setVisiblePostsCount] = useState(20);
   const [selectedPost, setSelectedPost] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
   const [bio, setBio] = useState("");
@@ -126,8 +127,14 @@ export default function Profile() {
   );
   const [toast, setToast] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showMobileSettings, setShowMobileSettings] = useState(false);
+  const [isMobileView, setIsMobileView] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 639px)").matches;
+  });
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const profileLoadMoreRef = useRef(null);
   const [bioSuccess, setBioSuccess] = useState("");
   const userType = useMemo(() => resolveUserType(currentUser), [currentUser]);
   const isCommunity = userType === "community";
@@ -226,6 +233,44 @@ export default function Profile() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const mediaQuery = window.matchMedia("(max-width: 639px)");
+    const handleChange = (event) => {
+      setIsMobileView(event.matches);
+      if (!event.matches) {
+        setShowMobileSettings(false);
+      }
+    };
+    if (mediaQuery.addEventListener) {
+      mediaQuery.addEventListener("change", handleChange);
+    } else {
+      mediaQuery.addListener(handleChange);
+    }
+    return () => {
+      if (mediaQuery.removeEventListener) {
+        mediaQuery.removeEventListener("change", handleChange);
+      } else {
+        mediaQuery.removeListener(handleChange);
+      }
+    };
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setActiveTab("settings");
+    if (isMobileView) {
+      setShowMobileSettings(true);
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, behavior: "instant" });
+      }
+    }
+  }, [isMobileView]);
+
+  const handleCloseMobileSettings = useCallback(() => {
+    setShowMobileSettings(false);
+    setActiveTab("overview");
+  }, []);
+
+  useEffect(() => {
     if (currentUser && posts) {
       const filtered = posts.filter(
         (p) =>
@@ -234,6 +279,38 @@ export default function Profile() {
       setUserPosts(filtered);
     }
   }, [posts, currentUser]);
+
+  useEffect(() => {
+    setVisiblePostsCount((prev) => {
+      const next = userPosts.length || 0;
+      if (next === 0) return 0;
+      const baseline = 20;
+      return Math.min(Math.max(baseline, prev), next);
+    });
+  }, [userPosts.length]);
+
+  const visibleUserPosts = useMemo(
+    () => userPosts.slice(0, visiblePostsCount),
+    [userPosts, visiblePostsCount]
+  );
+  const hasMoreUserPosts = visiblePostsCount < userPosts.length;
+
+  useEffect(() => {
+    if (!profileLoadMoreRef.current) return;
+    if (!hasMoreUserPosts) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        setVisiblePostsCount((prev) =>
+          Math.min(prev + 20, userPosts.length)
+        );
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(profileLoadMoreRef.current);
+    return () => observer.disconnect();
+  }, [hasMoreUserPosts, userPosts.length]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -1108,6 +1185,7 @@ export default function Profile() {
     }
   }, [isCommunity, activeTab]);
 
+
   if (isViewingOtherUser) {
     return (
       <div className="min-h-[100dvh] bg-[#1a120b]">
@@ -1126,114 +1204,139 @@ export default function Profile() {
     );
   }
 
+  const showSettingsOnly = isMobileView && showMobileSettings;
+  const resolvedActiveTab = showSettingsOnly ? "settings" : activeTab;
+
   return (
     <div className="min-h-screen pb-24 sm:pb-0">
       <Header />
       <main className="max-w-5xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
         {/* Profile Header */}
-        <Motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="glass-card glass-hover rounded-3xl p-6 mb-6 transition-all duration-300 ease-out relative"
-        >
-          <button
-            type="button"
-            onClick={() => setActiveTab("settings")}
-            className="sm:hidden absolute top-4 right-4 h-9 w-9 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] flex items-center justify-center hover:bg-white/10 transition-colors"
-            aria-label="Open settings"
-          >
-            <i className="fa-solid fa-gear text-sm"></i>
-          </button>
-          <div className="flex flex-col items-center text-center">
-            <div className="relative mb-4">
-              <img
-                src={
-                  currentUser?.profilePicUrl ||
-                  currentUser?.profilePic ||
-                  currentUser?.avatarUrl ||
-                  currentUser?.avatar ||
-                  currentUser?.photoUrl ||
-                  currentUser?.photo ||
-                  currentUser?.imageUrl ||
-                  currentUser?.image ||
-                  ANONYMOUS_AVATAR
-                }
-                alt={currentUser?.displayName || "Profile"}
-                className="w-24 h-24 rounded-full object-cover mx-auto border border-[#b9b4c7]"
-              />
-            </div>
-            <h2 className="text-2xl font-semibold text-[#faf0e6] mb-1 flex items-center justify-center">
-              {profileDisplayName}
-              {showVerifiedTick && <BlueTick />}
-            </h2>
-            <p className="text-sm text-[#b9b4c7] mb-2">
-              @{currentUser?.username || "unknown"}
-            </p>
-            <div className="flex flex-wrap items-center justify-center gap-2 mb-2">
-              <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[11px] text-[#faf0e6]">
-                {userTypeBadge}
-              </span>
-              {!isCommunity && (
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
-                  {studentTypeLabel}
-                </span>
-              )}
-              {isCommunity && communityTypeLabel && (
-                <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
-                  {communityTypeLabel}
-                </span>
-              )}
-            </div>
-            <p className="text-xs text-[#b9b4c7]">
-              {collegeLabel || (isCommunity ? "Community" : "Verified Campus")}
-            </p>
-
-            <div className="mt-5 flex justify-center space-x-6 text-sm text-[#b9b4c7]">
-              <div className="flex flex-col items-center">
-                <p className="font-semibold text-[#faf0e6] text-lg">{userPosts.length}</p>
-                <p>Posts</p>
-              </div>
-              {isCommunity ? (
-                <div className="flex flex-col items-center">
-                  <p className="font-semibold text-[#faf0e6] text-lg">{memberCount}</p>
-                  <p>Members</p>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center">
-                  <p className="font-semibold text-[#faf0e6] text-lg">
-                    {friendCount}
-                  </p>
-                  <p>Friends</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </Motion.div>
-
-        <div className="flex gap-2 mb-6">
-          {[
-            { key: "overview", label: "Overview" },
-            ...(isCommunity ? [] : [{ key: "friends", label: "Friends" }]),
-            { key: "settings", label: "Settings" },
-          ].map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              onClick={() => setActiveTab(tab.key)}
-              className={`flex-1 rounded-full px-4 py-2 text-xs font-semibold transition-all ${
-                tab.key === "settings" ? "hidden sm:flex" : ""
-              } ${
-                activeTab === tab.key
-                  ? "liquid-button text-[#faf0e6]"
-                  : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
-              }`}
+        {!showSettingsOnly && (
+          <>
+            <Motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="glass-card glass-hover rounded-3xl p-6 mb-6 transition-all duration-300 ease-out relative"
             >
-              {tab.label}
-            </button>
-          ))}
-        </div>
+              <button
+                type="button"
+                onClick={handleOpenSettings}
+                className="sm:hidden absolute top-4 right-4 h-9 w-9 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] flex items-center justify-center hover:bg-white/10 transition-colors"
+                aria-label="Open settings"
+              >
+                <i className="fa-solid fa-gear text-sm"></i>
+              </button>
+              <div className="flex flex-col items-center text-center">
+                <div className="relative mb-4">
+                  <img
+                    src={
+                      currentUser?.profilePicUrl ||
+                      currentUser?.profilePic ||
+                      currentUser?.avatarUrl ||
+                      currentUser?.avatar ||
+                      currentUser?.photoUrl ||
+                      currentUser?.photo ||
+                      currentUser?.imageUrl ||
+                      currentUser?.image ||
+                      ANONYMOUS_AVATAR
+                    }
+                    alt={currentUser?.displayName || "Profile"}
+                    className="w-24 h-24 rounded-full object-cover mx-auto border border-[#b9b4c7]"
+                  />
+                </div>
+                <h2 className="text-2xl font-semibold text-[#faf0e6] mb-1 flex items-center justify-center">
+                  {profileDisplayName}
+                  {showVerifiedTick && <BlueTick />}
+                </h2>
+                <p className="text-sm text-[#b9b4c7] mb-2">
+                  @{currentUser?.username || "unknown"}
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2 mb-2">
+                  <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                    {userTypeBadge}
+                  </span>
+                  {!isCommunity && (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                      {studentTypeLabel}
+                    </span>
+                  )}
+                  {isCommunity && communityTypeLabel && (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[11px] text-[#faf0e6]">
+                      {communityTypeLabel}
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs text-[#b9b4c7]">
+                  {collegeLabel || (isCommunity ? "Community" : "Verified Campus")}
+                </p>
 
-        {activeTab === "overview" && (
+                <div className="mt-5 flex justify-center space-x-6 text-sm text-[#b9b4c7]">
+                  <div className="flex flex-col items-center">
+                    <p className="font-semibold text-[#faf0e6] text-lg">{userPosts.length}</p>
+                    <p>Posts</p>
+                  </div>
+                  {isCommunity ? (
+                    <div className="flex flex-col items-center">
+                      <p className="font-semibold text-[#faf0e6] text-lg">{memberCount}</p>
+                      <p>Members</p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center">
+                      <p className="font-semibold text-[#faf0e6] text-lg">
+                        {friendCount}
+                      </p>
+                      <p>Friends</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </Motion.div>
+
+            <div className="flex gap-2 mb-6">
+              {[
+                { key: "overview", label: "Overview" },
+                ...(isCommunity ? [] : [{ key: "friends", label: "Friends" }]),
+                { key: "settings", label: "Settings" },
+              ].map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() =>
+                    tab.key === "settings"
+                      ? handleOpenSettings()
+                      : setActiveTab(tab.key)
+                  }
+                  className={`flex-1 rounded-full px-4 py-2 text-xs font-semibold transition-all ${
+                    tab.key === "settings" ? "hidden sm:flex" : ""
+                  } ${
+                    resolvedActiveTab === tab.key
+                      ? "liquid-button text-[#faf0e6]"
+                      : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        {showSettingsOnly && (
+          <div className="flex items-center gap-3 mb-4 sm:hidden">
+            <button
+              type="button"
+              onClick={handleCloseMobileSettings}
+              className="h-9 w-9 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] flex items-center justify-center hover:bg-white/10 transition-colors"
+              aria-label="Back to profile"
+            >
+              <i className="fa-solid fa-arrow-left"></i>
+            </button>
+            <h2 className="text-lg font-semibold text-[#faf0e6]">Settings</h2>
+          </div>
+        )}
+
+        {resolvedActiveTab === "overview" && (
           <div className="space-y-6">
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
               <div className="flex items-center justify-between mb-4">
@@ -1287,7 +1390,7 @@ export default function Profile() {
                 </div>
               ) : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                  {userPosts.map((post, index) => (
+                  {visibleUserPosts.map((post, index) => (
                     <Motion.div
                       key={
                         post._id ||
@@ -1331,13 +1434,21 @@ export default function Profile() {
                       </div>
                     </Motion.div>
                   ))}
+                  {hasMoreUserPosts && (
+                    <div
+                      ref={profileLoadMoreRef}
+                      className="col-span-full h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
+                    >
+                      Loading more...
+                    </div>
+                  )}
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {activeTab === "friends" && (
+        {resolvedActiveTab === "friends" && (
           <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-[#faf0e6]">Friends</h3>
@@ -1430,7 +1541,7 @@ export default function Profile() {
           </div>
         )}
 
-        {activeTab === "settings" && (
+        {resolvedActiveTab === "settings" && (
           <div className="space-y-6">
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
               <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">

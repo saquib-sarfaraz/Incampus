@@ -68,7 +68,7 @@ export default function GlobalChatListener() {
       }
       return fromId || target;
     },
-    [currentUser?.id]
+    [currentUser]
   );
 
   const handleChatMessage = useCallback(
@@ -145,7 +145,7 @@ export default function GlobalChatListener() {
       }
     },
     [
-      currentUser?.id,
+      currentUser,
       activeChatId,
       chatViewActive,
       isChatRoute,

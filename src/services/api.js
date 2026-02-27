@@ -819,7 +819,24 @@ export const fetchRankedFeedPage = async (params = {}) => {
     ["/feed/universal", "/posts/feed", "/posts"],
     { params }
   );
-  return normalizeList(data, ["posts", "items", "data"]);
+  const items = normalizeList(data, ["posts", "items", "data"]);
+  if (Array.isArray(data)) {
+    return { items, nextCursor: "", hasMore: undefined };
+  }
+  const nextCursor =
+    data?.nextCursor ||
+    data?.next_cursor ||
+    data?.cursor ||
+    data?.data?.nextCursor ||
+    data?.data?.next_cursor ||
+    "";
+  const hasMore =
+    typeof data?.hasMore === "boolean"
+      ? data.hasMore
+      : typeof data?.data?.hasMore === "boolean"
+        ? data.data.hasMore
+        : undefined;
+  return { items, nextCursor, hasMore };
 };
 
 export const createPost = async (postData, imageFile) => {

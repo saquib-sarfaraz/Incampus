@@ -104,7 +104,8 @@ export default function ShareToChatModal({
           })
         );
         setContacts(users.filter(Boolean));
-      } catch (error) {
+      } catch (err) {
+        void err;
       } finally {
         setLoading(false);
       }

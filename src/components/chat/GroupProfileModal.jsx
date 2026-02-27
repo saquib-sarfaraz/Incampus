@@ -5,8 +5,6 @@ import { useAuth } from "../../context/authContext";
 import {
   getGroupDetails,
   requestGroupJoin,
-  approveGroupJoin,
-  rejectGroupJoin,
   removeGroupMember,
   addGroupMember,
   deleteGroup,
@@ -66,7 +64,6 @@ export default function GroupProfileModal({
     currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
   const [details, setDetails] = useState(null);
   const [members, setMembers] = useState([]);
-  const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState("");
@@ -149,7 +146,6 @@ export default function GroupProfileModal({
     if (!isOpen) {
       setDetails(null);
       setMembers([]);
-      setRequests([]);
       setError("");
       setLoading(false);
       setActionLoading(false);
@@ -177,7 +173,6 @@ export default function GroupProfileModal({
           payload.group?.members ||
           payload.group?.memberList ||
           [];
-        const requestsRaw = payload.joinRequests || payload.requests || [];
         const resolvedMembers = Array.isArray(membersRaw)
           ? membersRaw.map(resolveUserDisplay)
           : [];
@@ -187,7 +182,6 @@ export default function GroupProfileModal({
           );
         }
         setMembers(resolvedMembers);
-        setRequests(Array.isArray(requestsRaw) ? requestsRaw.map(resolveUserDisplay) : []);
       })
       .catch((err) => {
         if (!active) return;
@@ -199,7 +193,7 @@ export default function GroupProfileModal({
     return () => {
       active = false;
     };
-  }, [isOpen, apiId]);
+  }, [isOpen, apiId, creatorId]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -280,26 +274,6 @@ export default function GroupProfileModal({
     }
   };
 
-  const handleJoinGroup = async () => {
-    if (!apiId || isSystemGroup) return;
-    setActionLoading(true);
-    setError("");
-    try {
-      await requestGroupJoin(apiId);
-      const selfEntry = resolveUserDisplay(currentUser);
-      setMembers((prev) =>
-        prev.some((user) => String(user.id) === String(selfEntry.id))
-          ? prev
-          : prev.concat(selfEntry)
-      );
-      onMembershipChange?.(groupId, { isMember: true, isPending: false });
-    } catch (err) {
-      setError(err?.message || "Unable to join group.");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
   const handleLeaveGroup = async () => {
     if (!apiId || !currentUserId || isSystemGroup) return;
     setActionLoading(true);
@@ -311,35 +285,6 @@ export default function GroupProfileModal({
       onClose?.();
     } catch (err) {
       setError(err?.message || "Unable to leave group.");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleApprove = async (userId) => {
-    if (!apiId || !userId) return;
-    setActionLoading(true);
-    setError("");
-    try {
-      await approveGroupJoin(apiId, userId);
-      setRequests((prev) => prev.filter((user) => String(user.id) !== String(userId)));
-      setMembers((prev) => prev.concat(prev.some((u) => u.id === userId) ? [] : [{ id: userId, displayName: "User", profilePicUrl: ANONYMOUS_AVATAR }]));
-    } catch (err) {
-      setError(err?.message || "Unable to approve request.");
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleReject = async (userId) => {
-    if (!apiId || !userId) return;
-    setActionLoading(true);
-    setError("");
-    try {
-      await rejectGroupJoin(apiId, userId);
-      setRequests((prev) => prev.filter((user) => String(user.id) !== String(userId)));
-    } catch (err) {
-      setError(err?.message || "Unable to reject request.");
     } finally {
       setActionLoading(false);
     }
@@ -391,7 +336,6 @@ export default function GroupProfileModal({
           ? prev
           : prev.concat({ id: value, displayName: "User", profilePicUrl: ANONYMOUS_AVATAR })
       );
-      setRequests((prev) => prev.filter((user) => String(user.id) !== String(value)));
       setAddMemberValue("");
       setMemberSuggestions([]);
     } catch (err) {

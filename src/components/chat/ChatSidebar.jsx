@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { motion as Motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/authContext";
@@ -63,13 +63,10 @@ export default function ChatSidebar() {
   const { currentUser } = useAuth();
   const { chatMeta, requestChatOpen } = useApp();
   const navigate = useNavigate();
-  const [contacts, setContacts] = useState(() =>
-    readContactsCache(currentUser?.id)
+  const contacts = useMemo(
+    () => readContactsCache(currentUser?.id),
+    [currentUser?.id]
   );
-
-  useEffect(() => {
-    setContacts(readContactsCache(currentUser?.id));
-  }, [currentUser?.id]);
 
   const sortedContacts = useMemo(() => {
     return [...contacts]

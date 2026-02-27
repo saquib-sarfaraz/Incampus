@@ -282,6 +282,8 @@ const CommentList = memo(function CommentList({
   onDelete,
   onReport,
   onBlock,
+  getUserFromCache,
+  prefetchUserProfile,
 }) {
   const navigate = useNavigate();
   if (!comments?.length) return null;
@@ -1019,6 +1021,8 @@ export default function CommentModal({ post, isOpen, onClose }) {
                     onDelete={handleDeleteMenu}
                     onReport={handleReportMenu}
                     onBlock={handleBlockMenu}
+                    getUserFromCache={getUserFromCache}
+                    prefetchUserProfile={prefetchUserProfile}
                   />
                 )}
               </div>
