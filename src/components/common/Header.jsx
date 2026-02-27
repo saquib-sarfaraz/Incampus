@@ -230,7 +230,8 @@ export default function Header() {
     try {
       markAllReadOptimistic();
       await markAllNotificationsRead();
-    } catch (error) {
+    } catch (err) {
+      void err;
     }
   };
 
@@ -241,7 +242,8 @@ export default function Header() {
       markAllReadOptimistic();
       try {
         await markAllNotificationsRead();
-      } catch (error) {
+      } catch (err) {
+        void err;
       }
     }
   };

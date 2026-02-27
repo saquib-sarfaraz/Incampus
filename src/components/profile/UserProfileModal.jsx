@@ -97,6 +97,7 @@ const UserProfileModalContent = ({
   const [selectedPost, setSelectedPost] = useState(null);
   const [profilePosts, setProfilePosts] = useState([]);
   const [profilePostsCount, setProfilePostsCount] = useState(null);
+  const [visiblePostsCount, setVisiblePostsCount] = useState(9);
   const [relationshipStatus, setRelationshipStatus] = useState("none");
   const [relationshipLoading, setRelationshipLoading] = useState(false);
   const [relationshipActionLoading, setRelationshipActionLoading] = useState(false);
@@ -104,6 +105,7 @@ const UserProfileModalContent = ({
   const lastFetchRef = useRef({ id: null, ts: 0 });
   const cacheUserRef = useRef(cacheUser);
   const getUserFromCacheRef = useRef(getUserFromCache);
+  const profileLoadMoreRef = useRef(null);
 
   const baseUserId = user?._id || user?.id;
 
@@ -269,7 +271,38 @@ const UserProfileModalContent = ({
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
   }, [posts, resolvedUserId, profilePosts]);
 
-  if (!resolvedUser) return null;
+  useEffect(() => {
+    setVisiblePostsCount((prev) => {
+      const next = publicPosts.length || 0;
+      if (next === 0) return 0;
+      const baseline = 9;
+      return Math.min(Math.max(baseline, prev), next);
+    });
+  }, [publicPosts.length]);
+
+  const visiblePublicPosts = useMemo(
+    () => publicPosts.slice(0, visiblePostsCount),
+    [publicPosts, visiblePostsCount]
+  );
+  const hasMorePublicPosts = visiblePostsCount < publicPosts.length;
+
+  useEffect(() => {
+    if (!profileLoadMoreRef.current) return;
+    if (!hasMorePublicPosts) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        setVisiblePostsCount((prev) =>
+          Math.min(prev + 9, publicPosts.length)
+        );
+      },
+      { rootMargin: "200px" }
+    );
+    observer.observe(profileLoadMoreRef.current);
+    return () => observer.disconnect();
+  }, [hasMorePublicPosts, publicPosts.length]);
+
   const isSelf = String(resolvedUserId) === String(currentUser?.id);
   const userType = resolveUserType(resolvedUser);
   const isCommunity = userType === "community";
@@ -459,6 +492,8 @@ const UserProfileModalContent = ({
     ensureFriendStatus,
   ]);
 
+  if (!resolvedUser) return null;
+
   const panelClass =
     variant === "modal"
       ? "relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-3xl glass-card rounded-none sm:rounded-3xl p-6 sm:p-8 overflow-y-auto"
@@ -598,7 +633,7 @@ const UserProfileModalContent = ({
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-2">
-                {publicPosts.map((post, index) => {
+                {visiblePublicPosts.map((post, index) => {
                   const mediaUrl = resolvePostMediaUrl(post);
                   const isVideo =
                     isVideoUrl(mediaUrl) ||
@@ -636,6 +671,14 @@ const UserProfileModalContent = ({
                     </button>
                   );
                 })}
+                {hasMorePublicPosts && (
+                  <div
+                    ref={profileLoadMoreRef}
+                    className="col-span-full h-10 flex items-center justify-center text-[11px] text-[#b9b4c7]"
+                  >
+                    Loading more...
+                  </div>
+                )}
               </div>
             )}
             <p className="text-[11px] text-[#b9b4c7]">

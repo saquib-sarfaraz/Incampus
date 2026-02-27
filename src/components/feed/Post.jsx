@@ -34,19 +34,6 @@ const VIEW_STORAGE_PREFIX = "incampus:post:view:";
 const CAPTION_PREVIEW_LENGTH = 100;
 const viewedPostsSession = new Set();
 
-const resolvePostViewsCount = (post) => {
-  if (!post) return 0;
-  if (Array.isArray(post.views)) return post.views.length;
-  const raw =
-    post.viewsCount ??
-    post.viewCount ??
-    post.views ??
-    post.viewersCount ??
-    0;
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
-
 const toNumber = (value) => {
   if (Array.isArray(value)) return value.length;
   const parsed = Number(value);
@@ -472,20 +459,14 @@ function Post({ post, onOpen, badge }) {
     navigate,
     post.isAnonymous,
     authorId,
-    author?.id,
-    author?._id,
+    author,
+    authorEntity,
     post.authorId,
     post.author,
-    author?.fullName,
-    author?.name,
     authorName,
-    author?.displayName,
     authorDisplayName,
-    author?.username,
-    author?.profilePicUrl,
     authorPic,
     authorIsVerified,
-    author?.isVerifiedCommunity,
     getUserFromCache,
     prefetchUserProfile,
   ]);
@@ -544,7 +525,16 @@ function Post({ post, onOpen, badge }) {
     };
 
     loadAuthor();
-  }, [post.isAnonymous, authorId, authorName, authorPic, getUserFromCache, cacheUser]);
+  }, [
+    post,
+    post.isAnonymous,
+    authorId,
+    authorName,
+    authorPic,
+    authorEntity,
+    getUserFromCache,
+    cacheUser,
+  ]);
 
   useEffect(() => {
     const handleOutside = (event) => {
@@ -561,6 +551,15 @@ function Post({ post, onOpen, badge }) {
     committedLikedRef.current = baseIsLiked;
     committedCountRef.current = baseLikesCount;
   }, [baseIsLiked, baseLikesCount]);
+
+  useEffect(() => {
+    if (optimisticLiked !== null && optimisticLiked === baseIsLiked) {
+      setOptimisticLiked(null);
+    }
+    if (optimisticLikesCount !== null && optimisticLikesCount === baseLikesCount) {
+      setOptimisticLikesCount(null);
+    }
+  }, [optimisticLiked, optimisticLikesCount, baseIsLiked, baseLikesCount]);
 
   useEffect(() => {
     return () => {
@@ -595,8 +594,6 @@ function Post({ post, onOpen, badge }) {
       });
       likeDesiredRef.current = null;
       optimisticCountRef.current = null;
-      setOptimisticLiked(null);
-      setOptimisticLikesCount(null);
       setLikeAction(null);
       return;
     }
@@ -653,22 +650,14 @@ function Post({ post, onOpen, badge }) {
       if (likeDesiredRef.current === desiredAtSend) {
         likeDesiredRef.current = null;
         optimisticCountRef.current = null;
-        setOptimisticLiked(null);
-        setOptimisticLikesCount(null);
       }
     }
-  }, [
-    postId,
-    currentUser?.id,
-    baseIsLiked,
-    baseLikesCount,
-    updatePost,
-    likePost,
-  ]);
+  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost]);
 
-  const handleLike = async () => {
+  const handleLike = useCallback(() => {
     if (!currentUser?.id) return;
     if (!postId) return;
+    if (likePending) return;
 
     const nextLiked = !isLiked;
     const currentCount = optimisticCountRef.current ?? baseLikesCount;
@@ -705,7 +694,17 @@ function Post({ post, onOpen, badge }) {
     likeCommitTimerRef.current = setTimeout(() => {
       commitLike();
     }, 2000);
-  };
+  }, [
+    currentUser?.id,
+    postId,
+    likePending,
+    isLiked,
+    baseLikesCount,
+    shouldUseLikesList,
+    baseLikes,
+    updatePost,
+    commitLike,
+  ]);
 
   const handleReport = () => {
     setShowReport(true);
@@ -1031,7 +1030,8 @@ function Post({ post, onOpen, badge }) {
         <div className="flex justify-around text-[#b9b4c7] pt-2 lg:pt-1 border-t border-white/10 lg:text-sm">
           <Motion.button
             onClick={handleLike}
-            className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] lg:min-h-[38px] px-2 ${
+            disabled={likePending}
+            className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] lg:min-h-[38px] px-2 disabled:opacity-70 disabled:cursor-not-allowed ${
               isLiked ? "text-red-300" : ""
             }`}
           >

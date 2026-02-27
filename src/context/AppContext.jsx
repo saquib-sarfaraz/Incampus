@@ -118,6 +118,48 @@ const normalizeStoriesList = (list) => {
   return flat;
 };
 
+const resolvePostIdentity = (post) => {
+  if (!post) return "";
+  const id = post?._id || post?.id || post?.postId || post?.post_id;
+  if (id) return String(id);
+  const authorId =
+    post?.authorId ||
+    post?.author_id ||
+    post?.userId ||
+    post?.user_id ||
+    post?.author?._id ||
+    post?.author?.id ||
+    "";
+  const createdAt =
+    post?.createdAt || post?.created_at || post?.timestamp || post?.time || "";
+  if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
+  return "";
+};
+
+const mergePostsByNewest = (incoming, existing) => {
+  const primary = Array.isArray(incoming) ? incoming : [];
+  const secondary = Array.isArray(existing) ? existing : [];
+  if (primary.length === 0) return secondary;
+  if (secondary.length === 0) return primary;
+  const next = [];
+  const seen = new Set();
+  primary.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id) {
+      if (seen.has(id)) return;
+      seen.add(id);
+    }
+    next.push(post);
+  });
+  secondary.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    next.push(post);
+  });
+  return next;
+};
+
 const resolveEntityId = (value) => {
   if (!value) return "";
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -317,7 +359,7 @@ export const AppProvider = ({ children }) => {
         queryFn: () => fetchPosts(),
         staleTime: 30000,
       });
-      setPosts(postsData);
+      setPosts((prev) => mergePostsByNewest(postsData, prev));
       postsLoadedRef.current = true;
     } catch (_error) {
       void _error;

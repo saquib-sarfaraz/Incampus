@@ -104,7 +104,7 @@ export default function ShareSheet({
         files: [file],
       });
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   };
@@ -123,7 +123,7 @@ export default function ShareSheet({
     try {
       await navigator.clipboard.writeText(shareMetaUrl);
       setToast("Link copied");
-    } catch (error) {
+    } catch {
       setToast("Copy failed");
     }
   };
@@ -137,7 +137,7 @@ export default function ShareSheet({
         url: shareMetaUrl,
       });
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   };

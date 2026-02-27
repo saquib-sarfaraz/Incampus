@@ -3,7 +3,7 @@ import { motion as Motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
-import { searchAll, searchUsers, likePost } from "../services/api";
+import { searchAll, searchUsers, likePost, fetchRankedFeedPage } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
@@ -64,8 +64,97 @@ const TRENDING_VIEWS = [
   { id: "grid", label: "Grid" },
   { id: "doom", label: "Doom Scroll" },
 ];
-const TRENDING_BATCH = 10;
-const TRENDING_MAX_VISIBLE = 20;
+const TRENDING_BATCH = 20;
+const TRENDING_MAX_VISIBLE = Number.MAX_SAFE_INTEGER;
+const TRENDING_PAGE_LIMIT = 20;
+const TRENDING_PREFETCH_THRESHOLD = 2;
+
+const resolvePostIdentity = (post) => {
+  if (!post) return "";
+  const id = post?._id || post?.id || post?.postId || post?.post_id;
+  if (id) return String(id);
+  const authorId =
+    post?.authorId ||
+    post?.author_id ||
+    post?.userId ||
+    post?.user_id ||
+    post?.author?._id ||
+    post?.author?.id ||
+    "";
+  const createdAt =
+    post?.createdAt || post?.created_at || post?.timestamp || post?.time || "";
+  if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
+  return "";
+};
+
+const resolveCursorValue = (post) => {
+  if (!post) return "";
+  const id = post?._id || post?.id || post?.postId || post?.post_id;
+  if (id) return String(id);
+  const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
+  if (createdAt) return String(createdAt);
+  return "";
+};
+
+const mergePostsById = (primary, secondary) => {
+  const first = Array.isArray(primary) ? primary : [];
+  const second = Array.isArray(secondary) ? secondary : [];
+  if (first.length === 0) return second;
+  if (second.length === 0) return first;
+  const next = [];
+  const seen = new Set();
+  first.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id) {
+      if (seen.has(id)) return;
+      seen.add(id);
+    }
+    next.push(post);
+  });
+  second.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    next.push(post);
+  });
+  return next;
+};
+
+const appendUniquePosts = (base, incoming) => {
+  const current = Array.isArray(base) ? base : [];
+  const next = [...current];
+  const seen = new Set(current.map(resolvePostIdentity).filter(Boolean));
+  (Array.isArray(incoming) ? incoming : []).forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    next.push(post);
+  });
+  return next;
+};
+
+const normalizeRankedResponse = (response) => {
+  if (Array.isArray(response)) {
+    return { items: response, nextCursor: "", hasMore: undefined };
+  }
+  const items = Array.isArray(response?.items)
+    ? response.items
+    : Array.isArray(response?.posts)
+      ? response.posts
+      : Array.isArray(response?.data)
+        ? response.data
+        : [];
+  return {
+    items,
+    nextCursor: response?.nextCursor || response?.next_cursor || response?.cursor || "",
+    hasMore:
+      typeof response?.hasMore === "boolean"
+        ? response.hasMore
+        : typeof response?.data?.hasMore === "boolean"
+          ? response.data.hasMore
+          : undefined,
+  };
+};
 
 const resolveAuthorEntity = (item) =>
   item?.author ||
@@ -565,6 +654,9 @@ export default function Trending() {
   const [trendingSnapshot, setTrendingSnapshot] = useState([]);
   const [trendingNeedsRefresh, setTrendingNeedsRefresh] = useState(false);
   const [trendingRefreshing, setTrendingRefreshing] = useState(false);
+  const [trendingExtraPosts, setTrendingExtraPosts] = useState([]);
+  const [trendingPostsHasMore, setTrendingPostsHasMore] = useState(true);
+  const [trendingPostsLoading, setTrendingPostsLoading] = useState(false);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
@@ -580,6 +672,8 @@ export default function Trending() {
   const searchRequestRef = useRef(0);
   const searchCacheRef = useRef(new Map());
   const trendingBuiltAtRef = useRef(0);
+  const trendingCursorRef = useRef("");
+  const trendingPostsLoadingRef = useRef(false);
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
@@ -1039,9 +1133,14 @@ export default function Trending() {
     });
   }, [stories, isUserBlocked, currentUser?.id]);
 
+  const trendingPosts = useMemo(
+    () => mergePostsById(postsArray, trendingExtraPosts),
+    [postsArray, trendingExtraPosts]
+  );
+
   useEffect(() => {
-    postsArrayRef.current = postsArray;
-  }, [postsArray]);
+    postsArrayRef.current = trendingPosts;
+  }, [trendingPosts]);
 
   useEffect(() => {
     storiesArrayRef.current = storiesArray;
@@ -1087,6 +1186,39 @@ export default function Trending() {
     setTrendingNeedsRefresh(false);
   }, []);
 
+  const loadMoreTrendingPosts = useCallback(async () => {
+    if (trendingPostsLoadingRef.current || !trendingPostsHasMore) return;
+    trendingPostsLoadingRef.current = true;
+    setTrendingPostsLoading(true);
+    try {
+      const cursor = trendingCursorRef.current;
+      const params = {
+        limit: TRENDING_PAGE_LIMIT,
+        ...(cursor ? { cursor } : { page: 1 }),
+      };
+      const response = await fetchRankedFeedPage(params);
+      const { items, nextCursor, hasMore } = normalizeRankedResponse(response);
+      if (Array.isArray(items) && items.length > 0) {
+        setTrendingExtraPosts((prev) => appendUniquePosts(prev, items));
+        requestAnimationFrame(() => rebuildTrendingSnapshot({ force: true }));
+      }
+      const resolvedCursor = nextCursor || resolveCursorValue(items?.[items.length - 1]);
+      if (resolvedCursor) {
+        trendingCursorRef.current = resolvedCursor;
+      }
+      if (typeof hasMore === "boolean") {
+        setTrendingPostsHasMore(hasMore);
+      } else {
+        setTrendingPostsHasMore(items.length >= TRENDING_PAGE_LIMIT);
+      }
+    } catch (_error) {
+      void _error;
+    } finally {
+      trendingPostsLoadingRef.current = false;
+      setTrendingPostsLoading(false);
+    }
+  }, [trendingPostsHasMore, rebuildTrendingSnapshot]);
+
   const handleTrendingRefresh = useCallback(async () => {
     if (trendingRefreshing) return;
     setTrendingRefreshing(true);
@@ -1101,9 +1233,14 @@ export default function Trending() {
 
   useEffect(() => {
     if (trendingSnapshot.length > 0) return;
-    if (postsArray.length === 0 && storiesArray.length === 0) return;
+    if (trendingPosts.length === 0 && storiesArray.length === 0) return;
     rebuildTrendingSnapshot();
-  }, [postsArray.length, storiesArray.length, trendingSnapshot.length, rebuildTrendingSnapshot]);
+  }, [
+    trendingPosts.length,
+    storiesArray.length,
+    trendingSnapshot.length,
+    rebuildTrendingSnapshot,
+  ]);
 
   useEffect(() => {
     if (trendingWindow) {
@@ -1114,7 +1251,7 @@ export default function Trending() {
   const trendingItems = useMemo(() => {
     if (!trendingSnapshot.length) return [];
     const lookup = new Map();
-    postsArray.forEach((post, index) => {
+    trendingPosts.forEach((post, index) => {
       const type = resolveContentType(post);
       const key = resolveTrendingKey(post, type, index);
       lookup.set(key, post);
@@ -1131,7 +1268,7 @@ export default function Trending() {
         return { ...entry, item: current };
       })
       .filter(Boolean);
-  }, [trendingSnapshot, postsArray, storiesArray]);
+  }, [trendingSnapshot, trendingPosts, storiesArray]);
 
   const filteredTrendingItems = useMemo(() => {
     if (trendingTab === "thoughts") {
@@ -1149,6 +1286,10 @@ export default function Trending() {
   const maxTrendingScore = filteredTrendingItems[0]?.score || 0;
   const hasMoreTrending =
     trendingVisibleCount < Math.min(filteredTrendingItems.length, TRENDING_MAX_VISIBLE);
+  const showTrendingLoadMore = hasMoreTrending || trendingPostsHasMore;
+  const shouldPrefetchTrending =
+    trendingPostsHasMore &&
+    filteredTrendingItems.length - trendingVisibleCount <= TRENDING_PREFETCH_THRESHOLD;
   const displayedTrendingItems = useMemo(
     () => filteredTrendingItems.slice(0, trendingVisibleCount),
     [filteredTrendingItems, trendingVisibleCount]
@@ -1163,21 +1304,34 @@ export default function Trending() {
   }, [trendingTab, trendingWindow, filteredTrendingItems.length]);
 
   useEffect(() => {
+    if (!shouldPrefetchTrending) return;
+    if (trendingPostsLoading) return;
+    loadMoreTrendingPosts();
+  }, [shouldPrefetchTrending, trendingPostsLoading, loadMoreTrendingPosts]);
+
+  useEffect(() => {
     if (!trendingLoadMoreRef.current) return;
-    if (!hasMoreTrending) return;
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
         if (!entry?.isIntersecting) return;
-        setTrendingVisibleCount((prev) =>
-          Math.min(prev + TRENDING_BATCH, filteredTrendingItems.length, TRENDING_MAX_VISIBLE)
-        );
+        if (hasMoreTrending) {
+          setTrendingVisibleCount((prev) =>
+            Math.min(
+              prev + TRENDING_BATCH,
+              filteredTrendingItems.length,
+              TRENDING_MAX_VISIBLE
+            )
+          );
+        } else if (trendingPostsHasMore) {
+          loadMoreTrendingPosts();
+        }
       },
-      { rootMargin: "200px" }
+      { rootMargin: "600px" }
     );
     observer.observe(trendingLoadMoreRef.current);
     return () => observer.disconnect();
-  }, [hasMoreTrending, filteredTrendingItems.length]);
+  }, [hasMoreTrending, filteredTrendingItems.length, trendingPostsHasMore, loadMoreTrendingPosts]);
 
   const groupedStories = useMemo(() => {
     const grouped = {};
@@ -2585,12 +2739,12 @@ export default function Trending() {
                   {trendingDoomItems}
                 </div>
               )}
-              {hasMoreTrending && (
+              {showTrendingLoadMore && (
                 <div
                   ref={trendingLoadMoreRef}
                   className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
                 >
-                  Loading more...
+                  {trendingPostsLoading ? "Loading more..." : "Loading more..."}
                 </div>
               )}
             </>
