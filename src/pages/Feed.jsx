@@ -31,6 +31,9 @@ const COLLEGE_REFRESH_MS = 120000;
 const FEED_WINDOW_SIZE = 20;
 const FEED_ESTIMATED_ITEM_HEIGHT = 420;
 const FEED_PREFETCH_THRESHOLD = 2;
+const FEED_SNAPSHOT_KEY = "incampus:feed:snapshot:universal";
+const FEED_SNAPSHOT_TTL = 5 * 60 * 1000;
+const FEED_SNAPSHOT_LIMIT = 40;
 const FRIEND_BADGE = {
   text: "👥 Friend",
   tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
@@ -262,6 +265,32 @@ const getEngagementScore = (post) => {
 
 const resolveFeedOrderKey = (post) => resolvePostIdentity(post) || "";
 
+const readFeedSnapshot = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(FEED_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > FEED_SNAPSHOT_TTL) return null;
+    return Array.isArray(parsed.items) ? parsed.items : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeFeedSnapshot = (items) => {
+  if (typeof window === "undefined") return;
+  try {
+    const trimmed = Array.isArray(items) ? items.slice(0, FEED_SNAPSHOT_LIMIT) : [];
+    localStorage.setItem(
+      FEED_SNAPSHOT_KEY,
+      JSON.stringify({ ts: Date.now(), items: trimmed })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
 const normalizeRankedResponse = (response) => {
   if (Array.isArray(response)) {
     return { items: response, nextCursor: "", hasMore: undefined };
@@ -418,6 +447,7 @@ export default function Feed() {
         }
         rankedPostsRef.current = nextPosts;
         setRankedPosts(nextPosts);
+        writeFeedSnapshot(nextPosts);
         const canLoadMore =
           typeof hasMoreFromBackend === "boolean"
             ? hasMoreFromBackend
@@ -477,7 +507,12 @@ export default function Feed() {
     if (shouldFilterByCollege) return;
     const hasExisting = rankedPostsRef.current.length > 0;
     if (!hasExisting) {
-      setRankedPosts([]);
+      const snapshot = readFeedSnapshot();
+      if (snapshot && snapshot.length) {
+        setRankedPosts(snapshot);
+      } else {
+        setRankedPosts([]);
+      }
       setRankedPage(1);
       setRankedHasMore(true);
       setRankedError("");

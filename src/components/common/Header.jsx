@@ -192,6 +192,28 @@ export default function Header() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    const shouldOpenByPath = location.pathname.startsWith("/notifications");
+    let shouldOpenByFlag = false;
+    try {
+      shouldOpenByFlag = sessionStorage.getItem("incampus:openNotifications") === "1";
+    } catch {
+      // ignore storage errors
+    }
+    if (!shouldOpenByPath && !shouldOpenByFlag) return;
+    if (shouldOpenByFlag) {
+      try {
+        sessionStorage.removeItem("incampus:openNotifications");
+      } catch {
+        // ignore storage errors
+      }
+    }
+    setShowNotifications(true);
+    if (shouldOpenByPath) {
+      navigate("/feed", { replace: true });
+    }
+  }, [location.pathname, navigate]);
+
   const unreadCount = notifications.filter((n) => !resolveIsRead(n)).length;
   const notificationItems = useMemo(
     () =>

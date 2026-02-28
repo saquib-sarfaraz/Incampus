@@ -67,6 +67,8 @@ export default function App() {
                 <Route path="/home" element={<div />} />
                 <Route path="/trending" element={<div />} />
                 <Route path="/chat" element={<div />} />
+                <Route path="/chat/:chatId" element={<div />} />
+                <Route path="/notifications" element={<div />} />
                 <Route path="/profile" element={<div />} />
                 <Route path="/profile/:userId" element={<div />} />
               </Route>

@@ -480,6 +480,19 @@ export const getUserPublicPosts = async (userId, params = {}) => {
   return apiFetch(`/users/${safeId}/public`, { params });
 };
 
+export const registerPushToken = async (token) => {
+  if (!token) return null;
+  try {
+    return await apiFetch("/push/register", {
+      method: "POST",
+      body: { token },
+    });
+  } catch (_error) {
+    void _error;
+    return null;
+  }
+};
+
 export const updateUser = async (updates) => {
   return apiFetch("/users/me", {
     method: "PUT",

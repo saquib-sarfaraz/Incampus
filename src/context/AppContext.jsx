@@ -340,7 +340,14 @@ export const AppProvider = ({ children }) => {
   const [usersCache, setUsersCache] = useState({});
   const [chatMeta, setChatMeta] = useState({});
   const [chatToasts, setChatToasts] = useState([]);
-  const [activeChatId, setActiveChatId] = useState(null);
+  const [activeChatId, setActiveChatId] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return localStorage.getItem("incampus:activeChatId") || null;
+    } catch {
+      return null;
+    }
+  });
   const [chatViewActive, setChatViewActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const postsRequestRef = useRef(false);
@@ -1155,6 +1162,16 @@ export const AppProvider = ({ children }) => {
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
+    if (typeof window === "undefined") return;
+    try {
+      if (activeChatId) {
+        localStorage.setItem("incampus:activeChatId", String(activeChatId));
+      } else {
+        localStorage.removeItem("incampus:activeChatId");
+      }
+    } catch {
+      // ignore storage errors
+    }
   }, [activeChatId]);
 
   useEffect(() => {

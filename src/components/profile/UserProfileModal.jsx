@@ -32,6 +32,8 @@ import {
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const relationshipCache = new Map();
+const PROFILE_CACHE_TTL = 5 * 60 * 1000;
+const PROFILE_CACHE_PREFIX = "incampus:profile:cache:";
 
 const isDeletedPlaceholderName = (value) => {
   if (value === null || value === undefined) return false;
@@ -55,6 +57,31 @@ const sanitizeDisplayName = (value) => {
   if (lowered === "null" || lowered === "undefined") return "";
   if (isDeletedPlaceholderName(trimmed)) return "";
   return trimmed;
+};
+
+const readProfileCache = (userId) => {
+  if (!userId || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${PROFILE_CACHE_PREFIX}${userId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_CACHE_TTL) return null;
+    return parsed.data || null;
+  } catch {
+    return null;
+  }
+};
+
+const writeProfileCache = (userId, data) => {
+  if (!userId || !data || typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      `${PROFILE_CACHE_PREFIX}${userId}`,
+      JSON.stringify({ ts: Date.now(), data })
+    );
+  } catch {
+    // ignore storage errors
+  }
 };
 
 const normalizeIdValue = normalizeUserId;
@@ -240,11 +267,20 @@ const UserProfileModalContent = ({
     let isActive = true;
     const loadProfile = async () => {
       if (!baseUserId) return;
+      const cachedProfile = readProfileCache(baseUserId);
+      if (cachedProfile && isActive) {
+        setProfileUser((prev) => ({ ...cachedProfile, ...prev }));
+        setProfileHydrated(true);
+      }
       lastUserIdRef.current = baseUserId;
       const lastFetch = lastFetchRef.current;
       const sameUser = String(lastFetch.id || "") === String(baseUserId);
       const now = Date.now();
       if (sameUser && now - (lastFetch.ts || 0) < 1500) {
+        if (isActive) {
+          setProfileLoading(false);
+          setProfileHydrated(true);
+        }
         return;
       }
       lastFetchRef.current = { id: baseUserId, ts: now };
@@ -321,6 +357,7 @@ const UserProfileModalContent = ({
         }
         if (isActive && data) {
           setProfileUser(data);
+          writeProfileCache(baseUserId, data);
         }
       } catch (_error) {
         void _error;
@@ -343,7 +380,11 @@ const UserProfileModalContent = ({
     profilePostsCount,
   ]);
 
-  const resolvedUser = profileUser || user;
+  const resolvedUser = useMemo(() => {
+    const preview = user && typeof user === "object" ? user : {};
+    const hydrated = profileUser && typeof profileUser === "object" ? profileUser : {};
+    return { ...preview, ...hydrated };
+  }, [profileUser, user]);
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
   const resolvedUserIdValue = normalizeIdValue(resolvedUserId);
 
@@ -474,6 +515,7 @@ const UserProfileModalContent = ({
     publicPosts.length > 0 &&
     hasMorePublicPosts &&
     (profilePostsLoading || profileLoadMorePending);
+  const showInitialPostsLoading = !profilePostsLoaded && publicPosts.length === 0;
 
   const requestMorePublicPosts = useCallback(async () => {
     if (profilePostsLoading || !profilePostsHasMore) return;
@@ -554,26 +596,10 @@ const UserProfileModalContent = ({
       : fallbackPublicCount;
   const contactEmail = resolveCommunityEmail(resolvedUser);
   const roleLower = String(resolvedUser?.role || "").toLowerCase();
-  const communitySignals = [
-    resolvedUser?.communityName,
-    resolvedUser?.community_name,
-    resolvedUser?.communityType,
-    resolvedUser?.community_type,
-    resolvedUser?.communityDescription,
-    resolvedUser?.community_description,
-    resolvedUser?.organizationName,
-    resolvedUser?.orgName,
-    resolvedUser?.orgType,
-    resolvedUser?.clubName,
-    resolvedUser?.club_type,
-    communityName,
-    communityTypeValue,
-  ].filter(Boolean);
   const isCommunityAccount =
     isCommunity ||
     rawAccountType === "community" ||
-    roleLower.includes("community") ||
-    communitySignals.length > 0;
+    roleLower.includes("community");
   const resolvedUserType = isCommunityAccount ? "community" : userType;
   const userTypeBadge = formatUserType(resolvedUserType);
   const showStudentTypeBadge =
@@ -835,9 +861,16 @@ const UserProfileModalContent = ({
 
           <div className="space-y-3 pb-16 sm:pb-4">
             <h4 className="text-sm font-semibold text-[#faf0e6]">Public Posts</h4>
-            {profilePostsLoading && publicPosts.length === 0 ? (
-              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-[#b9b4c7]">
-                Loading public posts...
+            {showInitialPostsLoading ? (
+              <div className="grid grid-cols-3 gap-2">
+                {[1, 2, 3, 4, 5, 6].map((item) => (
+                  <div
+                    key={`profile-initial-loading-${item}`}
+                    className="aspect-square rounded-xl border border-white/10 bg-white/5 animate-pulse"
+                  >
+                    <div className="h-full w-full rounded-xl bg-white/10" />
+                  </div>
+                ))}
               </div>
             ) : publicPosts.length === 0 ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-[#b9b4c7]">
@@ -910,7 +943,7 @@ const UserProfileModalContent = ({
             </p>
           </div>
 
-          {!isSelf && (
+          {!isSelf && profileHydrated && (
             <div className="profile-actions sticky bottom-0 left-0 right-0 mt-6 bg-gradient-to-t from-[#120f0a]/95 via-[#120f0a]/85 to-transparent pt-4">
               <div className="flex items-center gap-2">
                 {isCommunityAccount ? (

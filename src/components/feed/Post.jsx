@@ -35,6 +35,25 @@ const VIEW_STORAGE_PREFIX = "incampus:post:view:";
 const CAPTION_PREVIEW_LENGTH = 100;
 const viewedPostsSession = new Set();
 
+const buildLikeBurst = (seed, count = 5) => {
+  if (!seed) return [];
+  let s = Math.abs(seed) % 2147483647;
+  const next = () => {
+    s = (s * 48271) % 2147483647;
+    return s / 2147483647;
+  };
+  return Array.from({ length: count }, () => {
+    const angle = next() * Math.PI * 2;
+    const radius = 18 + next() * 30;
+    return {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+      scale: 0.7 + next() * 0.6,
+      delay: next() * 0.08,
+    };
+  });
+};
+
 const toNumber = (value) => {
   if (Array.isArray(value)) return value.length;
   const parsed = Number(value);
@@ -404,6 +423,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const postMediaUrl = resolvePostMediaUrl(post);
   const explicitAspect = resolvePostAspectRatio(post);
   const [mediaAspect, setMediaAspect] = useState(explicitAspect || "4:5");
+  const likeBurst = useMemo(() => buildLikeBurst(mediaLikePulse, 6), [mediaLikePulse]);
   useEffect(() => {
     setMediaAspect(explicitAspect || "4:5");
   }, [explicitAspect, postId]);
@@ -730,6 +750,9 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const handleMediaDoubleTap = useCallback(() => {
     if (previewMode) return;
     setMediaLikePulse((prev) => prev + 1);
+    if (typeof navigator !== "undefined" && navigator.vibrate) {
+      navigator.vibrate([12, 30, 10]);
+    }
     if (!isLiked) {
       handleLike();
     }
@@ -785,7 +808,9 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   };
 
   const formatTime = (dateString) => {
+    if (!dateString) return "";
     const date = new Date(dateString);
+    if (Number.isNaN(date.getTime())) return "";
     const now = new Date();
     const diff = now - date;
     const minutes = Math.floor(diff / 60000);
@@ -814,8 +839,6 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const collegeTagName = resolveCollegeTag();
   const commentsCount = resolvePostCommentsCount(post);
   const isOwner = String(authorId) === String(currentUser?.id);
-  const badgeLabel = typeof badge === "string" ? badge : badge?.text;
-  const badgeTone = typeof badge === "object" && badge?.tone ? badge.tone : "";
   const rawCaption = typeof post.content === "string" ? post.content : post.content ? String(post.content) : "";
   const captionText = rawCaption.trim();
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
@@ -824,6 +847,86 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     isCaptionLong && !isCaptionExpanded
       ? `${captionText.slice(0, CAPTION_PREVIEW_LENGTH).trimEnd()}…`
       : captionText;
+
+  const resolveRelationshipTag = () => {
+    const badgeLabel = typeof badge === "string" ? badge : badge?.text;
+    if (typeof badgeLabel === "string" && badgeLabel.toLowerCase().includes("friend")) {
+      return "Friend";
+    }
+    const studentTypeRaw =
+      author?.studentType ||
+      author?.student_type ||
+      author?.educationType ||
+      author?.education_type ||
+      post?.author?.studentType ||
+      post?.author?.student_type ||
+      post?.studentType ||
+      post?.student_type ||
+      "";
+    const userTypeRaw =
+      author?.userType ||
+      author?.user_type ||
+      author?.accountType ||
+      author?.account_type ||
+      author?.role ||
+      author?.type ||
+      post?.author?.userType ||
+      post?.author?.accountType ||
+      post?.author?.role ||
+      "";
+    if (
+      String(studentTypeRaw || "").toLowerCase().includes("alumni") ||
+      String(userTypeRaw || "").toLowerCase().includes("alumni")
+    ) {
+      return "Alumni";
+    }
+    const normalizedType = String(userTypeRaw || "").toLowerCase();
+    if (
+      normalizedType.includes("community") ||
+      normalizedType.includes("club") ||
+      normalizedType.includes("society") ||
+      normalizedType.includes("organization") ||
+      normalizedType.includes("org") ||
+      normalizedType.includes("group")
+    ) {
+      return "Community";
+    }
+    return "";
+  };
+
+  const resolveAffiliation = () => {
+    const company =
+      author?.company ||
+      author?.companyName ||
+      author?.employer ||
+      author?.organization ||
+      author?.orgName ||
+      author?.workplace ||
+      post?.company ||
+      post?.companyName ||
+      post?.organization ||
+      post?.orgName ||
+      "";
+    if (company) return String(company);
+    const college =
+      author?.collegeName ||
+      author?.college ||
+      author?.university ||
+      author?.school ||
+      post?.collegeName ||
+      post?.college ||
+      post?.university ||
+      post?.school ||
+      "";
+    return String(college || collegeTagName || "");
+  };
+
+  const relationshipTag = resolveRelationshipTag();
+  const affiliation = resolveAffiliation();
+  const postTimestamp =
+    post?.createdAt || post?.created_at || post?.timestamp || post?.time || post?.date || "";
+  const metaItems = [formatTime(postTimestamp), relationshipTag, affiliation].filter(Boolean);
+  const metaLine = metaItems.join(" • ");
 
   useEffect(() => {
     postRef.current = post;
@@ -914,21 +1017,8 @@ function Post({ post, onOpen, badge, isPreview = false }) {
                 {authorDisplayName}
                 {authorIsVerified && <BlueTick />}
               </p>
-              <small className="text-[#b9b4c7] flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                <span className="whitespace-nowrap">{formatTime(post.createdAt)}</span>
-                {badgeLabel && (
-                  <span
-                    className={`inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6] ${badgeTone}`}
-                  >
-                    {badgeLabel}
-                  </span>
-                )}
-                {collegeTagName && (
-                  <span className="inline-flex items-center gap-1 min-w-0 max-w-[200px] sm:max-w-[240px]">
-                    <i className="fa-solid fa-school text-[10px] shrink-0"></i>
-                    <span className="truncate min-w-0">{collegeTagName}</span>
-                  </span>
-                )}
+              <small className="text-[#b9b4c7] text-xs">
+                {metaLine}
               </small>
             </div>
           </button>
@@ -1058,14 +1148,49 @@ function Post({ post, onOpen, badge, isPreview = false }) {
               />
             )}
             {mediaLikePulse > 0 && (
-              <Motion.i
-                key={`media-like-${mediaLikePulse}`}
-                className="fa-solid fa-heart text-5xl sm:text-6xl text-red-300 drop-shadow-[0_0_18px_rgba(248,113,113,0.6)] absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
-                initial={{ opacity: 0, scale: 0.6 }}
-                animate={{ opacity: [0, 1, 0], scale: [0.6, 1.1, 1.3] }}
-                transition={{ duration: 0.45, ease: "easeOut" }}
-                aria-hidden="true"
-              />
+              <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+                <Motion.span
+                  key={`media-like-glow-${mediaLikePulse}`}
+                  className="absolute left-1/2 top-1/2 h-32 w-32 -translate-x-1/2 -translate-y-1/2 rounded-full"
+                  initial={{ opacity: 0, scale: 0.6 }}
+                  animate={{ opacity: [0, 0.65, 0], scale: [0.6, 1.35, 1.6] }}
+                  transition={{ duration: 0.55, ease: "easeOut" }}
+                  style={{ boxShadow: "0 0 45px rgba(248,113,113,0.45)" }}
+                  aria-hidden="true"
+                />
+                <Motion.span
+                  key={`media-like-ring-${mediaLikePulse}`}
+                  className="absolute left-1/2 top-1/2 h-28 w-28 -translate-x-1/2 -translate-y-1/2 rounded-full border border-rose-200/50"
+                  initial={{ opacity: 0.4, scale: 0.4 }}
+                  animate={{ opacity: [0.4, 0], scale: [0.4, 1.6] }}
+                  transition={{ duration: 0.5, ease: "easeOut" }}
+                  aria-hidden="true"
+                />
+                <Motion.i
+                  key={`media-like-${mediaLikePulse}`}
+                  className="fa-solid fa-heart text-6xl sm:text-7xl text-red-300 drop-shadow-[0_0_18px_rgba(248,113,113,0.6)]"
+                  initial={{ opacity: 0, scale: 0.6 }}
+                  animate={{ opacity: [0, 1, 0], scale: [0.6, 1.15, 1.3] }}
+                  transition={{ duration: 0.45, ease: "easeOut" }}
+                  aria-hidden="true"
+                />
+                {likeBurst.map((item, index) => (
+                  <Motion.i
+                    key={`media-like-burst-${mediaLikePulse}-${index}`}
+                    className="fa-solid fa-heart text-rose-200/90 absolute left-1/2 top-1/2"
+                    initial={{ opacity: 0, scale: 0.4, x: 0, y: 0 }}
+                    animate={{
+                      opacity: [0, 0.9, 0],
+                      scale: [0.4, item.scale, 0.6],
+                      x: item.x,
+                      y: item.y,
+                    }}
+                    transition={{ duration: 0.55, ease: "easeOut", delay: item.delay }}
+                    style={{ fontSize: "16px" }}
+                    aria-hidden="true"
+                  />
+                ))}
+              </div>
             )}
           </div>
         )}
