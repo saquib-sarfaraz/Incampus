@@ -155,7 +155,18 @@ export const resolveUserType = (user) => {
   const studentType = resolveStudentType(user);
   const normalizedStudent = normalizeUserTypeValue(studentType);
   if (normalizedRaw === "community" || normalizedStudent === "community") return "community";
-  if (user?.communityName || user?.communityType || user?.community_type) return "community";
+  if (
+    user?.communityName ||
+    user?.communityType ||
+    user?.community_type ||
+    user?.organizationName ||
+    user?.orgName ||
+    user?.orgType ||
+    user?.clubName ||
+    user?.club_type
+  ) {
+    return "community";
+  }
   if (normalizedRaw === "alumni" || normalizedStudent === "alumni") return "alumni";
   if (normalizedRaw) return normalizedRaw;
   if (normalizedStudent) return normalizedStudent;

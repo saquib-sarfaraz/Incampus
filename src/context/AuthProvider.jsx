@@ -1,13 +1,15 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { login as loginAPI, getCurrentUser } from "../services/api";
 import { initSocket, disconnectSocket, getSocket } from "../services/socket";
 import { resolveStudentType, resolveUserType } from "../utils/userProfile";
 import { AuthContext } from "./authContext";
+import { initPushNotifications } from "../lib/pushNotifications";
 
 export const AuthProvider = ({ children }) => {
   const [authToken, setAuthToken] = useState(localStorage.getItem("authToken"));
   const [currentUser, setCurrentUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const pushInitRef = useRef("");
 
   const buildGroupRooms = useCallback((user) => {
     const universityLabel = user?.university || user?.college || user?.school || "";
@@ -377,6 +379,14 @@ export const AuthProvider = ({ children }) => {
     const user = await getCurrentUser();
     return applyUser(user);
   };
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    const userId = String(currentUser.id);
+    if (pushInitRef.current === userId) return;
+    pushInitRef.current = userId;
+    initPushNotifications({ currentUser }).catch(() => {});
+  }, [currentUser?.id]);
 
   const value = {
     authToken,

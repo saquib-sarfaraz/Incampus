@@ -36,6 +36,9 @@ const CONTACTS_CACHE_KEY = "incampus:chat:contacts";
 const CONTACTS_CACHE_TTL = 5 * 60 * 1000;
 const REQUESTS_CACHE_KEY = "incampus:chat:requests";
 const REQUESTS_CACHE_TTL = 2 * 60 * 1000;
+const MESSAGE_CACHE_PREFIX = "incampus:chat:messages:";
+const MESSAGE_CACHE_TTL = 5 * 60 * 1000;
+const MESSAGE_CACHE_LIMIT = 50;
 const CHAT_SOUND_PREF_KEY = "incampus:chat:sound";
 
 const resolveMessageSenderId = (msg) => {
@@ -156,6 +159,34 @@ const writeRequestsCache = (userId, requests) => {
       requests: Array.isArray(requests) ? requests : [],
     };
     sessionStorage.setItem(REQUESTS_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors.
+  }
+};
+
+const readMessagesCache = (userId, chatId) => {
+  if (!userId || !chatId || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${MESSAGE_CACHE_PREFIX}${userId}:${chatId}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > MESSAGE_CACHE_TTL) return null;
+    return Array.isArray(parsed.messages) ? parsed.messages : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeMessagesCache = (userId, chatId, messages) => {
+  if (!userId || !chatId || typeof window === "undefined") return;
+  try {
+    const trimmed = Array.isArray(messages)
+      ? messages.slice(-MESSAGE_CACHE_LIMIT)
+      : [];
+    localStorage.setItem(
+      `${MESSAGE_CACHE_PREFIX}${userId}:${chatId}`,
+      JSON.stringify({ ts: Date.now(), messages: trimmed })
+    );
   } catch {
     // Ignore storage errors.
   }
@@ -958,6 +989,23 @@ export default function Chat() {
   const missingGroupSenderRef = useRef(new Set());
   const typingTimeoutsRef = useRef({});
   const lastTypingSentRef = useRef({});
+
+  useEffect(() => {
+    if (!currentUser?.id || !activeChatId) return;
+    const existing = messagesByChat[activeChatId];
+    if (existing && existing.length) return;
+    const cached = readMessagesCache(currentUser.id, activeChatId);
+    if (cached && cached.length) {
+      mergeMessages(activeChatId, cached);
+    }
+  }, [currentUser?.id, activeChatId, messagesByChat, mergeMessages]);
+
+  useEffect(() => {
+    if (!currentUser?.id || !activeChatId) return;
+    const messages = messagesByChat[activeChatId];
+    if (!messages || messages.length === 0) return;
+    writeMessagesCache(currentUser.id, activeChatId, messages);
+  }, [currentUser?.id, activeChatId, messagesByChat]);
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;

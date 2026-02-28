@@ -1,6 +1,7 @@
 import { lazy, useEffect, useMemo, useRef, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/authContext";
+import { useApp } from "../../context/useApp";
 import Feed from "../../pages/Feed";
 import UserProfileModal from "../profile/UserProfileModal";
 import { preloadChatPage } from "../../utils/preloadRoutes";
@@ -17,6 +18,7 @@ const normalizePath = (path = "") => (path.length > 1 ? path.replace(/\/+$/, "")
 const resolveTabKey = (pathname = "") => {
   const normalized = normalizePath(pathname);
   if (normalized === "/home" || normalized === "/feed") return "feed";
+  if (normalized.startsWith("/notifications")) return "feed";
   if (normalized.startsWith("/trending")) return "trending";
   if (normalized.startsWith("/chat")) return "chat";
   if (normalized === "/profile") return "profile";
@@ -30,10 +32,20 @@ const resolveProfileRouteId = (pathname = "") => {
   return parts[1] || "";
 };
 
+const resolveChatRouteId = (pathname = "") => {
+  const normalized = normalizePath(pathname);
+  if (!normalized.startsWith("/chat/")) return "";
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[1] || "";
+};
+
 export default function RootTabs() {
   const location = useLocation();
   const navigate = useNavigate();
   const { currentUser } = useAuth();
+  const { requestChatOpen } = useApp();
+  const lastTab =
+    typeof window !== "undefined" ? localStorage.getItem("incampus:lastTab") : "";
   const currentUserId =
     currentUser?.id ||
     currentUser?._id ||
@@ -41,11 +53,12 @@ export default function RootTabs() {
     currentUser?.user_id ||
     "";
   const profileRouteId = normalizeUserId(resolveProfileRouteId(location.pathname));
+  const chatRouteId = resolveChatRouteId(location.pathname);
   const isSelfProfile =
     profileRouteId && currentUserId && String(profileRouteId) === String(currentUserId);
   const rootKey = resolveTabKey(location.pathname) || (isSelfProfile ? "profile" : "");
   const prevTabRef = useRef(
-    rootKey || (profileRouteId ? "profile" : "feed")
+    rootKey || (profileRouteId ? "profile" : "") || lastTab || "feed"
   );
   const modalProfileRequested = Boolean(location.state?.modal);
   const shouldOverlayProfile = Boolean(
@@ -76,6 +89,11 @@ export default function RootTabs() {
   useEffect(() => {
     if (!rootKey) {
       return;
+    }
+    try {
+      localStorage.setItem("incampus:lastTab", rootKey);
+    } catch {
+      // ignore storage errors
     }
     const prevKey = prevTabRef.current;
     if (prevKey && prevKey !== rootKey) {
@@ -141,6 +159,48 @@ export default function RootTabs() {
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
+
+  useEffect(() => {
+    if (!chatRouteId) return;
+    requestChatOpen?.(chatRouteId);
+  }, [chatRouteId, requestChatOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const handlePushRoute = (rawRoute) => {
+      const route = typeof rawRoute === "string" ? rawRoute : "";
+      if (!route) return;
+      if (route.startsWith("/chat/")) {
+        const targetId = resolveChatRouteId(route);
+        if (targetId) requestChatOpen?.(targetId);
+        navigate("/chat", { replace: true });
+        return;
+      }
+      if (route.startsWith("/notifications")) {
+        try {
+          sessionStorage.setItem("incampus:openNotifications", "1");
+        } catch {
+          // ignore storage errors
+        }
+        navigate("/notifications", { replace: true });
+        return;
+      }
+      navigate(route, { replace: true });
+    };
+
+    const onMessage = (event) => {
+      const payload = event?.detail;
+      const route =
+        payload?.data?.route ||
+        payload?.fcmOptions?.link ||
+        payload?.notification?.click_action ||
+        "";
+      handlePushRoute(route);
+    };
+
+    window.addEventListener("fcm:message", onMessage);
+    return () => window.removeEventListener("fcm:message", onMessage);
+  }, [navigate, requestChatOpen]);
 
   const tabs = useMemo(
     () => [

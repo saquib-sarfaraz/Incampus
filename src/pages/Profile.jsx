@@ -47,6 +47,8 @@ const AVATAR_PREVIEW_SIZE = 96;
 const AVATAR_ZOOM_MIN = 1;
 const AVATAR_ZOOM_MAX = 3;
 
+const clampValue = (value, min, max) => Math.min(Math.max(value, min), max);
+
 const loadImageFromFile = (file, fallbackUrl) =>
   new Promise((resolve, reject) => {
     const image = new Image();
@@ -78,16 +80,18 @@ const renderAvatarCanvas = ({
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
 
-  const baseScale = Math.max(outputSize / image.width, outputSize / image.height);
-  const scale = baseScale * zoom;
-  const offsetScale = cropSize ? outputSize / cropSize : 1;
+  const safeCropSize = cropSize || outputSize;
+  const baseScale = Math.max(safeCropSize / image.width, safeCropSize / image.height);
+  const scale = baseScale * (zoom || 1);
+  const outputScale = outputSize / safeCropSize;
+  const offsetScale = outputScale;
   const offsetX = (offset?.x || 0) * offsetScale;
   const offsetY = (offset?.y || 0) * offsetScale;
 
   ctx.save();
   ctx.translate(outputSize / 2 + offsetX, outputSize / 2 + offsetY);
   ctx.rotate((rotate * Math.PI) / 180);
-  ctx.scale(scale, scale);
+  ctx.scale(scale * outputScale, scale * outputScale);
   ctx.drawImage(image, -image.width / 2, -image.height / 2);
   ctx.restore();
 
@@ -180,6 +184,7 @@ export default function Profile() {
   const [avatarOffset, setAvatarOffset] = useState({ x: 0, y: 0 });
   const [avatarCropSize, setAvatarCropSize] = useState(0);
   const [avatarPreviewSmall, setAvatarPreviewSmall] = useState(null);
+  const [avatarImageMeta, setAvatarImageMeta] = useState({ width: 0, height: 0 });
   const resolvedCurrentUserId =
     currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
   const isViewingOtherUser = Boolean(
@@ -203,6 +208,13 @@ export default function Profile() {
     originY: 0,
   });
   const avatarPreviewRafRef = useRef(null);
+  const avatarBaseScale = useMemo(() => {
+    if (!avatarCropSize || !avatarImageMeta.width || !avatarImageMeta.height) return 1;
+    return Math.max(
+      avatarCropSize / avatarImageMeta.width,
+      avatarCropSize / avatarImageMeta.height
+    );
+  }, [avatarCropSize, avatarImageMeta]);
   const collegeRef = useRef(null);
   const profileLoadMoreRef = useRef(null);
   const [bioSuccess, setBioSuccess] = useState("");
@@ -848,6 +860,7 @@ export default function Profile() {
     setAvatarRotate(0);
     setAvatarOffset({ x: 0, y: 0 });
     setAvatarCropSize(0);
+    setAvatarImageMeta({ width: 0, height: 0 });
     setAvatarPreviewUrl((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return null;
@@ -873,6 +886,7 @@ export default function Profile() {
     setAvatarZoom(1);
     setAvatarRotate(0);
     setAvatarOffset({ x: 0, y: 0 });
+    setAvatarImageMeta({ width: 0, height: 0 });
     setAvatarPreviewSmall((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return null;
@@ -892,6 +906,7 @@ export default function Profile() {
   useEffect(() => {
     if (!avatarFile || !avatarPreviewUrl) {
       avatarImageRef.current = null;
+      setAvatarImageMeta({ width: 0, height: 0 });
       return;
     }
     let active = true;
@@ -899,10 +914,12 @@ export default function Profile() {
       .then((image) => {
         if (!active) return;
         avatarImageRef.current = image;
+        setAvatarImageMeta({ width: image.width, height: image.height });
       })
       .catch(() => {
         if (!active) return;
         avatarImageRef.current = null;
+        setAvatarImageMeta({ width: 0, height: 0 });
       });
     return () => {
       active = false;
@@ -962,6 +979,43 @@ export default function Profile() {
     };
   }, [showAvatarModal, avatarCropSize, avatarZoom, avatarRotate, avatarOffset]);
 
+  const clampAvatarOffset = useCallback(
+    (nextOffset) => {
+      if (!avatarCropSize || !avatarImageMeta.width || !avatarImageMeta.height) {
+        return nextOffset;
+      }
+      const rotation = ((avatarRotate % 360) + 360) % 360;
+      const rotated = rotation === 90 || rotation === 270;
+      const sourceWidth = rotated ? avatarImageMeta.height : avatarImageMeta.width;
+      const sourceHeight = rotated ? avatarImageMeta.width : avatarImageMeta.height;
+      const scaledWidth = sourceWidth * avatarBaseScale * avatarZoom;
+      const scaledHeight = sourceHeight * avatarBaseScale * avatarZoom;
+      const maxX = Math.max(0, (scaledWidth - avatarCropSize) / 2);
+      const maxY = Math.max(0, (scaledHeight - avatarCropSize) / 2);
+      return {
+        x: clampValue(nextOffset?.x || 0, -maxX, maxX),
+        y: clampValue(nextOffset?.y || 0, -maxY, maxY),
+      };
+    },
+    [
+      avatarCropSize,
+      avatarImageMeta.width,
+      avatarImageMeta.height,
+      avatarBaseScale,
+      avatarZoom,
+      avatarRotate,
+    ]
+  );
+
+  useEffect(() => {
+    if (!showAvatarModal) return;
+    setAvatarOffset((prev) => {
+      const next = clampAvatarOffset(prev);
+      if (next.x === prev.x && next.y === prev.y) return prev;
+      return next;
+    });
+  }, [showAvatarModal, avatarZoom, avatarRotate, avatarCropSize, avatarBaseScale, clampAvatarOffset]);
+
   const handlePhotoUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !currentUser) return;
@@ -979,6 +1033,10 @@ export default function Profile() {
 
   const handleAvatarPointerDown = (event) => {
     if (!showAvatarModal) return;
+    if (event.currentTarget?.setPointerCapture && event.pointerId !== undefined) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    }
+    event.preventDefault();
     avatarDragRef.current.dragging = true;
     avatarDragRef.current.startX = event.clientX ?? 0;
     avatarDragRef.current.startY = event.clientY ?? 0;
@@ -988,18 +1046,28 @@ export default function Profile() {
 
   const handleAvatarPointerMove = (event) => {
     if (!avatarDragRef.current.dragging) return;
+    event.preventDefault();
     const clientX = event.clientX ?? 0;
     const clientY = event.clientY ?? 0;
     const dx = clientX - avatarDragRef.current.startX;
     const dy = clientY - avatarDragRef.current.startY;
-    setAvatarOffset({
-      x: avatarDragRef.current.originX + dx,
-      y: avatarDragRef.current.originY + dy,
-    });
+    setAvatarOffset(
+      clampAvatarOffset({
+        x: avatarDragRef.current.originX + dx,
+        y: avatarDragRef.current.originY + dy,
+      })
+    );
   };
 
-  const handleAvatarPointerUp = () => {
+  const handleAvatarPointerUp = (event) => {
     avatarDragRef.current.dragging = false;
+    if (event?.currentTarget?.releasePointerCapture && event.pointerId !== undefined) {
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore pointer release errors.
+      }
+    }
   };
 
   const handleSaveAvatar = async () => {
@@ -2259,7 +2327,7 @@ export default function Profile() {
                         alt="Crop preview"
                         className="max-w-none select-none pointer-events-none"
                         style={{
-                          transform: `scale(${avatarZoom}) rotate(${avatarRotate}deg)`,
+                          transform: `scale(${avatarZoom * avatarBaseScale}) rotate(${avatarRotate}deg)`,
                         }}
                       />
                     )}
