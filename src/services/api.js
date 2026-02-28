@@ -448,6 +448,38 @@ export const getUserProfileBundle = async (userId) => {
   }
 };
 
+export const getUserPublicPosts = async (userId, params = {}) => {
+  if (!userId) return null;
+  const resolveId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") {
+      const raw = String(value).trim();
+      if (!raw) return "";
+      if (raw.includes("[object Object]")) return "";
+      const lowered = raw.toLowerCase();
+      if (lowered === "undefined" || lowered === "null") return "";
+      return raw;
+    }
+    if (typeof value === "object") {
+      if (value.$oid) return String(value.$oid);
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.profileId ||
+        value.profile_id ||
+        "";
+      if (nested) return resolveId(nested);
+    }
+    return "";
+  };
+  const resolvedId = resolveId(userId);
+  if (!resolvedId) return null;
+  const safeId = encodeURIComponent(resolvedId);
+  return apiFetch(`/users/${safeId}/public`, { params });
+};
+
 export const updateUser = async (updates) => {
   return apiFetch("/users/me", {
     method: "PUT",
@@ -664,31 +696,85 @@ export const autoAssignGroups = async (payload) => {
 
 export const createGroup = async (payload = {}, imageFile) => {
   if (!payload) return null;
-  const body = { ...payload };
-  if (!imageFile) {
-    return apiFetchWithFallback(
-      ["/groups/create", "/group/create", "/groups"],
-      {
-        method: "POST",
-        body,
-      }
-    );
-  }
-  const formData = new FormData();
-  Object.entries(body).forEach(([key, value]) => {
-    if (value === undefined || value === null || value === "") return;
-    formData.append(key, value);
-  });
-  formData.append("profileImage", imageFile);
-  formData.append("image", imageFile);
-  return apiFetchWithFallback(
-    ["/groups/create", "/group/create", "/groups"],
-    {
+  const baseName =
+    payload.name ||
+    payload.title ||
+    payload.groupName ||
+    payload.group_name ||
+    payload.displayName ||
+    payload.display_name ||
+    "";
+  const baseDescription =
+    payload.description ||
+    payload.about ||
+    payload.bio ||
+    payload.summary ||
+    payload.details ||
+    "";
+  const visibility =
+    payload.visibility ||
+    payload.privacy ||
+    payload.access ||
+    payload.groupVisibility ||
+    "";
+  const body = {
+    ...payload,
+    ...(baseName
+      ? {
+          name: baseName,
+          title: baseName,
+          groupName: baseName,
+          displayName: baseName,
+        }
+      : {}),
+    ...(baseDescription
+      ? {
+          description: baseDescription,
+          about: baseDescription,
+          bio: baseDescription,
+        }
+      : {}),
+    ...(visibility
+      ? {
+          visibility,
+          privacy: visibility,
+          isPrivate: String(visibility).toLowerCase() === "private",
+          isPublic: String(visibility).toLowerCase() === "public",
+        }
+      : {}),
+  };
+
+  const endpoints = ["/groups/create", "/group/create", "/groups"];
+
+  const sendFormData = async () => {
+    const formData = new FormData();
+    Object.entries(body).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      formData.append(key, value);
+    });
+    if (imageFile) {
+      formData.append("profileImage", imageFile);
+      formData.append("image", imageFile);
+    }
+    return apiFetchWithFallback(endpoints, {
       method: "POST",
       body: formData,
       isFormData: true,
-    }
-  );
+    });
+  };
+
+  if (imageFile) {
+    return sendFormData();
+  }
+
+  try {
+    return await apiFetchWithFallback(endpoints, {
+      method: "POST",
+      body,
+    });
+  } catch {
+    return sendFormData();
+  }
 };
 
 const safeDecodeParam = (value) => {
@@ -1773,7 +1859,36 @@ export const removeFriend = async (friendId) => {
 
 export const getFriendStatus = async (targetUserId) => {
   if (!targetUserId) throw new Error("Missing target user id.");
-  const encodedId = encodeURIComponent(targetUserId);
+  const resolveId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") {
+      const raw = String(value).trim();
+      if (!raw) return "";
+      const lowered = raw.toLowerCase();
+      if (raw.includes("[object Object]") || lowered === "undefined" || lowered === "null") {
+        return "";
+      }
+      return raw;
+    }
+    if (typeof value === "object") {
+      if (value.$oid) return String(value.$oid);
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.ownerId ||
+        value.authorId ||
+        value.profileId ||
+        value.profile_id ||
+        "";
+      if (nested) return resolveId(nested);
+    }
+    return "";
+  };
+  const resolvedId = resolveId(targetUserId);
+  if (!resolvedId) throw new Error("Missing target user id.");
+  const encodedId = encodeURIComponent(resolvedId);
   return apiFetchWithFallback([
     `/friend/status/${encodedId}`,
     `/friends/status/${encodedId}`,

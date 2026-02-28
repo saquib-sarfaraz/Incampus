@@ -15,7 +15,7 @@ import {
 import { getSocket } from "../../services/socket";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
-import { buildUserPreview } from "../../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const toIdString = (value) => {
@@ -333,7 +333,8 @@ const CommentList = memo(function CommentList({
       currentUserId && postOwnerId && String(postOwnerId) === String(currentUserId);
     const canDelete = isCommentOwner || isPostOwner;
     const commentUserId = resolveCommentUserId(comment);
-    const canOpenProfile = Boolean(commentUserId) && !isAnonymousComment(comment);
+    const safeCommentUserId = normalizeUserId(commentUserId || commentUser);
+    const canOpenProfile = Boolean(safeCommentUserId) && !isAnonymousComment(comment);
     return (
       <div
         key={commentKey}
@@ -344,10 +345,10 @@ const CommentList = memo(function CommentList({
             type="button"
             onClick={() => {
               if (canOpenProfile) {
-                const cachedUser = getUserFromCache?.(commentUserId);
-                prefetchUserProfile?.(commentUserId, cachedUser || commentUser);
+                const cachedUser = getUserFromCache?.(safeCommentUserId);
+                prefetchUserProfile?.(safeCommentUserId, cachedUser || commentUser);
                 const preview = buildUserPreview({ ...(cachedUser || {}), ...(commentUser || {}) }, {
-                  _id: commentUserId,
+                  _id: safeCommentUserId,
                   fullName: commentUser?.fullName || commentUser?.name,
                   displayName:
                     commentUser?.displayName ||
@@ -358,7 +359,9 @@ const CommentList = memo(function CommentList({
                   isVerified,
                   isVerifiedCommunity: commentUser?.isVerifiedCommunity,
                 });
-                navigate(`/profile/${commentUserId}`, { state: { userPreview: preview } });
+                navigate(`/profile/${safeCommentUserId}`, {
+                  state: { userPreview: preview, modal: true },
+                });
               }
             }}
             className="flex items-start space-x-2 flex-1 text-left"

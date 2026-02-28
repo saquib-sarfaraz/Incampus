@@ -7,6 +7,7 @@ import CommentModal from "../feed/CommentModal";
 import ShareSheet from "../common/ShareSheet";
 import ShareToChatModal from "../common/ShareToChatModal";
 import ReportModal from "../moderation/ReportModal";
+import { splitTextWithLinks } from "../../utils/text";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -483,7 +484,23 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
 
             <div className="p-4 max-h-[60vh] overflow-y-auto">
               {post.content && (
-                <p className="text-[#faf0e6] mb-4 whitespace-pre-wrap">{post.content}</p>
+                <p className="text-[#faf0e6] mb-4 whitespace-pre-wrap">
+                  {splitTextWithLinks(post.content).map((part, index) =>
+                    part.type === "link" ? (
+                      <a
+                        key={`modal-link-${index}`}
+                        href={part.value}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sky-300 underline underline-offset-2 break-all"
+                      >
+                        {part.value}
+                      </a>
+                    ) : (
+                      <span key={`modal-text-${index}`}>{part.value}</span>
+                    )
+                  )}
+                </p>
               )}
               {postThumbnail && (
                 <div

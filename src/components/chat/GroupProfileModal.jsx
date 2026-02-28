@@ -11,7 +11,7 @@ import {
   searchUsers,
 } from "../../services/api";
 import BlueTick from "../common/BlueTick";
-import { buildUserPreview } from "../../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
 
@@ -612,9 +612,10 @@ export default function GroupProfileModal({
                             <button
                               type="button"
                               onClick={() => {
-                                if (user.id) {
+                                const safeUserId = normalizeUserId(user?.id || user);
+                                if (safeUserId) {
                                   const preview = buildUserPreview(user || {}, {
-                                    _id: user.id,
+                                    _id: safeUserId,
                                     fullName: user.fullName || user.name,
                                     displayName: user.displayName || user.fullName || user.name,
                                     username: user.username,
@@ -622,7 +623,9 @@ export default function GroupProfileModal({
                                     isVerified: user.isVerified,
                                     isVerifiedCommunity: user.isVerifiedCommunity,
                                   });
-                                  navigate(`/profile/${user.id}`, { state: { userPreview: preview } });
+                                  navigate(`/profile/${safeUserId}`, {
+                                    state: { userPreview: preview, modal: true },
+                                  });
                                 }
                               }}
                               className="flex items-center gap-2 text-left"

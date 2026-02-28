@@ -42,6 +42,7 @@ import {
   resolveCommunityDescription,
   resolveCommunityName,
   buildUserPreview,
+  normalizeUserId,
 } from "../utils/userProfile";
 import { getOptimizedMediaUrl, getOptimizedVideoUrl, getMediaSrcSet } from "../utils/media";
 
@@ -2090,7 +2091,7 @@ export default function Trending() {
 
   const renderUserCard = (user, { variant = "default", index } = {}) => {
     if (!user) return null;
-    const userId = user._id || user.id;
+    const userId = normalizeUserId(user);
     const hasUserId = userId !== undefined && userId !== null && userId !== "";
     const userKey = hasUserId ? String(userId) : `user-${variant}-${index ?? "unknown"}`;
     const cachedUser = hasUserId ? getUserFromCache?.(userId) : null;
@@ -2163,6 +2164,7 @@ export default function Trending() {
             onPointerDown={() => handlePrefetchProfile(previewSource)}
             onClick={() => {
               handlePrefetchProfile(previewSource);
+              if (!userId) return;
               navigate(`/profile/${userId}`, {
                 state: {
                   userPreview: buildUserPreview(previewSource, {
@@ -2176,6 +2178,7 @@ export default function Trending() {
                     university: user.university,
                     college: user.college,
                   }),
+                  modal: true,
                 },
               });
             }}
@@ -2289,6 +2292,7 @@ export default function Trending() {
                   onPointerDown={() => handlePrefetchProfile(previewSource)}
                   onClick={() => {
                     handlePrefetchProfile(previewSource);
+                    if (!userId) return;
                     navigate(`/profile/${userId}`, {
                       state: {
                         userPreview: buildUserPreview(previewSource, {
@@ -2302,6 +2306,7 @@ export default function Trending() {
                           university: user.university,
                           college: user.college,
                         }),
+                        modal: true,
                       },
                     });
                   }}

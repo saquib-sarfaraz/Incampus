@@ -3,6 +3,7 @@ import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { createPost, searchColleges } from "../../services/api";
+import Post from "./Post";
 import {
   compressImageFile,
   createCroppedImage,
@@ -14,11 +15,34 @@ const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 const THOUGHT_MIN_LENGTH = 3;
 const THOUGHT_MAX_LENGTH = 2000;
+const DEFAULT_ADJUSTMENTS = {
+  brightness: 100,
+  contrast: 100,
+  saturation: 100,
+};
+const FILTER_PRESETS = [
+  { id: "normal", label: "Normal", filter: "none" },
+  { id: "warm", label: "Warm", filter: "sepia(0.18) saturate(1.1)" },
+  { id: "cool", label: "Cool", filter: "saturate(0.9) hue-rotate(12deg)" },
+  { id: "mono", label: "Mono", filter: "grayscale(1)" },
+  { id: "vintage", label: "Vintage", filter: "sepia(0.28) contrast(1.05) saturate(0.95)" },
+];
+const EDIT_TOOL_OPTIONS = [
+  { id: "crop", label: "Crop", icon: "fa-crop-simple" },
+  { id: "adjust", label: "Adjust", icon: "fa-sliders" },
+  { id: "filter", label: "Filter", icon: "fa-wand-magic-sparkles" },
+  { id: "text", label: "Text", icon: "fa-font" },
+];
 const ASPECT_OPTIONS = [
   { id: "auto", label: "Auto" },
   { id: "1:1", label: "Square (1:1)" },
   { id: "4:5", label: "Portrait (4:5)" },
   { id: "1.91:1", label: "Landscape (1.91:1)" },
+];
+const AUDIENCE_OPTIONS = [
+  { id: "universal", label: "🌍 Universal" },
+  { id: "college", label: "🏫 College Only" },
+  { id: "private", label: "🔒 Friends Only" },
 ];
 
 const normalizeCollege = (item) => {
@@ -76,9 +100,118 @@ const normalizeCollegeList = (data) => {
   return [];
 };
 
+const resolveFilterPreset = (presetId) => {
+  if (!presetId) return FILTER_PRESETS[0];
+  return FILTER_PRESETS.find((preset) => preset.id === presetId) || FILTER_PRESETS[0];
+};
+
+const buildFilterString = (presetId, adjustments = DEFAULT_ADJUSTMENTS) => {
+  const preset = resolveFilterPreset(presetId);
+  const { brightness, contrast, saturation } = adjustments;
+  const adjust = `brightness(${brightness / 100}) contrast(${contrast / 100}) saturate(${saturation / 100})`;
+  if (!preset || preset.filter === "none") return adjust;
+  return `${preset.filter} ${adjust}`;
+};
+
+const loadImageFromFile = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const image = new Image();
+    reader.onload = () => {
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Unable to load image"));
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Unable to read image"));
+    reader.readAsDataURL(file);
+  });
+
+const drawWrappedText = (ctx, text, x, y, maxWidth, lineHeight) => {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return;
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = testLine;
+    }
+  });
+  if (line) lines.push(line);
+  const totalHeight = lines.length * lineHeight;
+  let startY = y - totalHeight / 2 + lineHeight / 2;
+  lines.forEach((item, index) => {
+    const lineY = startY + index * lineHeight;
+    ctx.strokeText(item, x, lineY);
+    ctx.fillText(item, x, lineY);
+  });
+};
+
+const clampPercent = (value) => Math.min(95, Math.max(5, value));
+
+const applyImageEdits = async ({
+  file,
+  filterPreset,
+  adjustments,
+  overlayText,
+  overlaySize = 32,
+  overlayColor = "#faf0e6",
+  overlayPosition = { x: 50, y: 50 },
+}) => {
+  if (!file || !file.type || !file.type.startsWith("image/")) return file;
+  const image = await loadImageFromFile(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return file;
+  const filterString = buildFilterString(filterPreset, adjustments);
+  ctx.filter = filterString || "none";
+  ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  const overlayValue = overlayText ? overlayText.trim() : "";
+  if (overlayValue) {
+    ctx.filter = "none";
+    const size = Math.max(16, Math.min(overlaySize, canvas.width / 6));
+    ctx.font = `600 ${size}px "Poppins", "Sora", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = overlayColor;
+    ctx.shadowColor = "rgba(0,0,0,0.45)";
+    ctx.shadowBlur = Math.max(6, size * 0.15);
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.lineWidth = Math.max(2, size * 0.08);
+    const posX = canvas.width * (clampPercent(overlayPosition.x) / 100);
+    const posY = canvas.height * (clampPercent(overlayPosition.y) / 100);
+    drawWrappedText(ctx, overlayValue, posX, posY, canvas.width * 0.8, size * 1.2);
+    ctx.shadowBlur = 0;
+  }
+
+  return new Promise((resolve) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          resolve(file);
+          return;
+        }
+        const editedFile = new File([blob], file.name.replace(/\.[^/.]+$/, ".jpg"), {
+          type: "image/jpeg",
+        });
+        resolve(editedFile);
+      },
+      "image/jpeg",
+      0.86
+    );
+  });
+};
+
 export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const { currentUser } = useAuth();
   const { loadPosts } = useApp();
+  const [step, setStep] = useState(1);
   const [postMode, setPostMode] = useState("post");
   const [visibility, setVisibility] = useState("universal");
   const [text, setText] = useState("");
@@ -89,18 +222,33 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const [aspectChoice, setAspectChoice] = useState("auto");
   const [detectedAspect, setDetectedAspect] = useState("4:5");
   const [showMediaMenu, setShowMediaMenu] = useState(false);
+  const [activeTool, setActiveTool] = useState("crop");
+  const [filterPreset, setFilterPreset] = useState("normal");
+  const [adjustments, setAdjustments] = useState(DEFAULT_ADJUSTMENTS);
+  const [overlayText, setOverlayText] = useState("");
+  const [overlaySize, setOverlaySize] = useState(32);
+  const [overlayPosition, setOverlayPosition] = useState({ x: 50, y: 50 });
+  const [editedMediaFile, setEditedMediaFile] = useState(null);
+  const [editedPreviewUrl, setEditedPreviewUrl] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const [collegeInput, setCollegeInput] = useState("");
   const [selectedColleges, setSelectedColleges] = useState([]);
   const [colleges, setColleges] = useState([]);
   const [collegeLoading, setCollegeLoading] = useState(false);
   const [collegeError, setCollegeError] = useState("");
   const [showCollegeDropdown, setShowCollegeDropdown] = useState(false);
+  const [showAudienceMenu, setShowAudienceMenu] = useState(false);
+  const [pendingCaptionFocus, setPendingCaptionFocus] = useState(false);
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
   const collegeRef = useRef(null);
+  const audienceRef = useRef(null);
   const mediaMenuRef = useRef(null);
   const textRef = useRef(null);
+  const mediaContainerRef = useRef(null);
+  const pressTimerRef = useRef(null);
+  const isDraggingRef = useRef(false);
   const isThought = postMode === "thought";
   const effectiveAspect = useMemo(
     () => (aspectChoice === "auto" ? detectedAspect : aspectChoice),
@@ -110,6 +258,29 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     () => ({ aspectRatio: resolveAspectRatioString(effectiveAspect) }),
     [effectiveAspect]
   );
+  const previewFilterStyle = useMemo(
+    () => ({ filter: buildFilterString(filterPreset, adjustments) }),
+    [filterPreset, adjustments]
+  );
+  const trimmedText = text.trim();
+  const canProceedStep1 = useMemo(() => {
+    if (isThought) return trimmedText.length >= THOUGHT_MIN_LENGTH;
+    return Boolean(mediaFile);
+  }, [isThought, trimmedText.length, mediaFile]);
+  const canProceedStep2 = useMemo(() => {
+    if (isThought) return trimmedText.length >= THOUGHT_MIN_LENGTH;
+    return Boolean(mediaFile) || trimmedText.length > 0;
+  }, [isThought, trimmedText.length, mediaFile]);
+  const hasEdits = useMemo(() => {
+    if (!mediaFile) return false;
+    const isDefaultAdjust =
+      adjustments.brightness === DEFAULT_ADJUSTMENTS.brightness &&
+      adjustments.contrast === DEFAULT_ADJUSTMENTS.contrast &&
+      adjustments.saturation === DEFAULT_ADJUSTMENTS.saturation;
+    const hasOverlay = Boolean(overlayText.trim());
+    const hasFilter = filterPreset !== "normal";
+    return hasOverlay || hasFilter || !isDefaultAdjust || aspectChoice !== "auto";
+  }, [mediaFile, adjustments, overlayText, filterPreset, aspectChoice]);
   const defaultCollege = useMemo(() => {
     if (!currentUser) return null;
     const name =
@@ -140,6 +311,12 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, [isOpen]);
 
   useEffect(() => {
+    if (isOpen) {
+      setStep(1);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
     if (!toast) return undefined;
     const timeout = setTimeout(() => setToast(null), 2400);
     return () => clearTimeout(timeout);
@@ -154,6 +331,23 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, [mediaPreview]);
 
   useEffect(() => {
+    return () => {
+      if (editedPreviewUrl) {
+        URL.revokeObjectURL(editedPreviewUrl);
+      }
+    };
+  }, [editedPreviewUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (pressTimerRef.current) {
+        clearTimeout(pressTimerRef.current);
+        pressTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!showMediaMenu) return undefined;
     const handleClick = (event) => {
       if (mediaMenuRef.current && !mediaMenuRef.current.contains(event.target)) {
@@ -163,6 +357,52 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [showMediaMenu]);
+
+  useEffect(() => {
+    if (!pendingCaptionFocus || step !== 2) return undefined;
+    const timeout = window.setTimeout(() => {
+      textRef.current?.focus();
+      setPendingCaptionFocus(false);
+    }, 80);
+    return () => window.clearTimeout(timeout);
+  }, [pendingCaptionFocus, step]);
+
+  useEffect(() => {
+    const handleAudienceOutside = (event) => {
+      if (audienceRef.current && !audienceRef.current.contains(event.target)) {
+        setShowAudienceMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", handleAudienceOutside);
+    return () => document.removeEventListener("mousedown", handleAudienceOutside);
+  }, []);
+
+  useEffect(() => {
+    if (!mediaFile) {
+      setActiveTool("crop");
+      setFilterPreset("normal");
+      setAdjustments(DEFAULT_ADJUSTMENTS);
+      setOverlayText("");
+      setOverlaySize(32);
+      setOverlayPosition({ x: 50, y: 50 });
+    }
+  }, [mediaFile]);
+
+  useEffect(() => {
+    setEditedMediaFile(null);
+    setEditedPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }, [
+    mediaFile,
+    aspectChoice,
+    filterPreset,
+    adjustments,
+    overlayText,
+    overlaySize,
+    overlayPosition,
+  ]);
 
   useEffect(() => {
     if (!isThought) return;
@@ -176,6 +416,11 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
       setAspectChoice("auto");
       setDetectedAspect("4:5");
       setShowMediaMenu(false);
+      setActiveTool("crop");
+      setFilterPreset("normal");
+      setAdjustments(DEFAULT_ADJUSTMENTS);
+      setOverlayText("");
+      setOverlaySize(32);
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
@@ -236,6 +481,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   }, [isOpen, showCollegeDropdown, collegeInput]);
 
   const resetForm = () => {
+    setStep(1);
     setPostMode("post");
     setVisibility("universal");
     setText("");
@@ -249,9 +495,23 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     setAspectChoice("auto");
     setDetectedAspect("4:5");
     setShowMediaMenu(false);
+    setActiveTool("crop");
+    setFilterPreset("normal");
+    setAdjustments(DEFAULT_ADJUSTMENTS);
+    setOverlayText("");
+    setOverlaySize(32);
+    setOverlayPosition({ x: 50, y: 50 });
+    setEditedMediaFile(null);
+    setPreviewLoading(false);
+    setEditedPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
     setCollegeInput("");
     setSelectedColleges([]);
     setShowCollegeDropdown(false);
+    setShowAudienceMenu(false);
+    setPendingCaptionFocus(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -293,6 +553,12 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     setAspectChoice("auto");
     setDetectedAspect("4:5");
     setShowMediaMenu(false);
+    setActiveTool("crop");
+    setFilterPreset("normal");
+    setAdjustments(DEFAULT_ADJUSTMENTS);
+    setOverlayText("");
+    setOverlaySize(32);
+    setOverlayPosition({ x: 50, y: 50 });
     setMediaPreview((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return URL.createObjectURL(processed);
@@ -309,6 +575,12 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     setAspectChoice("auto");
     setDetectedAspect("4:5");
     setShowMediaMenu(false);
+    setActiveTool("crop");
+    setFilterPreset("normal");
+    setAdjustments(DEFAULT_ADJUSTMENTS);
+    setOverlayText("");
+    setOverlaySize(32);
+    setOverlayPosition({ x: 50, y: 50 });
     if (fileInputRef.current) fileInputRef.current.value = "";
   }, [mediaPreview]);
 
@@ -321,6 +593,132 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     },
     []
   );
+
+  const buildEditedMedia = useCallback(async () => {
+    if (!mediaFile || isThought) return null;
+    let baseFile = mediaFile;
+    try {
+      baseFile = await createCroppedImage(baseFile, effectiveAspect);
+    } catch {
+      baseFile = mediaFile;
+    }
+    const isDefaultAdjust =
+      adjustments.brightness === DEFAULT_ADJUSTMENTS.brightness &&
+      adjustments.contrast === DEFAULT_ADJUSTMENTS.contrast &&
+      adjustments.saturation === DEFAULT_ADJUSTMENTS.saturation;
+    const hasOverlay = Boolean(overlayText.trim());
+    const hasFilter = filterPreset !== "normal";
+    if (!hasOverlay && !hasFilter && isDefaultAdjust) {
+      return baseFile;
+    }
+    return applyImageEdits({
+      file: baseFile,
+      filterPreset,
+      adjustments,
+      overlayText,
+      overlaySize,
+      overlayPosition,
+    });
+  }, [
+    mediaFile,
+    isThought,
+    effectiveAspect,
+    adjustments,
+    overlayText,
+    overlaySize,
+    overlayPosition,
+    filterPreset,
+  ]);
+
+  const handleStepBack = () => {
+    setStep((prev) => Math.max(1, prev - 1));
+  };
+
+  const handleStepNext = () => {
+    if (step === 1 && canProceedStep1) {
+      setStep(2);
+      setPendingCaptionFocus(true);
+      return;
+    }
+    if (step === 2 && canProceedStep2) {
+      setStep(3);
+    }
+  };
+
+  const updateOverlayPositionFromEvent = useCallback((event) => {
+    const container = mediaContainerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const clientX = event.touches ? event.touches[0]?.clientX : event.clientX;
+    const clientY = event.touches ? event.touches[0]?.clientY : event.clientY;
+    if (clientX === undefined || clientY === undefined) return;
+    const xPercent = ((clientX - rect.left) / rect.width) * 100;
+    const yPercent = ((clientY - rect.top) / rect.height) * 100;
+    setOverlayPosition({
+      x: clampPercent(xPercent),
+      y: clampPercent(yPercent),
+    });
+  }, []);
+
+  const handleOverlayPointerDown = useCallback(
+    (event) => {
+      if (!overlayText.trim()) return;
+      if (pressTimerRef.current) {
+        clearTimeout(pressTimerRef.current);
+      }
+      pressTimerRef.current = setTimeout(() => {
+        isDraggingRef.current = true;
+        updateOverlayPositionFromEvent(event);
+      }, 250);
+    },
+    [overlayText, updateOverlayPositionFromEvent]
+  );
+
+  const handleOverlayPointerMove = useCallback(
+    (event) => {
+      if (!isDraggingRef.current) return;
+      updateOverlayPositionFromEvent(event);
+    },
+    [updateOverlayPositionFromEvent]
+  );
+
+  const handleOverlayPointerUp = useCallback(() => {
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    isDraggingRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (!isOpen || step !== 3) return undefined;
+    if (isThought || !mediaFile) {
+      setEditedMediaFile(null);
+      setEditedPreviewUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+      return undefined;
+    }
+    let isMounted = true;
+    setPreviewLoading(true);
+    buildEditedMedia()
+      .then((edited) => {
+        if (!isMounted) return;
+        if (!edited) return;
+        setEditedMediaFile(edited);
+        setEditedPreviewUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(edited);
+        });
+      })
+      .finally(() => {
+        if (isMounted) setPreviewLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen, step, isThought, mediaFile, buildEditedMedia]);
 
   const handleSubmit = async () => {
     const trimmedText = text.trim();
@@ -367,10 +765,14 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
     try {
       let finalMedia = mediaFile;
       if (!isThought && mediaFile) {
-        try {
-          finalMedia = await createCroppedImage(mediaFile, effectiveAspect);
-        } catch {
-          finalMedia = mediaFile;
+        if (editedMediaFile) {
+          finalMedia = editedMediaFile;
+        } else {
+          try {
+            finalMedia = await buildEditedMedia();
+          } catch {
+            finalMedia = mediaFile;
+          }
         }
       }
       await createPost(
@@ -408,6 +810,45 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   };
 
   const userAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
+  const selectedAudience =
+    AUDIENCE_OPTIONS.find((option) => option.id === visibility) || AUDIENCE_OPTIONS[0];
+  const previewPost = useMemo(() => {
+    const authorName =
+      currentUser?.fullName || currentUser?.username || currentUser?.name || "User";
+    const authorId = currentUser?.id || currentUser?._id || "preview-author";
+    const primaryCollege = selectedColleges[0];
+    return {
+      _id: "preview-post",
+      id: "preview-post",
+      content: trimmedText,
+      createdAt: new Date().toISOString(),
+      isAnonymous,
+      visibility,
+      authorId,
+      author: {
+        _id: authorId,
+        fullName: authorName,
+        username: currentUser?.username,
+        profilePicUrl: userAvatar,
+      },
+      collegeTagName: primaryCollege?.name || "",
+      mediaUrl: isThought ? "" : editedPreviewUrl || mediaPreview || "",
+      aspectRatio: !isThought && mediaFile ? effectiveAspect : undefined,
+      isPreview: true,
+    };
+  }, [
+    currentUser,
+    trimmedText,
+    isAnonymous,
+    visibility,
+    selectedColleges,
+    editedPreviewUrl,
+    mediaPreview,
+    isThought,
+    mediaFile,
+    effectiveAspect,
+    userAvatar,
+  ]);
   const isCollegeSelected = useCallback(
     (college) => {
       if (!college) return false;
@@ -496,372 +937,707 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <img
-                    src={isAnonymous ? ANONYMOUS_AVATAR : userAvatar}
-                    alt="Profile"
-                    className="h-10 w-10 rounded-full object-cover"
-                  />
-                  <div>
-                    <p className="text-sm font-semibold text-[#faf0e6]">Create Post</p>
-                    <p className="text-[11px] text-[#b9b4c7]">Share with your campus</p>
-                  </div>
-                </div>
                 <button
                   type="button"
-                  onClick={handleClose}
-                  className="text-xl text-[#b9b4c7] hover:text-[#faf0e6]"
+                  onClick={step === 1 ? handleClose : handleStepBack}
+                  className="h-9 w-9 rounded-full text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 flex items-center justify-center"
+                  aria-label={step === 1 ? "Close" : "Back"}
                 >
-                  &times;
+                  <i className={`fa-solid ${step === 1 ? "fa-xmark" : "fa-chevron-left"}`}></i>
                 </button>
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-[#faf0e6]">
+                    {step === 1 ? "New Post" : step === 2 ? "Add Details" : "Preview"}
+                  </p>
+                  <p className="text-[11px] text-[#b9b4c7]">{step}/3</p>
+                </div>
+                <div className="w-9"></div>
               </div>
 
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (step !== 3) return;
                   handleSubmit();
                 }}
-                className="mt-5 space-y-5"
+                className="mt-5 space-y-6"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPostMode("post")}
-                      className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
-                        postMode === "post"
-                          ? "bg-white/15 text-[#faf0e6]"
-                          : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
-                      }`}
+                <AnimatePresence mode="wait">
+                  {step === 1 && (
+                    <Motion.div
+                      key="step-1"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -12 }}
+                      className="space-y-5"
                     >
-                      Post
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPostMode("thought")}
-                      className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
-                        postMode === "thought"
-                          ? "bg-white/15 text-[#faf0e6]"
-                          : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
-                      }`}
-                    >
-                      Thought
-                    </button>
-                  </div>
-                  {isThought && (
-                    <span className="text-[11px] text-[#b9b4c7]">
-                      {text.trim().length}/{THOUGHT_MAX_LENGTH}
-                    </span>
-                  )}
-                </div>
-                <textarea
-                  ref={textRef}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                  placeholder={
-                    isThought
-                      ? "Share a thought with your campus..."
-                      : "What's happening on campus?\nShare updates, notes, or moments..."
-                  }
-                  rows={4}
-                  maxLength={isThought ? THOUGHT_MAX_LENGTH : undefined}
-                  className="w-full rounded-2xl glass-input p-4 text-sm placeholder-[#b9b4c7] resize-none"
-                />
-
-                <div className="space-y-2">
-                  <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
-                    Visibility
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      { id: "universal", label: "🌍 Universal" },
-                      { id: "college", label: "🏫 College Only" },
-                      { id: "private", label: "🔒 Friends Only" },
-                    ].map((option, index) => (
-                      <button
-                        key={option.id || `visibility-${index}`}
-                        type="button"
-                        onClick={() => setVisibility(option.id)}
-                        className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
-                          visibility === option.id
-                            ? "bg-white/15 text-[#faf0e6]"
-                            : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-2 relative" ref={collegeRef}>
-                  <label
-                    htmlFor="post-college-tag"
-                    className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]"
-                  >
-                    College Tags
-                  </label>
-                  <input
-                    id="post-college-tag"
-                    type="text"
-                    value={collegeInput}
-                    onChange={(e) => handleCollegeChange(e.target.value)}
-                    onFocus={() => setShowCollegeDropdown(true)}
-                    onKeyDown={handleCollegeKeyDown}
-                    placeholder="Tag College (Optional)"
-                    className="w-full rounded-2xl glass-input px-4 py-2.5 text-sm"
-                  />
-                  <div className="flex flex-wrap gap-2">
-                    {selectedColleges.map((college) => (
-                      <button
-                        key={`${college.name}-${college.id || "manual"}`}
-                        type="button"
-                        onClick={() => removeCollegeTag(college)}
-                        className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1 text-[11px] text-[#faf0e6]"
-                      >
-                        <span className="truncate">{college.name}</span>
-                        <i className="fa-solid fa-xmark text-[10px]"></i>
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-[#b9b4c7]">
-                    Search and add multiple colleges. Press Enter to add a custom tag.
-                  </p>
-                  {showCollegeDropdown && (
-                    <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
-                      {collegeLoading ? (
-                        <div className="p-3 space-y-2">
-                          {[1, 2, 3, 4, 5].map((i) => (
-                            <div
-                              key={i}
-                              className="h-8 rounded-xl bg-white/10 animate-pulse"
-                            ></div>
-                          ))}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setPostMode("post")}
+                            className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                              postMode === "post"
+                                ? "bg-white/15 text-[#faf0e6]"
+                                : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                            }`}
+                          >
+                            Post
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPostMode("thought")}
+                            className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                              postMode === "thought"
+                                ? "bg-white/15 text-[#faf0e6]"
+                                : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                            }`}
+                          >
+                            Thought
+                          </button>
                         </div>
-                      ) : collegeError ? (
-                        <div className="p-3 text-sm text-[#b9b4c7]">{collegeError}</div>
-                      ) : topMatches.length > 0 ? (
-                        <div className="p-2">
-                          {topMatches.map((college) => (
+                        {isThought && (
+                          <span className="text-[11px] text-[#b9b4c7]">
+                            {text.trim().length}/{THOUGHT_MAX_LENGTH}
+                          </span>
+                        )}
+                      </div>
+
+                      {!isThought && (
+                        <div className="rounded-3xl border border-white/10 bg-white/5 p-4 space-y-4">
+                          {mediaPreview ? (
+                            <div
+                              className="relative overflow-hidden rounded-2xl border border-white/10 bg-black/20"
+                              style={previewAspectStyle}
+                              ref={mediaContainerRef}
+                              onPointerDown={handleOverlayPointerDown}
+                              onPointerMove={handleOverlayPointerMove}
+                              onPointerUp={handleOverlayPointerUp}
+                              onPointerLeave={handleOverlayPointerUp}
+                            >
+                              {imageLoading && (
+                                <div className="absolute inset-0 animate-pulse bg-white/10"></div>
+                              )}
+                              <img
+                                src={mediaPreview}
+                                alt="Preview"
+                                className="w-full h-full object-cover"
+                                style={previewFilterStyle}
+                                onLoad={handlePreviewLoad}
+                                onError={() => setImageLoading(false)}
+                              />
+                              {overlayText.trim() && (
+                                <div
+                                  className="absolute flex items-center justify-center pointer-events-none px-6"
+                                  style={{
+                                    left: `${overlayPosition.x}%`,
+                                    top: `${overlayPosition.y}%`,
+                                    transform: "translate(-50%, -50%)",
+                                  }}
+                                >
+                                  <p
+                                    className="text-center font-semibold text-[#faf0e6] drop-shadow-[0_3px_8px_rgba(0,0,0,0.45)] whitespace-pre-wrap"
+                                    style={{ fontSize: `${overlaySize}px` }}
+                                  >
+                                    {overlayText}
+                                  </p>
+                                </div>
+                              )}
+                              <div
+                                ref={mediaMenuRef}
+                                className="absolute top-3 right-3 flex flex-col items-end gap-2"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => setShowMediaMenu((prev) => !prev)}
+                                  className="h-8 w-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
+                                  aria-label="Media options"
+                                >
+                                  <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
+                                </button>
+                                {showMediaMenu && (
+                                  <div className="w-52 rounded-2xl glass-card border border-white/10 overflow-hidden">
+                                    <div className="px-3 pt-3 pb-2">
+                                      <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                                        Media options
+                                      </p>
+                                    </div>
+                                    <div className="px-3 pb-2">
+                                      <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7] mb-2">
+                                        Aspect ratio
+                                      </p>
+                                      <div className="space-y-1">
+                                        {ASPECT_OPTIONS.map((option) => (
+                                          <button
+                                            key={option.id}
+                                            type="button"
+                                            onClick={() => {
+                                              setAspectChoice(option.id);
+                                              setShowMediaMenu(false);
+                                            }}
+                                            className={`w-full flex items-center justify-between rounded-xl px-2.5 py-2 text-xs transition-colors ${
+                                              aspectChoice === option.id
+                                                ? "bg-white/15 text-[#faf0e6]"
+                                                : "text-[#b9b4c7] hover:bg-white/10 hover:text-[#faf0e6]"
+                                            }`}
+                                          >
+                                            <span>
+                                              {option.id === "auto"
+                                                ? `Auto (${detectedAspect})`
+                                                : option.label}
+                                            </span>
+                                            {aspectChoice === option.id && (
+                                              <i className="fa-solid fa-check text-[10px]"></i>
+                                            )}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setShowMediaMenu(false);
+                                        setStep(2);
+                                        setPendingCaptionFocus(true);
+                                      }}
+                                      className="w-full text-left px-4 py-2 text-xs text-[#b9b4c7] hover:bg-white/10"
+                                    >
+                                      <i className="fa-solid fa-pen mr-2"></i>
+                                      Add caption
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={clearMedia}
+                                      className="w-full text-left px-4 py-2 text-xs text-rose-200 hover:bg-white/10"
+                                    >
+                                      <i className="fa-solid fa-trash-can mr-2"></i>
+                                      Remove image
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex flex-col items-center justify-center gap-3 py-10 text-center">
+                              <div className="h-14 w-14 rounded-full border border-white/10 bg-white/10 flex items-center justify-center text-[#faf0e6]">
+                                <i className="fa-solid fa-image text-xl"></i>
+                              </div>
+                              <div>
+                                <p className="text-sm font-semibold text-[#faf0e6]">
+                                  Add a photo
+                                </p>
+                                <p className="text-xs text-[#b9b4c7]">
+                                  Upload a single image to start editing.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+
+                          <label className="flex cursor-pointer items-center justify-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[#faf0e6]">
+                            <i className="fa-solid fa-image"></i>
+                            <span>{mediaPreview ? "Replace image" : "Add Media"}</span>
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="image/jpeg,image/png,image/webp"
+                              className="hidden"
+                              onChange={handleMediaSelect}
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      {isThought && (
+                        <div className="rounded-3xl border border-white/10 bg-white/5 p-4 space-y-3">
+                          <textarea
+                            value={text}
+                            onChange={(e) => setText(e.target.value)}
+                            placeholder="Share a thought with your campus..."
+                            rows={6}
+                            maxLength={THOUGHT_MAX_LENGTH}
+                            className="w-full rounded-2xl glass-input p-4 text-sm placeholder-[#b9b4c7] resize-none"
+                          />
+                          <div className="text-right text-xs text-[#b9b4c7]">
+                            {text.trim().length}/{THOUGHT_MAX_LENGTH}
+                          </div>
+                        </div>
+                      )}
+
+                      {!isThought && mediaPreview && (
+                        <div className="space-y-4">
+                          <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                            {EDIT_TOOL_OPTIONS.map((tool) => (
+                              <button
+                                key={tool.id}
+                                type="button"
+                                onClick={() => setActiveTool(tool.id)}
+                                className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold transition-colors ${
+                                  activeTool === tool.id
+                                    ? "bg-white/15 text-[#faf0e6]"
+                                    : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                                }`}
+                              >
+                                <i className={`fa-solid ${tool.icon}`}></i>
+                                {tool.label}
+                              </button>
+                            ))}
+                          </div>
+
+                          {activeTool === "crop" && (
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 space-y-2">
+                              <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
+                                Aspect ratio
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                {ASPECT_OPTIONS.map((option) => (
+                                  <button
+                                    key={option.id}
+                                    type="button"
+                                    onClick={() => setAspectChoice(option.id)}
+                                    className={`rounded-full px-4 py-1 text-xs font-semibold transition-colors ${
+                                      aspectChoice === option.id
+                                        ? "bg-white/15 text-[#faf0e6]"
+                                        : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                                    }`}
+                                  >
+                                    {option.id === "auto"
+                                      ? `Auto (${detectedAspect})`
+                                      : option.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {activeTool === "adjust" && (
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 space-y-4">
+                              {[
+                                { id: "brightness", label: "Brightness", min: 70, max: 130 },
+                                { id: "contrast", label: "Contrast", min: 80, max: 130 },
+                                { id: "saturation", label: "Saturation", min: 80, max: 150 },
+                              ].map((item) => (
+                                <div key={item.id} className="flex items-center gap-3">
+                                  <span className="w-20 text-xs text-[#b9b4c7]">
+                                    {item.label}
+                                  </span>
+                                  <input
+                                    type="range"
+                                    min={item.min}
+                                    max={item.max}
+                                    value={adjustments[item.id]}
+                                    onChange={(e) =>
+                                      setAdjustments((prev) => ({
+                                        ...prev,
+                                        [item.id]: Number(e.target.value),
+                                      }))
+                                    }
+                                    className="flex-1"
+                                  />
+                                  <span className="w-10 text-right text-xs text-[#b9b4c7]">
+                                    {adjustments[item.id]}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {activeTool === "filter" && (
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                                {FILTER_PRESETS.map((preset) => (
+                                  <button
+                                    key={preset.id}
+                                    type="button"
+                                    onClick={() => setFilterPreset(preset.id)}
+                                    className={`rounded-2xl border px-3 py-2 text-xs transition-colors ${
+                                      filterPreset === preset.id
+                                        ? "border-white/30 bg-white/15 text-[#faf0e6]"
+                                        : "border-white/10 bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
+                                    }`}
+                                  >
+                                    <div
+                                      className="h-12 w-full rounded-xl bg-white/10 mb-2"
+                                      style={{
+                                        backgroundImage: mediaPreview ? `url(${mediaPreview})` : undefined,
+                                        backgroundSize: "cover",
+                                        backgroundPosition: "center",
+                                        filter: preset.filter === "none" ? "none" : preset.filter,
+                                      }}
+                                    ></div>
+                                    {preset.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {activeTool === "text" && (
+                            <div className="rounded-2xl border border-white/10 bg-white/5 p-4 space-y-3">
+                              <label className="text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                                Overlay text
+                              </label>
+                              <input
+                                type="text"
+                                value={overlayText}
+                                onChange={(e) => setOverlayText(e.target.value)}
+                                placeholder="Add text on image"
+                                className="w-full rounded-2xl glass-input px-4 py-2.5 text-sm"
+                                maxLength={60}
+                              />
+                              <div className="flex items-center gap-3">
+                                <span className="w-16 text-xs text-[#b9b4c7]">Size</span>
+                                <input
+                                  type="range"
+                                  min={16}
+                                  max={56}
+                                  value={overlaySize}
+                                  onChange={(e) => setOverlaySize(Number(e.target.value))}
+                                  className="flex-1"
+                                />
+                                <span className="w-10 text-right text-xs text-[#b9b4c7]">
+                                  {overlaySize}
+                                </span>
+                              </div>
+                              {overlayText.trim() && (
+                                <div className="space-y-2">
+                                  <p className="text-[11px] text-[#b9b4c7]">
+                                    Long press on the image to place text.
+                                  </p>
+                                  <div className="grid grid-cols-3 gap-2 max-w-[180px]">
+                                    <div></div>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setOverlayPosition((prev) => ({
+                                          ...prev,
+                                          y: clampPercent(prev.y - 3),
+                                        }))
+                                      }
+                                      className="h-8 rounded-xl border border-white/10 bg-white/5 text-xs text-[#faf0e6]"
+                                    >
+                                      <i className="fa-solid fa-arrow-up"></i>
+                                    </button>
+                                    <div></div>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setOverlayPosition((prev) => ({
+                                          ...prev,
+                                          x: clampPercent(prev.x - 3),
+                                        }))
+                                      }
+                                      className="h-8 rounded-xl border border-white/10 bg-white/5 text-xs text-[#faf0e6]"
+                                    >
+                                      <i className="fa-solid fa-arrow-left"></i>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setOverlayPosition({ x: 50, y: 50 })}
+                                      className="h-8 rounded-xl border border-white/10 bg-white/5 text-[11px] text-[#faf0e6]"
+                                    >
+                                      Center
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setOverlayPosition((prev) => ({
+                                          ...prev,
+                                          x: clampPercent(prev.x + 3),
+                                        }))
+                                      }
+                                      className="h-8 rounded-xl border border-white/10 bg-white/5 text-xs text-[#faf0e6]"
+                                    >
+                                      <i className="fa-solid fa-arrow-right"></i>
+                                    </button>
+                                    <div></div>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setOverlayPosition((prev) => ({
+                                          ...prev,
+                                          y: clampPercent(prev.y + 3),
+                                        }))
+                                      }
+                                      className="h-8 rounded-xl border border-white/10 bg-white/5 text-xs text-[#faf0e6]"
+                                    >
+                                      <i className="fa-solid fa-arrow-down"></i>
+                                    </button>
+                                    <div></div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </Motion.div>
+                  )}
+
+                  {step === 2 && (
+                    <Motion.div
+                      key="step-2"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -12 }}
+                      className="space-y-5"
+                    >
+                      <div className="space-y-2">
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                          Caption
+                        </label>
+                        <textarea
+                          ref={textRef}
+                          value={text}
+                          onChange={(e) => setText(e.target.value)}
+                          placeholder={
+                            isThought
+                              ? "Share a thought with your campus..."
+                              : "What's happening on campus?\nShare updates, notes, or moments..."
+                          }
+                          rows={5}
+                          maxLength={isThought ? THOUGHT_MAX_LENGTH : undefined}
+                          className="w-full rounded-2xl glass-input p-4 text-sm placeholder-[#b9b4c7] resize-none"
+                        />
+                        {isThought && (
+                          <div className="text-right text-xs text-[#b9b4c7]">
+                            {text.trim().length}/{THOUGHT_MAX_LENGTH}
+                          </div>
+                        )}
+                      </div>
+
+                      {!isThought && mediaPreview && (
+                        <button
+                          type="button"
+                          onClick={() => setStep(1)}
+                          className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 p-3 text-left"
+                        >
+                          <img
+                            src={mediaPreview}
+                            alt="Media preview"
+                            className="h-16 w-16 rounded-xl object-cover"
+                            style={previewFilterStyle}
+                          />
+                          <div>
+                            <p className="text-sm font-semibold text-[#faf0e6]">
+                              Edit media
+                            </p>
+                            <p className="text-xs text-[#b9b4c7]">
+                              Tap to adjust crop, filters, or text.
+                            </p>
+                          </div>
+                        </button>
+                      )}
+
+                      <div className="space-y-2 relative" ref={audienceRef}>
+                        <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                          Audience
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowAudienceMenu((prev) => !prev)}
+                          className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left text-sm text-[#faf0e6] flex items-center justify-between"
+                        >
+                          <span>{selectedAudience.label}</span>
+                          <i className="fa-solid fa-chevron-down text-xs"></i>
+                        </button>
+                        {showAudienceMenu && (
+                          <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card border border-white/10 z-20 overflow-hidden">
+                            {AUDIENCE_OPTIONS.map((option) => (
+                              <button
+                                key={option.id}
+                                type="button"
+                                onClick={() => {
+                                  setVisibility(option.id);
+                                  setShowAudienceMenu(false);
+                                }}
+                                className={`w-full px-4 py-2 text-left text-sm transition-colors ${
+                                  visibility === option.id
+                                    ? "bg-white/15 text-[#faf0e6]"
+                                    : "text-[#b9b4c7] hover:bg-white/10 hover:text-[#faf0e6]"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2 relative" ref={collegeRef}>
+                        <label
+                          htmlFor="post-college-tag"
+                          className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]"
+                        >
+                          College Tags
+                        </label>
+                        <input
+                          id="post-college-tag"
+                          type="text"
+                          value={collegeInput}
+                          onChange={(e) => handleCollegeChange(e.target.value)}
+                          onFocus={() => setShowCollegeDropdown(true)}
+                          onKeyDown={handleCollegeKeyDown}
+                          placeholder="Tag College (Optional)"
+                          className="w-full rounded-2xl glass-input px-4 py-2.5 text-sm"
+                        />
+                        <div className="flex flex-wrap gap-2">
+                          {selectedColleges.map((college) => (
                             <button
                               key={`${college.name}-${college.id || "manual"}`}
                               type="button"
-                              onClick={() => addCollegeTag(college)}
-                              className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
+                              onClick={() => removeCollegeTag(college)}
+                              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-3 py-1 text-[11px] text-[#faf0e6]"
                             >
-                              {college.name}
+                              <span className="truncate">{college.name}</span>
+                              <i className="fa-solid fa-xmark text-[10px]"></i>
                             </button>
                           ))}
                         </div>
-                      ) : (
-                        <div className="p-3 text-sm text-[#b9b4c7]">
-                          No matches. Press Enter to add "{collegeInput}".
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {!isThought && (
-                  <div className="flex flex-wrap items-center gap-3">
-                    <label className="flex cursor-pointer items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[#faf0e6]">
-                      <i className="fa-solid fa-image"></i>
-                      <span>Add Media</span>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/jpeg,image/png,image/webp"
-                        className="hidden"
-                        onChange={handleMediaSelect}
-                      />
-                    </label>
-                  </div>
-                )}
-
-                <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-                  <div>
-                    <p className="text-xs font-semibold text-[#faf0e6]">Post anonymously</p>
-                    <p className="text-[11px] text-[#b9b4c7]">Hide your identity for this post.</p>
-                  </div>
-                  <label className="relative inline-flex cursor-pointer items-center">
-                    <input
-                      type="checkbox"
-                      checked={isAnonymous}
-                      onChange={(e) => setIsAnonymous(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="h-6 w-11 rounded-full bg-white/10 peer-checked:bg-[#5c5470] transition-colors"></div>
-                    <div className="dot absolute left-1 top-1 h-4 w-4 rounded-full bg-[#faf0e6] transition-transform peer-checked:translate-x-full"></div>
-                  </label>
-                </div>
-
-                <AnimatePresence>
-                  {(text.trim() || mediaPreview) && (
-                    <Motion.div
-                      initial={{ opacity: 0, y: 12 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 12 }}
-                      className="glass-card rounded-3xl p-5 border border-white/10"
-                    >
-                      <div className="flex items-center gap-3">
-                        <img
-                          src={isAnonymous ? ANONYMOUS_AVATAR : userAvatar}
-                          alt="Preview avatar"
-                          className="h-10 w-10 rounded-full object-cover"
-                        />
-                        <div>
-                          <p className="font-semibold text-[#faf0e6]">
-                            {isAnonymous
-                              ? "Anonymous Student"
-                              : currentUser?.fullName || currentUser?.username || "User"}
-                          </p>
-                          <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
-                            <span>Just now</span>
-                            {isThought && (
-                              <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
-                                Thought
-                              </span>
-                            )}
-                            <span className="inline-flex items-center rounded-full border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] text-[#faf0e6]">
-                              {visibility === "college"
-                                ? "College Only"
-                                : visibility === "private"
-                                  ? "Friends Only"
-                                  : "Universal"}
-                            </span>
-                            {selectedColleges.length > 0 && (
-                              <>
-                                <span className="text-[#b9b4c7]">|</span>
-                                <span className="inline-flex items-center gap-2 flex-wrap max-w-[320px]">
-                                  {selectedColleges.map((college) => (
-                                    <span
-                                      key={`${college.name}-${college.id || "manual"}`}
-                                      className="inline-flex items-center gap-1"
-                                    >
-                                      <i className="fa-solid fa-school text-[10px]"></i>
-                                      <span className="truncate">{college.name}</span>
-                                    </span>
-                                  ))}
-                                </span>
-                              </>
-                            )}
-                          </small>
-                        </div>
-                      </div>
-                      {text.trim() && (
-                        <p className="mt-4 text-sm text-[#faf0e6] whitespace-pre-wrap">
-                          {text}
+                        <p className="text-[11px] text-[#b9b4c7]">
+                          Search and add multiple colleges. Press Enter to add a custom tag.
                         </p>
-                      )}
-                      {mediaPreview && (
-                        <div
-                          className="relative mt-4 overflow-hidden rounded-2xl border border-white/10 bg-black/20"
-                          style={previewAspectStyle}
-                        >
-                          {imageLoading && (
-                            <div className="absolute inset-0 animate-pulse bg-white/10"></div>
-                          )}
-                          <img
-                            src={mediaPreview}
-                            alt="Preview"
-                            className="w-full h-full object-cover"
-                            onLoad={handlePreviewLoad}
-                            onError={() => setImageLoading(false)}
-                          />
-                          <div
-                            ref={mediaMenuRef}
-                            className="absolute top-3 right-3 flex flex-col items-end gap-2"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => setShowMediaMenu((prev) => !prev)}
-                              className="h-8 w-8 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-black/80"
-                              aria-label="Media options"
-                            >
-                              <i className="fa-solid fa-ellipsis-vertical text-xs"></i>
-                            </button>
-                            {showMediaMenu && (
-                              <div className="w-52 rounded-2xl glass-card border border-white/10 overflow-hidden">
-                                <div className="px-3 pt-3 pb-2">
-                                  <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
-                                    Media options
-                                  </p>
-                                </div>
-                                <div className="px-3 pb-2">
-                                  <p className="text-[10px] uppercase tracking-[0.2em] text-[#b9b4c7] mb-2">
-                                    Aspect ratio
-                                  </p>
-                                  <div className="space-y-1">
-                                    {ASPECT_OPTIONS.map((option) => (
-                                      <button
-                                        key={option.id}
-                                        type="button"
-                                        onClick={() => {
-                                          setAspectChoice(option.id);
-                                          setShowMediaMenu(false);
-                                        }}
-                                        className={`w-full flex items-center justify-between rounded-xl px-2.5 py-2 text-xs transition-colors ${
-                                          aspectChoice === option.id
-                                            ? "bg-white/15 text-[#faf0e6]"
-                                            : "text-[#b9b4c7] hover:bg-white/10 hover:text-[#faf0e6]"
-                                        }`}
-                                      >
-                                        <span>
-                                          {option.id === "auto"
-                                            ? `Auto (${detectedAspect})`
-                                            : option.label}
-                                        </span>
-                                        {aspectChoice === option.id && (
-                                          <i className="fa-solid fa-check text-[10px]"></i>
-                                        )}
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    textRef.current?.focus();
-                                    setShowMediaMenu(false);
-                                  }}
-                                  className="w-full text-left px-4 py-2 text-xs text-[#b9b4c7] hover:bg-white/10"
-                                >
-                                  <i className="fa-solid fa-pen mr-2"></i>
-                                  Add caption
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={clearMedia}
-                                  className="w-full text-left px-4 py-2 text-xs text-rose-200 hover:bg-white/10"
-                                >
-                                  <i className="fa-solid fa-trash-can mr-2"></i>
-                                  Remove image
-                                </button>
+                        {showCollegeDropdown && (
+                          <div className="absolute left-0 right-0 mt-2 rounded-2xl glass-card max-h-64 overflow-y-auto z-20">
+                            {collegeLoading ? (
+                              <div className="p-3 space-y-2">
+                                {[1, 2, 3, 4, 5].map((i) => (
+                                  <div
+                                    key={i}
+                                    className="h-8 rounded-xl bg-white/10 animate-pulse"
+                                  ></div>
+                                ))}
+                              </div>
+                            ) : collegeError ? (
+                              <div className="p-3 text-sm text-[#b9b4c7]">
+                                {collegeError}
+                              </div>
+                            ) : topMatches.length > 0 ? (
+                              <div className="p-2">
+                                {topMatches.map((college) => (
+                                  <button
+                                    key={`${college.name}-${college.id || "manual"}`}
+                                    type="button"
+                                    onClick={() => addCollegeTag(college)}
+                                    className="w-full text-left px-3 py-2 rounded-xl text-sm text-[#faf0e6] hover:bg-white/10 transition-colors"
+                                  >
+                                    {college.name}
+                                  </button>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="p-3 text-sm text-[#b9b4c7]">
+                                No matches. Press Enter to add "{collegeInput}".
                               </div>
                             )}
                           </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+                        <div>
+                          <p className="text-xs font-semibold text-[#faf0e6]">
+                            Post anonymously
+                          </p>
+                          <p className="text-[11px] text-[#b9b4c7]">
+                            Hide your identity for this post.
+                          </p>
                         </div>
+                        <label className="relative inline-flex cursor-pointer items-center">
+                          <input
+                            type="checkbox"
+                            checked={isAnonymous}
+                            onChange={(e) => setIsAnonymous(e.target.checked)}
+                            className="sr-only peer"
+                          />
+                          <div className="h-6 w-11 rounded-full bg-white/10 peer-checked:bg-[#5c5470] transition-colors"></div>
+                          <div className="dot absolute left-1 top-1 h-4 w-4 rounded-full bg-[#faf0e6] transition-transform peer-checked:translate-x-full"></div>
+                        </label>
+                      </div>
+                    </Motion.div>
+                  )}
+
+                  {step === 3 && (
+                    <Motion.div
+                      key="step-3"
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -12 }}
+                      className="space-y-4"
+                    >
+                      {previewLoading ? (
+                        <div className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse">
+                          <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
+                          <div className="h-28 bg-white/10 rounded mb-4"></div>
+                          <div className="h-4 bg-white/10 rounded w-1/2"></div>
+                        </div>
+                      ) : (
+                        <Post post={previewPost} isPreview />
+                      )}
+                      {hasEdits && !isThought && (
+                        <p className="text-xs text-[#b9b4c7]">
+                          Your edits are applied to the final upload.
+                        </p>
                       )}
                     </Motion.div>
                   )}
                 </AnimatePresence>
 
-                <div className="sticky bottom-4 flex flex-col gap-3 sm:flex-row sm:justify-end bg-black/30 backdrop-blur rounded-2xl p-3">
-                  <Motion.button
-                    type="submit"
-                    disabled={
-                      loading ||
-                      (visibility === "college" && selectedColleges.length === 0) ||
-                      (isThought
-                        ? text.trim().length < THOUGHT_MIN_LENGTH
-                        : !text.trim() && !mediaFile)
-                    }
-                    className="liquid-button rounded-2xl px-5 py-3 text-sm font-semibold text-[#faf0e6] disabled:opacity-50 disabled:cursor-not-allowed"
-                    whileHover={{ scale: 1.02 }}
-                    whileTap={{ scale: 0.98 }}
-                  >
-                    {loading ? "Posting..." : "Post"}
-                  </Motion.button>
+                <div className="sticky bottom-4 flex flex-col gap-3 sm:flex-row sm:justify-between bg-black/30 backdrop-blur rounded-2xl p-3">
+                  {step === 1 && (
+                    <Motion.button
+                      type="button"
+                      onClick={handleStepNext}
+                      disabled={!canProceedStep1}
+                      className="liquid-button rounded-2xl px-5 py-3 text-sm font-semibold text-[#faf0e6] disabled:opacity-50 disabled:cursor-not-allowed"
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                    >
+                      Next
+                    </Motion.button>
+                  )}
+                  {step === 2 && (
+                    <Motion.button
+                      type="button"
+                      onClick={handleStepNext}
+                      disabled={
+                        !canProceedStep2 ||
+                        (visibility === "college" && selectedColleges.length === 0)
+                      }
+                      className="liquid-button rounded-2xl px-5 py-3 text-sm font-semibold text-[#faf0e6] disabled:opacity-50 disabled:cursor-not-allowed"
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                    >
+                      Preview
+                    </Motion.button>
+                  )}
+                  {step === 3 && (
+                    <>
+                      <Motion.button
+                        type="button"
+                        onClick={handleStepBack}
+                        className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-[#faf0e6]"
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
+                        Back
+                      </Motion.button>
+                      <Motion.button
+                        type="submit"
+                        disabled={
+                          loading ||
+                          (visibility === "college" && selectedColleges.length === 0) ||
+                          (isThought
+                            ? text.trim().length < THOUGHT_MIN_LENGTH
+                            : !mediaFile && !text.trim())
+                        }
+                        className="liquid-button rounded-2xl px-5 py-3 text-sm font-semibold text-[#faf0e6] disabled:opacity-50 disabled:cursor-not-allowed"
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                      >
+                        {loading ? "Posting..." : "Share"}
+                      </Motion.button>
+                    </>
+                  )}
                 </div>
               </form>
             </Motion.div>

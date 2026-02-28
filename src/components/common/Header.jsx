@@ -6,7 +6,7 @@ import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 import { preloadChatPage } from "../../utils/preloadRoutes";
 import BlueTick from "./BlueTick";
-import { buildUserPreview } from "../../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -94,13 +94,7 @@ const NotificationItem = memo(function NotificationItem({
     notif.createdAt || notif.created_at || notif.timestamp
   );
   const isVerified = resolveActorVerified(actor);
-  const actorId =
-    actor?._id ||
-    actor?.id ||
-    actor?.userId ||
-    actor?.user_id ||
-    actor?.profileId ||
-    "";
+  const actorId = normalizeUserId(actor);
   const cachedActor = actorId ? getUserFromCache?.(actorId) : null;
   return (
     <div
@@ -121,7 +115,9 @@ const NotificationItem = memo(function NotificationItem({
             isVerified,
             isVerifiedCommunity: actor?.isVerifiedCommunity,
           });
-          navigate(`/profile/${actorId}`, { state: { userPreview: preview } });
+          navigate(`/profile/${actorId}`, {
+            state: { userPreview: preview, modal: true },
+          });
         }
       }}
       onKeyDown={(event) => {
@@ -136,7 +132,9 @@ const NotificationItem = memo(function NotificationItem({
             isVerified,
             isVerifiedCommunity: actor?.isVerifiedCommunity,
           });
-          navigate(`/profile/${actorId}`, { state: { userPreview: preview } });
+          navigate(`/profile/${actorId}`, {
+            state: { userPreview: preview, modal: true },
+          });
         }
       }}
     >

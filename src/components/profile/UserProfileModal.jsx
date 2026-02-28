@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
 import {
   getUserById,
   getUserProfileBundle,
+  getUserPublicPosts,
   getFriendCount,
   reportUser,
   blockUser,
@@ -26,10 +27,64 @@ import {
   resolveCommunityDescription,
   resolveMemberCount,
   resolveCommunityEmail,
+  normalizeUserId,
 } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const relationshipCache = new Map();
+
+const isDeletedPlaceholderName = (value) => {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  return (
+    normalized === "deleted user" ||
+    normalized === "user deleted" ||
+    normalized === "deleted account" ||
+    normalized === "account deleted" ||
+    normalized === "deactivated user" ||
+    normalized === "deactivated account"
+  );
+};
+
+const sanitizeDisplayName = (value) => {
+  if (value === null || value === undefined) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  const lowered = trimmed.toLowerCase();
+  if (lowered === "null" || lowered === "undefined") return "";
+  if (isDeletedPlaceholderName(trimmed)) return "";
+  return trimmed;
+};
+
+const normalizeIdValue = normalizeUserId;
+
+const resolvePostAuthorId = (post) => {
+  if (!post) return "";
+  const direct =
+    post.authorId ||
+    post.author_id ||
+    post.userId ||
+    post.user_id ||
+    post.ownerId ||
+    post.owner_id ||
+    post.createdById ||
+    post.created_by ||
+    post.postedById ||
+    post.creatorId ||
+    "";
+  const directId = normalizeIdValue(direct);
+  if (directId) return directId;
+  const author =
+    post.author ||
+    post.user ||
+    post.owner ||
+    post.createdBy ||
+    post.postedBy ||
+    post.creator ||
+    null;
+  return normalizeIdValue(author);
+};
 
 const resolvePostMediaUrl = (post) => {
   if (!post) return "";
@@ -78,7 +133,6 @@ const UserProfileModalContent = ({
   variant = "modal",
 }) => {
   const {
-    posts,
     loadPosts,
     addBlockedUser,
     canChat,
@@ -88,7 +142,9 @@ const UserProfileModalContent = ({
     ensureFriendStatus,
     sendFriendRequest,
     acceptFriend,
+    requestChatOpen,
   } = useApp();
+  const location = useLocation();
   const navigate = useNavigate();
   const [showReport, setShowReport] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -98,6 +154,12 @@ const UserProfileModalContent = ({
   const [profilePosts, setProfilePosts] = useState([]);
   const [profilePostsCount, setProfilePostsCount] = useState(null);
   const [visiblePostsCount, setVisiblePostsCount] = useState(9);
+  const [profilePostsCursor, setProfilePostsCursor] = useState("");
+  const [profilePostsHasMore, setProfilePostsHasMore] = useState(true);
+  const [profilePostsLoading, setProfilePostsLoading] = useState(false);
+  const [profilePostsLoaded, setProfilePostsLoaded] = useState(false);
+  const [profileLoadMorePending, setProfileLoadMorePending] = useState(false);
+  const [profileHydrated, setProfileHydrated] = useState(false);
   const [relationshipStatus, setRelationshipStatus] = useState("none");
   const [relationshipLoading, setRelationshipLoading] = useState(false);
   const [relationshipActionLoading, setRelationshipActionLoading] = useState(false);
@@ -106,8 +168,15 @@ const UserProfileModalContent = ({
   const cacheUserRef = useRef(cacheUser);
   const getUserFromCacheRef = useRef(getUserFromCache);
   const profileLoadMoreRef = useRef(null);
+  const PROFILE_POSTS_LIMIT = 12;
 
-  const baseUserId = user?._id || user?.id;
+  const routeUserId = useMemo(() => {
+    const path = location?.pathname || "";
+    if (!path.startsWith("/profile/")) return "";
+    const parts = path.split("/").filter(Boolean);
+    return parts[1] || "";
+  }, [location?.pathname]);
+  const baseUserId = normalizeUserId(routeUserId || user);
 
   useEffect(() => {
     cacheUserRef.current = cacheUser;
@@ -143,17 +212,34 @@ const UserProfileModalContent = ({
     const cachedUser = getUserFromCacheRef.current?.(baseUserId);
     if (!cachedUser) return;
     setProfileUser((prev) => ({ ...cachedUser, ...prev }));
-  }, [baseUserId]);
+  }, [
+    baseUserId,
+    user?.displayName,
+    user?.fullName,
+    user?.username,
+  ]);
 
   useEffect(() => {
     loadPosts();
   }, [loadPosts]);
 
   useEffect(() => {
+    if (!baseUserId) return;
+    setProfilePosts([]);
+    setProfilePostsCount(null);
+    setProfilePostsCursor("");
+    setProfilePostsHasMore(true);
+    setProfilePostsLoading(false);
+    setProfilePostsLoaded(false);
+    setProfileLoadMorePending(false);
+    setProfileHydrated(false);
+    setVisiblePostsCount(PROFILE_POSTS_LIMIT);
+  }, [baseUserId]);
+
+  useEffect(() => {
     let isActive = true;
     const loadProfile = async () => {
       if (!baseUserId) return;
-      const isNewUser = String(lastUserIdRef.current || "") !== String(baseUserId);
       lastUserIdRef.current = baseUserId;
       const lastFetch = lastFetchRef.current;
       const sameUser = String(lastFetch.id || "") === String(baseUserId);
@@ -163,78 +249,187 @@ const UserProfileModalContent = ({
       }
       lastFetchRef.current = { id: baseUserId, ts: now };
       setProfileLoading(true);
-      const cachedUser = getUserFromCacheRef.current?.(baseUserId);
-      let bundle = await getUserProfileBundle(baseUserId);
-      let data = bundle?.user || null;
-      if (bundle?.publicPosts) {
-        setProfilePosts(bundle.publicPosts);
-        setProfilePostsCount(bundle.publicPostsCount ?? null);
-      } else if (isNewUser) {
-        setProfilePosts([]);
-        setProfilePostsCount(null);
-      }
-      const postsForProfile = Array.isArray(bundle?.publicPosts)
-        ? bundle.publicPosts
-        : [];
-      const postAuthor =
-        postsForProfile.length > 0
-          ? postsForProfile[0]?.author ||
-            postsForProfile[0]?.user ||
-            postsForProfile[0]?.owner ||
-            postsForProfile[0]?.createdBy ||
-            null
-          : null;
-      if (postAuthor && typeof postAuthor === "object") {
-        data = data ? { ...postAuthor, ...data } : postAuthor;
-      }
-      if (!data) {
-        data = await getUserById(baseUserId);
-      }
-      if (cachedUser) {
-        data = data ? { ...cachedUser, ...data } : cachedUser;
-      }
-      if (data) {
-        cacheUserRef.current?.(data);
-      }
-      if (data) {
-        const rawCount =
-          data.friendCount ??
-          data.friendsCount ??
-          data.friends_count ??
-          (Array.isArray(data.friends) ? data.friends.length : null);
-        if (rawCount === null || rawCount === undefined) {
-          const fetchedCount = await getFriendCount(baseUserId);
-          if (Number.isFinite(fetchedCount)) {
+      try {
+        const cachedUser = getUserFromCacheRef.current?.(baseUserId);
+        let bundle = await getUserProfileBundle(baseUserId);
+        let data = bundle?.user || null;
+        const rawProfile =
+          bundle?.raw?.profile ||
+          bundle?.raw?.data?.profile ||
+          bundle?.raw?.userProfile ||
+          bundle?.raw?.data?.userProfile ||
+          null;
+        if (rawProfile && typeof rawProfile === "object") {
+          data = data ? { ...rawProfile, ...data } : rawProfile;
+        }
+        if (bundle?.publicPostsCount && profilePostsCount === null) {
+          setProfilePostsCount(bundle.publicPostsCount ?? null);
+        }
+        const postsForProfile = Array.isArray(bundle?.publicPosts)
+          ? bundle.publicPosts
+          : [];
+        const postAuthor =
+          postsForProfile.length > 0
+            ? postsForProfile[0]?.author ||
+              postsForProfile[0]?.user ||
+              postsForProfile[0]?.owner ||
+              postsForProfile[0]?.createdBy ||
+              null
+            : null;
+        if (postAuthor && typeof postAuthor === "object") {
+          data = data ? { ...postAuthor, ...data } : postAuthor;
+        }
+        if (!data) {
+          data = await getUserById(baseUserId);
+        }
+        if (cachedUser) {
+          data = data ? { ...cachedUser, ...data } : cachedUser;
+        }
+        if (data) {
+          cacheUserRef.current?.(data);
+        }
+        if (data) {
+          const fallbackName = sanitizeDisplayName(
+            user?.fullName || user?.displayName || user?.username || ""
+          );
+          const nextName = sanitizeDisplayName(
+            data?.fullName || data?.displayName || data?.username || ""
+          );
+          if (!nextName && fallbackName) {
             data = {
               ...data,
-              friendCount: fetchedCount,
-              friendsCount: fetchedCount,
+              fullName: user?.fullName || data.fullName,
+              displayName: user?.displayName || data.displayName,
+              username: user?.username || data.username,
             };
           }
+          const rawCount =
+            data.friendCount ??
+            data.friendsCount ??
+            data.friends_count ??
+            (Array.isArray(data.friends) ? data.friends.length : null);
+          if (rawCount === null || rawCount === undefined) {
+            const fetchedCount = await getFriendCount(baseUserId);
+            if (Number.isFinite(fetchedCount)) {
+              data = {
+                ...data,
+                friendCount: fetchedCount,
+                friendsCount: fetchedCount,
+              };
+            }
+          }
+        }
+        if (isActive && data) {
+          setProfileUser(data);
+        }
+      } catch (_error) {
+        void _error;
+      } finally {
+        if (isActive) {
+          setProfileLoading(false);
+          setProfileHydrated(true);
         }
       }
-      if (isActive && data) {
-        setProfileUser(data);
-      }
-      if (isActive) setProfileLoading(false);
     };
     loadProfile();
     return () => {
       isActive = false;
     };
-  }, [baseUserId]);
+  }, [
+    baseUserId,
+    user?.displayName,
+    user?.fullName,
+    user?.username,
+    profilePostsCount,
+  ]);
 
   const resolvedUser = profileUser || user;
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
-  const normalizeUserId = (value) => {
-    if (!value) return "";
-    if (typeof value === "string" || typeof value === "number") return String(value);
-    if (typeof value === "object") {
-      return String(value._id || value.id || "");
-    }
-    return "";
-  };
-  const resolvedUserIdValue = normalizeUserId(resolvedUserId);
+  const resolvedUserIdValue = normalizeIdValue(resolvedUserId);
+
+  const loadPublicPosts = useCallback(
+    async ({ reset = false } = {}) => {
+      if (!resolvedUserIdValue) return;
+      if (profilePostsLoading) return;
+      if (!profilePostsHasMore && !reset) return;
+      setProfilePostsLoading(true);
+      try {
+        const params = {
+          limit: PROFILE_POSTS_LIMIT,
+          ...(reset || !profilePostsCursor ? {} : { cursor: profilePostsCursor }),
+        };
+        const data = await getUserPublicPosts(resolvedUserIdValue, params);
+        const items = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.items)
+            ? data.items
+            : Array.isArray(data?.posts)
+              ? data.posts
+              : Array.isArray(data?.publicPosts)
+                ? data.publicPosts
+                : Array.isArray(data?.data?.items)
+                  ? data.data.items
+                  : Array.isArray(data?.data?.posts)
+                    ? data.data.posts
+                    : Array.isArray(data?.data?.publicPosts)
+                      ? data.data.publicPosts
+                      : [];
+        const nextCursor =
+          data?.nextCursor ||
+          data?.next_cursor ||
+          data?.cursor ||
+          data?.data?.nextCursor ||
+          data?.data?.next_cursor ||
+          data?.data?.cursor ||
+          "";
+        const hasMore =
+          typeof data?.hasMore === "boolean"
+            ? data.hasMore
+            : typeof data?.data?.hasMore === "boolean"
+              ? data.data.hasMore
+              : items.length >= PROFILE_POSTS_LIMIT;
+        const nextCount =
+          data?.publicPostsCount ||
+          data?.publicPostCount ||
+          data?.public_posts_count ||
+          data?.data?.publicPostsCount ||
+          data?.data?.publicPostCount ||
+          profilePostsCount;
+
+        setProfilePosts((prev) => (reset ? items : [...prev, ...items]));
+        setVisiblePostsCount((prev) =>
+          reset ? items.length : Math.max(prev, (reset ? 0 : prev) + items.length)
+        );
+        if (nextCount !== null && nextCount !== undefined) {
+          setProfilePostsCount(nextCount);
+        }
+        setProfilePostsHasMore(Boolean(hasMore));
+        setProfilePostsCursor(nextCursor || "");
+        setProfilePostsLoaded(true);
+      } catch (_error) {
+        void _error;
+        setProfilePostsHasMore(false);
+        setProfilePostsLoaded(true);
+      } finally {
+        setProfilePostsLoading(false);
+      }
+    },
+    [
+      resolvedUserIdValue,
+      profilePostsCursor,
+      profilePostsHasMore,
+      profilePostsLoading,
+      PROFILE_POSTS_LIMIT,
+      profilePostsCount,
+    ]
+  );
+
+  useEffect(() => {
+    if (!resolvedUserIdValue || !profileHydrated) return;
+    setProfileLoadMorePending(false);
+    loadPublicPosts({ reset: true });
+  }, [resolvedUserIdValue, profileHydrated, loadPublicPosts]);
+
   const isVerified = Boolean(
     resolvedUser?.isVerified ||
       resolvedUser?.isVerifiedCommunity ||
@@ -249,42 +444,46 @@ const UserProfileModalContent = ({
     !resolvedUsername;
 
   const publicPosts = useMemo(() => {
-    if (!resolvedUserId) return [];
-    if (profilePosts.length > 0) {
-      return profilePosts
-        .filter((post) => {
-          if (isPostAnonymous(post)) return false;
-          if (!isPostPublic(post)) return false;
-          return true;
-        })
-        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-    }
-    const list = Array.isArray(posts) ? posts : [];
-    return list
+    if (!resolvedUserIdValue) return [];
+    return (Array.isArray(profilePosts) ? profilePosts : [])
       .filter((post) => {
-        const authorId = post.author?._id || post.authorId || post.author;
-        if (String(authorId) !== String(resolvedUserId)) return false;
+        const authorId = resolvePostAuthorId(post);
+        if (authorId && String(authorId) !== String(resolvedUserIdValue)) return false;
         if (isPostAnonymous(post)) return false;
         if (!isPostPublic(post)) return false;
         return true;
       })
       .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [posts, resolvedUserId, profilePosts]);
+  }, [resolvedUserIdValue, profilePosts]);
 
   useEffect(() => {
     setVisiblePostsCount((prev) => {
       const next = publicPosts.length || 0;
       if (next === 0) return 0;
-      const baseline = 9;
+      const baseline = PROFILE_POSTS_LIMIT;
       return Math.min(Math.max(baseline, prev), next);
     });
-  }, [publicPosts.length]);
+  }, [publicPosts.length, PROFILE_POSTS_LIMIT]);
 
   const visiblePublicPosts = useMemo(
     () => publicPosts.slice(0, visiblePostsCount),
     [publicPosts, visiblePostsCount]
   );
-  const hasMorePublicPosts = visiblePostsCount < publicPosts.length;
+  const hasMorePublicPosts = profilePostsHasMore;
+  const showProfileLoadSkeletons =
+    publicPosts.length > 0 &&
+    hasMorePublicPosts &&
+    (profilePostsLoading || profileLoadMorePending);
+
+  const requestMorePublicPosts = useCallback(async () => {
+    if (profilePostsLoading || !profilePostsHasMore) return;
+    setProfileLoadMorePending(true);
+    try {
+      await loadPublicPosts();
+    } finally {
+      setProfileLoadMorePending(false);
+    }
+  }, [profilePostsLoading, profilePostsHasMore, loadPublicPosts]);
 
   useEffect(() => {
     if (!profileLoadMoreRef.current) return;
@@ -293,15 +492,13 @@ const UserProfileModalContent = ({
       (entries) => {
         const entry = entries[0];
         if (!entry?.isIntersecting) return;
-        setVisiblePostsCount((prev) =>
-          Math.min(prev + 9, publicPosts.length)
-        );
+        requestMorePublicPosts();
       },
-      { rootMargin: "200px" }
+      { rootMargin: "240px" }
     );
     observer.observe(profileLoadMoreRef.current);
     return () => observer.disconnect();
-  }, [hasMorePublicPosts, publicPosts.length]);
+  }, [hasMorePublicPosts, requestMorePublicPosts]);
 
   const isSelf = String(resolvedUserId) === String(currentUser?.id);
   const userType = resolveUserType(resolvedUser);
@@ -319,7 +516,15 @@ const UserProfileModalContent = ({
   const studentTypeLabel = formatStudentType(resolveStudentType(resolvedUser));
   const bioText = resolveUserBio(resolvedUser) || "No bio shared yet.";
   const communityName = resolveCommunityName(resolvedUser);
-  const communityTypeLabel = formatCommunityType(resolveCommunityType(resolvedUser));
+  const communityTypeValue = resolveCommunityType(resolvedUser);
+  const baseDisplayName =
+    communityName ||
+    resolvedUser?.fullName ||
+    resolvedUser?.displayName ||
+    resolvedUser?.username ||
+    "";
+  const resolvedDisplayName = sanitizeDisplayName(baseDisplayName) || "User";
+  const communityTypeLabel = formatCommunityType(communityTypeValue);
   const communityDescription =
     resolveCommunityDescription(resolvedUser) || "No description shared yet.";
   const rawFriendCount =
@@ -343,7 +548,10 @@ const UserProfileModalContent = ({
       resolvedUser.postCount ??
       0
   );
-  const publicPostCount = publicPosts.length > 0 ? publicPosts.length : fallbackPublicCount;
+  const publicPostCount =
+    publicPosts.length > 0 || profilePostsLoaded
+      ? publicPosts.length
+      : fallbackPublicCount;
   const contactEmail = resolveCommunityEmail(resolvedUser);
   const roleLower = String(resolvedUser?.role || "").toLowerCase();
   const communitySignals = [
@@ -358,6 +566,8 @@ const UserProfileModalContent = ({
     resolvedUser?.orgType,
     resolvedUser?.clubName,
     resolvedUser?.club_type,
+    communityName,
+    communityTypeValue,
   ].filter(Boolean);
   const isCommunityAccount =
     isCommunity ||
@@ -375,8 +585,10 @@ const UserProfileModalContent = ({
 
   const handleMessage = () => {
     if (!canMessage) return;
+    if (resolvedUserIdValue) {
+      requestChatOpen?.(resolvedUserIdValue);
+    }
     navigate("/chat");
-    onClose?.();
   };
 
   const handleAddFriend = async () => {
@@ -522,16 +734,12 @@ const UserProfileModalContent = ({
                   resolvedUser.image ||
                   ANONYMOUS_AVATAR
                 }
-                alt={communityName || resolvedUser.fullName || resolvedUser.username}
+                alt={resolvedDisplayName}
                 className="h-14 w-14 rounded-full object-cover"
               />
               <div>
                 <h3 className="text-lg font-semibold text-[#faf0e6] flex items-center">
-                  {communityName ||
-                    resolvedUser.fullName ||
-                    resolvedUser.displayName ||
-                    resolvedUser.username ||
-                    "User"}
+                  {resolvedDisplayName}
                   {isVerified && <BlueTick />}
                 </h3>
                 {resolvedUsername && (
@@ -578,7 +786,7 @@ const UserProfileModalContent = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 text-center text-xs text-[#b9b4c7] mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 text-center text-[11px] sm:text-xs text-[#b9b4c7] mb-6">
             <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
               <p className="text-base font-semibold text-[#faf0e6]">
                 {publicPostCount}
@@ -591,8 +799,8 @@ const UserProfileModalContent = ({
                   <p className="text-base font-semibold text-[#faf0e6]">{memberCount}</p>
                   <p>Members</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3 col-span-2 sm:col-span-1">
+                  <p className="text-[11px] sm:text-xs font-semibold text-[#faf0e6] leading-tight break-normal">
                     {communityTypeLabel || "Community"}
                   </p>
                   <p>Type</p>
@@ -606,8 +814,8 @@ const UserProfileModalContent = ({
                   </p>
                   <p>Friends</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3 col-span-2 sm:col-span-1">
+                  <p className="text-[11px] sm:text-xs font-semibold text-[#faf0e6] leading-tight break-normal">
                     {studentTypeLabel}
                   </p>
                   <p>Student Type</p>
@@ -618,16 +826,20 @@ const UserProfileModalContent = ({
 
           <div className="mb-6">
             <h4 className="text-sm font-semibold text-[#faf0e6] mb-2">
-              {isCommunity ? "About" : "Bio"}
+              {isCommunityAccount ? "About" : "Bio"}
             </h4>
             <p className="text-sm text-[#b9b4c7]">
-              {isCommunity ? communityDescription : bioText}
+              {isCommunityAccount ? communityDescription : bioText}
             </p>
           </div>
 
           <div className="space-y-3 pb-16 sm:pb-4">
             <h4 className="text-sm font-semibold text-[#faf0e6]">Public Posts</h4>
-            {publicPosts.length === 0 ? (
+            {profilePostsLoading && publicPosts.length === 0 ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-[#b9b4c7]">
+                Loading public posts...
+              </div>
+            ) : publicPosts.length === 0 ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-[#b9b4c7]">
                 No public posts available.
               </div>
@@ -671,10 +883,22 @@ const UserProfileModalContent = ({
                     </button>
                   );
                 })}
+                {showProfileLoadSkeletons &&
+                  [1, 2, 3].map((item) => (
+                    <div
+                      key={`profile-loading-${item}`}
+                      className="aspect-square rounded-xl border border-white/10 bg-white/5 animate-pulse"
+                    >
+                      <div className="h-full w-full rounded-xl bg-white/10" />
+                    </div>
+                  ))}
                 {hasMorePublicPosts && (
                   <div
                     ref={profileLoadMoreRef}
-                    className="col-span-full h-10 flex items-center justify-center text-[11px] text-[#b9b4c7]"
+                    className={`col-span-full h-10 flex items-center justify-center text-[11px] text-[#b9b4c7] transition-opacity ${
+                      showProfileLoadSkeletons ? "opacity-100" : "opacity-0"
+                    }`}
+                    aria-hidden={!showProfileLoadSkeletons}
                   >
                     Loading more...
                   </div>
