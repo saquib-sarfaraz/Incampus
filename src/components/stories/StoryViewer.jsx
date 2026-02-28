@@ -22,7 +22,7 @@ import {
   isStoryViewRecent,
 } from "../../utils/storyMedia";
 import { getOptimizedMediaUrl, getMediaSrcSet } from "../../utils/media";
-import { buildUserPreview } from "../../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const FALLBACK_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=U";
 const IMAGE_DURATION_MS = 5000;
@@ -640,20 +640,25 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
               <button
                 type="button"
                 onClick={() => {
-                  if (!authorId) return;
-                  const cachedUser = getUserFromCache?.(authorId);
-                  prefetchUserProfile?.(authorId, cachedUser || currentGroup);
+                  const safeAuthorId = normalizeUserId(
+                    authorId || currentGroup?.authorId || currentGroup?.author
+                  );
+                  if (!safeAuthorId) return;
+                  const cachedUser = getUserFromCache?.(safeAuthorId);
+                  prefetchUserProfile?.(safeAuthorId, cachedUser || currentGroup);
                   const preview = buildUserPreview(
                     { ...(cachedUser || {}), ...(currentGroup || {}) },
                     {
-                    _id: authorId,
+                    _id: safeAuthorId,
                     fullName: currentGroup.authorName,
                     displayName: currentGroup.authorDisplayName,
                     profilePicUrl: authorAvatar,
                     isVerified: authorIsVerified,
                     }
                   );
-                  navigate(`/profile/${authorId}`, { state: { userPreview: preview } });
+                  navigate(`/profile/${safeAuthorId}`, {
+                    state: { userPreview: preview, modal: true },
+                  });
                   onClose();
                 }}
                 className="flex items-center space-x-2 glass-surface rounded-full px-2 py-1 text-left"

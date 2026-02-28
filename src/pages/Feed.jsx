@@ -827,14 +827,22 @@ export default function Feed() {
   );
 
   const maxWindowStart = Math.max(0, displayedPosts.length - FEED_WINDOW_SIZE);
-  const windowEnd = Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length);
+  const shouldWindow = useMemo(() => {
+    if (displayedPosts.length <= FEED_WINDOW_SIZE * 2) return false;
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(min-width: 1024px)").matches;
+  }, [displayedPosts.length]);
+  const windowEnd = shouldWindow
+    ? Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length)
+    : displayedPosts.length;
   const windowedPosts = useMemo(
-    () => displayedPosts.slice(windowStart, windowEnd),
-    [displayedPosts, windowStart, windowEnd]
+    () => (shouldWindow ? displayedPosts.slice(windowStart, windowEnd) : displayedPosts),
+    [displayedPosts, windowStart, windowEnd, shouldWindow]
   );
-  const topSpacerHeight = windowStart * estimatedItemHeight;
-  const bottomSpacerHeight =
-    Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight;
+  const topSpacerHeight = shouldWindow ? windowStart * estimatedItemHeight : 0;
+  const bottomSpacerHeight = shouldWindow
+    ? Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight
+    : 0;
   const effectiveBottomSpacerHeight = showLoadMoreSkeletons
     ? Math.min(bottomSpacerHeight, estimatedItemHeight * 2)
     : bottomSpacerHeight;
@@ -945,6 +953,7 @@ export default function Feed() {
 
   const handleWindowScroll = useCallback(
     (event) => {
+      if (!shouldWindow) return;
       if (scrollRafRef.current) return;
       scrollRafRef.current = window.requestAnimationFrame(() => {
         scrollRafRef.current = null;
@@ -970,6 +979,7 @@ export default function Feed() {
     },
     [
       getScrollMetrics,
+      shouldWindow,
       estimatedItemHeight,
       maxWindowStart,
       windowStart,

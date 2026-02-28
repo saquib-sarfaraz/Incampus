@@ -10,6 +10,52 @@ const isAdminRoleValue = (value) => {
   );
 };
 
+export const normalizeUserId = (value) => {
+  if (!value) return "";
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const resolved = normalizeUserId(entry);
+      if (resolved) return resolved;
+    }
+    return "";
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw) return "";
+    if (raw.includes("[object Object]")) return "";
+    const lowered = raw.toLowerCase();
+    if (lowered === "undefined" || lowered === "null") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested =
+      value._id ||
+      value.id ||
+      value.userId ||
+      value.user_id ||
+      value.profileId ||
+      value.profile_id ||
+      value.ownerId ||
+      value.owner_id ||
+      value.authorId ||
+      value.author_id ||
+      value.memberId ||
+      value.member_id ||
+      value.createdById ||
+      value.created_by ||
+      value.user ||
+      value.profile ||
+      value.owner ||
+      value.author ||
+      value.member ||
+      value.data ||
+      "";
+    if (nested) return normalizeUserId(nested);
+  }
+  return "";
+};
+
 const normalizeUserTypeValue = (value) => {
   const raw = String(value || "").trim().toLowerCase();
   if (!raw) return "";
@@ -40,7 +86,24 @@ const normalizeUserTypeValue = (value) => {
 };
 
 export const resolveStudentType = (user) => {
+  const nested =
+    user?.education ||
+    user?.educationInfo ||
+    user?.education_info ||
+    user?.profile ||
+    user?.profileInfo ||
+    user?.profile_info ||
+    user?.settings ||
+    user?.settingsProfile ||
+    null;
   const candidates = [
+    nested?.studentType,
+    nested?.student_type,
+    nested?.educationType,
+    nested?.education_type,
+    nested?.studentLevel,
+    nested?.level,
+    nested?.year,
     user?.studentType,
     user?.student_type,
     user?.educationType,
@@ -109,7 +172,26 @@ export const formatUserType = (value) => {
 };
 
 export const resolveCollegeName = (user) => {
+  const nested =
+    user?.education ||
+    user?.educationInfo ||
+    user?.education_info ||
+    user?.profile ||
+    user?.profileInfo ||
+    user?.profile_info ||
+    user?.settings ||
+    user?.settingsProfile ||
+    null;
   const raw =
+    nested?.collegeName ||
+    nested?.college ||
+    nested?.collegeTagName ||
+    nested?.collegeTag ||
+    nested?.university ||
+    nested?.school ||
+    nested?.campus ||
+    nested?.institution ||
+    nested?.campusName ||
     user?.collegeTagName ||
     user?.collegeTag?.name ||
     user?.collegeTag?.collegeName ||
@@ -143,7 +225,37 @@ export const resolveCollegeName = (user) => {
 };
 
 export const resolveUserBio = (user) => {
-  return user?.bio || user?.about || user?.headline || "";
+  const nested =
+    user?.profile ||
+    user?.profileInfo ||
+    user?.profile_info ||
+    user?.settings ||
+    user?.settingsProfile ||
+    user?.education ||
+    user?.educationInfo ||
+    user?.education_info ||
+    null;
+  return (
+    nested?.bio ||
+    nested?.about ||
+    nested?.headline ||
+    nested?.description ||
+    nested?.summary ||
+    nested?.intro ||
+    nested?.aboutMe ||
+    user?.bio ||
+    user?.about ||
+    user?.headline ||
+    user?.description ||
+    user?.summary ||
+    user?.intro ||
+    user?.aboutMe ||
+    user?.bioText ||
+    user?.profileBio ||
+    user?.profile_bio ||
+    user?.userBio ||
+    ""
+  );
 };
 
 export const resolveCommunityName = (user) => {
@@ -204,14 +316,17 @@ export const resolveCommunityEmail = (user) => {
 
 export const buildUserPreview = (user, overrides = {}) => {
   const entity = user && typeof user === "object" ? user : {};
-  const resolvedId =
-    entity._id ||
-    entity.id ||
-    entity.userId ||
-    entity.user_id ||
-    entity.profileId ||
-    entity.memberId ||
-    "";
+  const resolvedId = normalizeUserId(
+    overrides._id ||
+      overrides.id ||
+      entity._id ||
+      entity.id ||
+      entity.userId ||
+      entity.user_id ||
+      entity.profileId ||
+      entity.memberId ||
+      ""
+  );
   const profilePicUrl =
     entity.profilePicUrl ||
     entity.profilePic ||
@@ -259,6 +374,15 @@ export const buildUserPreview = (user, overrides = {}) => {
     entity.members_count ??
     entity.member_count ??
     undefined;
+
+  const safeOverrides = { ...overrides };
+  const overrideId = normalizeUserId(overrides._id || overrides.id);
+  if (overrideId) {
+    safeOverrides._id = overrideId;
+  } else {
+    if ("_id" in safeOverrides) delete safeOverrides._id;
+    if ("id" in safeOverrides) delete safeOverrides.id;
+  }
 
   const base = {
     _id: resolvedId,
@@ -327,7 +451,7 @@ export const buildUserPreview = (user, overrides = {}) => {
     ),
   };
 
-  const merged = { ...base, ...overrides };
+  const merged = { ...base, ...safeOverrides };
   if (!merged._id && resolvedId) merged._id = resolvedId;
   return merged;
 };

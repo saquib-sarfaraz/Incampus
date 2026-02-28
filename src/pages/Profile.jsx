@@ -35,12 +35,64 @@ import {
   resolveCommunityDescription,
   resolveMemberCount,
   buildUserPreview,
+  normalizeUserId,
 } from "../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const HELP_CENTER_URL = "https://incampus-help.online";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
 const USERNAME_REGEX = /^[a-z0-9_]{3,30}$/;
+const AVATAR_OUTPUT_SIZE = 512;
+const AVATAR_PREVIEW_SIZE = 96;
+const AVATAR_ZOOM_MIN = 1;
+const AVATAR_ZOOM_MAX = 3;
+
+const loadImageFromFile = (file, fallbackUrl) =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Unable to load image"));
+    if (fallbackUrl) {
+      image.src = fallbackUrl;
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Unable to read image"));
+    reader.readAsDataURL(file);
+  });
+
+const renderAvatarCanvas = ({
+  image,
+  outputSize,
+  cropSize,
+  zoom,
+  rotate,
+  offset,
+}) => {
+  const canvas = document.createElement("canvas");
+  canvas.width = outputSize;
+  canvas.height = outputSize;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const baseScale = Math.max(outputSize / image.width, outputSize / image.height);
+  const scale = baseScale * zoom;
+  const offsetScale = cropSize ? outputSize / cropSize : 1;
+  const offsetX = (offset?.x || 0) * offsetScale;
+  const offsetY = (offset?.y || 0) * offsetScale;
+
+  ctx.save();
+  ctx.translate(outputSize / 2 + offsetX, outputSize / 2 + offsetY);
+  ctx.rotate((rotate * Math.PI) / 180);
+  ctx.scale(scale, scale);
+  ctx.drawImage(image, -image.width / 2, -image.height / 2);
+  ctx.restore();
+
+  return canvas;
+};
 
 const getPasswordStrength = (value = "") => {
   const hasLetter = /[A-Za-z]/.test(value);
@@ -120,6 +172,14 @@ export default function Profile() {
   const [savingEducation, setSavingEducation] = useState(false);
   const [savingPassword, setSavingPassword] = useState(false);
   const [savingPhoto, setSavingPhoto] = useState(false);
+  const [showAvatarModal, setShowAvatarModal] = useState(false);
+  const [avatarFile, setAvatarFile] = useState(null);
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState(null);
+  const [avatarZoom, setAvatarZoom] = useState(1);
+  const [avatarRotate, setAvatarRotate] = useState(0);
+  const [avatarOffset, setAvatarOffset] = useState({ x: 0, y: 0 });
+  const [avatarCropSize, setAvatarCropSize] = useState(0);
+  const [avatarPreviewSmall, setAvatarPreviewSmall] = useState(null);
   const resolvedCurrentUserId =
     currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
   const isViewingOtherUser = Boolean(
@@ -133,6 +193,16 @@ export default function Profile() {
     return window.matchMedia("(max-width: 639px)").matches;
   });
   const fileInputRef = useRef(null);
+  const avatarCropRef = useRef(null);
+  const avatarImageRef = useRef(null);
+  const avatarDragRef = useRef({
+    dragging: false,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+  });
+  const avatarPreviewRafRef = useRef(null);
   const collegeRef = useRef(null);
   const profileLoadMoreRef = useRef(null);
   const [bioSuccess, setBioSuccess] = useState("");
@@ -771,9 +841,169 @@ export default function Profile() {
     }
   };
 
+  const resetAvatarModal = useCallback(() => {
+    setShowAvatarModal(false);
+    setAvatarFile(null);
+    setAvatarZoom(1);
+    setAvatarRotate(0);
+    setAvatarOffset({ x: 0, y: 0 });
+    setAvatarCropSize(0);
+    setAvatarPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setAvatarPreviewSmall((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    avatarImageRef.current = null;
+  }, []);
+
+  const openAvatarModal = (file) => {
+    if (!file) return;
+    const previewUrl = URL.createObjectURL(file);
+    setAvatarPreviewUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return previewUrl;
+    });
+    setAvatarFile(file);
+    setAvatarZoom(1);
+    setAvatarRotate(0);
+    setAvatarOffset({ x: 0, y: 0 });
+    setAvatarPreviewSmall((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+    setShowAvatarModal(true);
+  };
+
+  useEffect(() => {
+    if (!showAvatarModal) return undefined;
+    const originalOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = originalOverflow;
+    };
+  }, [showAvatarModal]);
+
+  useEffect(() => {
+    if (!avatarFile || !avatarPreviewUrl) {
+      avatarImageRef.current = null;
+      return;
+    }
+    let active = true;
+    loadImageFromFile(avatarFile, avatarPreviewUrl)
+      .then((image) => {
+        if (!active) return;
+        avatarImageRef.current = image;
+      })
+      .catch(() => {
+        if (!active) return;
+        avatarImageRef.current = null;
+      });
+    return () => {
+      active = false;
+    };
+  }, [avatarFile, avatarPreviewUrl]);
+
+  useEffect(() => {
+    if (!showAvatarModal) return undefined;
+    const node = avatarCropRef.current;
+    if (!node) return undefined;
+    const updateSize = () => {
+      const rect = node.getBoundingClientRect();
+      setAvatarCropSize(rect.width || 0);
+    };
+    updateSize();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateSize);
+      observer.observe(node);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, [showAvatarModal]);
+
+  useEffect(() => {
+    if (!showAvatarModal || !avatarImageRef.current || !avatarCropSize) return undefined;
+    if (avatarPreviewRafRef.current) {
+      cancelAnimationFrame(avatarPreviewRafRef.current);
+    }
+    avatarPreviewRafRef.current = requestAnimationFrame(() => {
+      const canvas = renderAvatarCanvas({
+        image: avatarImageRef.current,
+        outputSize: AVATAR_PREVIEW_SIZE,
+        cropSize: avatarCropSize,
+        zoom: avatarZoom,
+        rotate: avatarRotate,
+        offset: avatarOffset,
+      });
+      if (!canvas) return;
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return;
+          setAvatarPreviewSmall((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return URL.createObjectURL(blob);
+          });
+        },
+        "image/jpeg",
+        0.85
+      );
+    });
+    return () => {
+      if (avatarPreviewRafRef.current) {
+        cancelAnimationFrame(avatarPreviewRafRef.current);
+        avatarPreviewRafRef.current = null;
+      }
+    };
+  }, [showAvatarModal, avatarCropSize, avatarZoom, avatarRotate, avatarOffset]);
+
   const handlePhotoUpload = async (e) => {
     const file = e.target.files[0];
     if (!file || !currentUser) return;
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+    if (!allowedTypes.includes(file.type)) {
+      alert("Please upload a JPG, PNG, or WEBP image.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      alert("Maximum upload size is 20MB.");
+      return;
+    }
+    openAvatarModal(file);
+  };
+
+  const handleAvatarPointerDown = (event) => {
+    if (!showAvatarModal) return;
+    avatarDragRef.current.dragging = true;
+    avatarDragRef.current.startX = event.clientX ?? 0;
+    avatarDragRef.current.startY = event.clientY ?? 0;
+    avatarDragRef.current.originX = avatarOffset.x;
+    avatarDragRef.current.originY = avatarOffset.y;
+  };
+
+  const handleAvatarPointerMove = (event) => {
+    if (!avatarDragRef.current.dragging) return;
+    const clientX = event.clientX ?? 0;
+    const clientY = event.clientY ?? 0;
+    const dx = clientX - avatarDragRef.current.startX;
+    const dy = clientY - avatarDragRef.current.startY;
+    setAvatarOffset({
+      x: avatarDragRef.current.originX + dx,
+      y: avatarDragRef.current.originY + dy,
+    });
+  };
+
+  const handleAvatarPointerUp = () => {
+    avatarDragRef.current.dragging = false;
+  };
+
+  const handleSaveAvatar = async () => {
+    if (!currentUser || !avatarImageRef.current || !avatarFile) return;
     setSavingPhoto(true);
     const previousUrl =
       currentUser?.profilePicUrl ||
@@ -781,12 +1011,43 @@ export default function Profile() {
       currentUser?.avatarUrl ||
       currentUser?.avatar ||
       null;
-    const previewUrl = URL.createObjectURL(file);
+    const canvas = renderAvatarCanvas({
+      image: avatarImageRef.current,
+      outputSize: AVATAR_OUTPUT_SIZE,
+      cropSize: avatarCropSize || AVATAR_OUTPUT_SIZE,
+      zoom: avatarZoom,
+      rotate: avatarRotate,
+      offset: avatarOffset,
+    });
+    if (!canvas) {
+      setSavingPhoto(false);
+      alert("Unable to prepare image.");
+      return;
+    }
+    const processedFile = await new Promise((resolve) => {
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) {
+            resolve(avatarFile);
+            return;
+          }
+          resolve(
+            new File([blob], avatarFile.name.replace(/\.[^/.]+$/, ".jpg"), {
+              type: "image/jpeg",
+            })
+          );
+        },
+        "image/jpeg",
+        0.85
+      );
+    });
+
+    const previewUrl = URL.createObjectURL(processedFile);
     let finalUrl = previewUrl;
     setCurrentUser((prev) => ({ ...prev, profilePicUrl: previewUrl }));
     updateAuthorProfile(currentUser.id, { profilePicUrl: previewUrl });
     try {
-      const result = await uploadProfilePic(file);
+      const result = await uploadProfilePic(processedFile);
       finalUrl =
         result?.profilePicUrl ||
         result?.profilePic ||
@@ -796,6 +1057,7 @@ export default function Profile() {
       setCurrentUser((prev) => ({ ...prev, profilePicUrl: finalUrl }));
       updateAuthorProfile(currentUser.id, { profilePicUrl: finalUrl });
       alert("Profile picture updated!");
+      resetAvatarModal();
     } catch (error) {
       setCurrentUser((prev) => ({ ...prev, profilePicUrl: previousUrl }));
       updateAuthorProfile(currentUser.id, { profilePicUrl: previousUrl });
@@ -1467,7 +1729,7 @@ export default function Profile() {
                     key={friend.id || `friend-${index}`}
                     type="button"
                     onClick={() => {
-                      const friendId = friend.id || friend._id || friend.userId || friend.user_id;
+                      const friendId = normalizeUserId(friend);
                       if (friendId) {
                         const cachedFriend = getUserFromCache?.(friendId);
                         prefetchUserProfile?.(friendId, cachedFriend || friend);
@@ -1491,7 +1753,9 @@ export default function Profile() {
                           university: friend.university,
                           college: friend.college,
                         });
-                        navigate(`/profile/${friendId}`, { state: { userPreview: preview } });
+                        navigate(`/profile/${friendId}`, {
+                          state: { userPreview: preview, modal: true },
+                        });
                       }
                     }}
                     className="w-full flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-left transition-all hover:bg-white/10"
@@ -1938,6 +2202,148 @@ export default function Profile() {
           accept="image/*"
           onChange={handlePhotoUpload}
         />
+
+        {showAvatarModal && (
+          <Motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="fixed inset-0 z-[1000] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-md"
+            onClick={() => {
+              if (savingPhoto) return;
+              resetAvatarModal();
+            }}
+          >
+            <Motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 30 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ type: "spring", damping: 22, stiffness: 240 }}
+              className="w-full sm:max-w-[480px] rounded-t-3xl sm:rounded-3xl bg-[#15111c] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.5)] p-6 sm:p-6 max-h-[92vh] overflow-y-auto"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm font-semibold text-[#faf0e6]">Update Profile Photo</p>
+                  <p className="text-[11px] text-[#b9b4c7]">Crop and adjust your avatar.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (savingPhoto) return;
+                    resetAvatarModal();
+                  }}
+                  className="h-9 w-9 rounded-full text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 flex items-center justify-center"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <div
+                  ref={avatarCropRef}
+                  className="relative w-full aspect-square rounded-2xl overflow-hidden bg-black/30 border border-white/10"
+                  onPointerDown={handleAvatarPointerDown}
+                  onPointerMove={handleAvatarPointerMove}
+                  onPointerUp={handleAvatarPointerUp}
+                  onPointerLeave={handleAvatarPointerUp}
+                  style={{ touchAction: "none" }}
+                >
+                  <div
+                    className="absolute inset-0 flex items-center justify-center"
+                    style={{
+                      transform: `translate(${avatarOffset.x}px, ${avatarOffset.y}px)`,
+                    }}
+                  >
+                    {avatarPreviewUrl && (
+                      <img
+                        src={avatarPreviewUrl}
+                        alt="Crop preview"
+                        className="max-w-none select-none pointer-events-none"
+                        style={{
+                          transform: `scale(${avatarZoom}) rotate(${avatarRotate}deg)`,
+                        }}
+                      />
+                    )}
+                  </div>
+                  <div className="absolute inset-0 pointer-events-none">
+                    <div className="absolute inset-0 rounded-full border border-white/60 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"></div>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                    Zoom
+                  </label>
+                  <input
+                    type="range"
+                    min={AVATAR_ZOOM_MIN}
+                    max={AVATAR_ZOOM_MAX}
+                    step={0.01}
+                    value={avatarZoom}
+                    onChange={(event) => setAvatarZoom(Number(event.target.value))}
+                    className="w-full accent-[#6d5b8f]"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setAvatarRotate((prev) => prev - 90)}
+                      className="h-10 w-10 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
+                    >
+                      <i className="fa-solid fa-rotate-left"></i>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAvatarRotate((prev) => prev + 90)}
+                      className="h-10 w-10 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
+                    >
+                      <i className="fa-solid fa-rotate-right"></i>
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="h-16 w-16 rounded-full border border-white/10 overflow-hidden bg-white/5">
+                      {avatarPreviewSmall || avatarPreviewUrl ? (
+                        <img
+                          src={avatarPreviewSmall || avatarPreviewUrl}
+                          alt="Avatar preview"
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold text-[#faf0e6]">Preview</p>
+                      <p className="text-[11px] text-[#b9b4c7]">How it will look.</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-2">
+                  <Motion.button
+                    type="button"
+                    onClick={resetAvatarModal}
+                    disabled={savingPhoto}
+                    className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-[#faf0e6] disabled:opacity-50"
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    Cancel
+                  </Motion.button>
+                  <Motion.button
+                    type="button"
+                    onClick={handleSaveAvatar}
+                    disabled={savingPhoto || !avatarFile}
+                    className="liquid-button text-white text-xs font-semibold px-5 py-2 rounded-full disabled:opacity-50"
+                    whileHover={{ scale: 1.03 }}
+                    whileTap={{ scale: 0.97 }}
+                  >
+                    {savingPhoto ? "Saving..." : "Save"}
+                  </Motion.button>
+                </div>
+              </div>
+            </Motion.div>
+          </Motion.div>
+        )}
 
         {selectedPost && (
           <PostModal

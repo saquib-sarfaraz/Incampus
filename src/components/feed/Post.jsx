@@ -24,7 +24,8 @@ import {
   resolveAspectRatioString,
 } from "../../utils/media";
 import { isVideoUrl } from "../../utils/storyMedia";
-import { buildUserPreview } from "../../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
+import { splitTextWithLinks } from "../../utils/text";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const VIEW_RATIO_THRESHOLD = 0.5;
@@ -349,7 +350,7 @@ const resolvePostAuthorVerified = (post, entity) =>
         : false)
   );
 
-function Post({ post, onOpen, badge }) {
+function Post({ post, onOpen, badge, isPreview = false }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser, prefetchUserProfile } = useApp();
   const navigate = useNavigate();
@@ -381,6 +382,7 @@ function Post({ post, onOpen, badge }) {
   const authorId = resolvePostAuthorId(post);
   const authorName = resolvePostAuthorName(post, authorEntity);
   const authorPic = resolvePostAuthorPic(post, authorEntity);
+  const previewMode = Boolean(isPreview || post?.isPreview);
   const baseLikesRaw = Array.isArray(post.likes)
     ? post.likes
     : Array.isArray(post.likedBy)
@@ -435,11 +437,19 @@ function Post({ post, onOpen, badge }) {
       sanitizeDisplayName(authorName) ||
       "User";
   const handleOpenProfile = useCallback(() => {
+    if (previewMode) return;
     if (post.isAnonymous) return;
-    const targetId =
-      authorId || author?.id || author?._id || post.authorId || post.author?._id || post.author;
+    const safeAuthorId = normalizeUserId(authorId);
+    const targetId = normalizeUserId(
+      authorId ||
+        author?.id ||
+        author?._id ||
+        post.authorId ||
+        post.author?._id ||
+        post.author
+    );
     if (targetId) {
-      const cachedAuthor = authorId ? getUserFromCache(authorId) : null;
+      const cachedAuthor = safeAuthorId ? getUserFromCache(safeAuthorId) : null;
       prefetchUserProfile?.(targetId, cachedAuthor || author || authorEntity);
       const preview = buildUserPreview(
         { ...(cachedAuthor || {}), ...(authorEntity || {}), ...(author || {}) },
@@ -453,11 +463,14 @@ function Post({ post, onOpen, badge }) {
         isVerifiedCommunity: author?.isVerifiedCommunity,
         }
       );
-      navigate(`/profile/${targetId}`, { state: { userPreview: preview } });
+      navigate(`/profile/${targetId}`, {
+        state: { userPreview: preview, modal: true },
+      });
     }
   }, [
     navigate,
     post.isAnonymous,
+    previewMode,
     authorId,
     author,
     authorEntity,
@@ -571,6 +584,7 @@ function Post({ post, onOpen, badge }) {
   }, []);
 
   const commitLike = useCallback(async () => {
+    if (previewMode) return;
     if (!postId || !currentUser?.id) return;
     if (likeCommitInFlightRef.current) {
       if (likeCommitTimerRef.current) {
@@ -652,9 +666,10 @@ function Post({ post, onOpen, badge }) {
         optimisticCountRef.current = null;
       }
     }
-  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost]);
+  }, [postId, currentUser?.id, baseIsLiked, baseLikesCount, updatePost, previewMode]);
 
   const handleLike = useCallback(() => {
+    if (previewMode) return;
     if (!currentUser?.id) return;
     if (!postId) return;
     if (likePending) return;
@@ -704,28 +719,33 @@ function Post({ post, onOpen, badge }) {
     baseLikes,
     updatePost,
     commitLike,
+    previewMode,
   ]);
 
   const handleReport = () => {
+    if (previewMode) return;
     setShowReport(true);
   };
 
   const handleMediaDoubleTap = useCallback(() => {
+    if (previewMode) return;
     setMediaLikePulse((prev) => prev + 1);
     if (!isLiked) {
       handleLike();
     }
-  }, [isLiked, handleLike]);
+  }, [isLiked, handleLike, previewMode]);
 
   const handleMediaTouchEnd = useCallback(() => {
+    if (previewMode) return;
     const now = Date.now();
     if (now - lastTapRef.current < 280) {
       handleMediaDoubleTap();
     }
     lastTapRef.current = now;
-  }, [handleMediaDoubleTap]);
+  }, [handleMediaDoubleTap, previewMode]);
 
   const submitReport = async ({ reason, details }) => {
+    if (previewMode) return;
     if (!currentUser) {
       alert("Please sign in to report.");
       return;
@@ -747,6 +767,7 @@ function Post({ post, onOpen, badge }) {
   };
 
   const handleBlock = async () => {
+    if (previewMode) return;
     if (!currentUser) {
       alert("Please sign in to block.");
       return;
@@ -813,6 +834,7 @@ function Post({ post, onOpen, badge }) {
   }, [postId]);
 
   useEffect(() => {
+    if (previewMode) return;
     if (!currentUser?.id) return;
     if (!postId) return;
     if (!cardRef.current) return;
@@ -860,7 +882,7 @@ function Post({ post, onOpen, badge }) {
       }
       observer.disconnect();
     };
-  }, [currentUser?.id, postId]);
+  }, [currentUser?.id, postId, previewMode]);
 
   return (
     <>
@@ -910,19 +932,25 @@ function Post({ post, onOpen, badge }) {
               </small>
             </div>
           </button>
-          <div className="ml-auto relative z-20" ref={menuRef}>
-            <Motion.button
-              type="button"
-              onClick={() => setShowMenu((prev) => !prev)}
-              className="h-9 w-9 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors"
-              whileTap={{ scale: 0.9 }}
-              aria-label="Post actions"
-            >
-              <i className="fa-solid fa-ellipsis-vertical"></i>
-            </Motion.button>
-            {showMenu && (
-              <div className="absolute right-0 mt-2 w-40 rounded-2xl glass-card z-30 overflow-hidden">
-                {!isOwner && (
+        <div className="ml-auto relative z-20" ref={menuRef}>
+          <Motion.button
+            type="button"
+            onClick={() => {
+              if (previewMode) return;
+              setShowMenu((prev) => !prev);
+            }}
+            disabled={previewMode}
+            className={`h-9 w-9 rounded-full flex items-center justify-center text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/5 transition-colors ${
+              previewMode ? "opacity-40 cursor-not-allowed" : ""
+            }`}
+            whileTap={{ scale: previewMode ? 1 : 0.9 }}
+            aria-label="Post actions"
+          >
+            <i className="fa-solid fa-ellipsis-vertical"></i>
+          </Motion.button>
+          {showMenu && !previewMode && (
+            <div className="absolute right-0 mt-2 w-40 rounded-2xl glass-card z-30 overflow-hidden">
+              {!isOwner && (
                   <>
                     <button
                       type="button"
@@ -955,7 +983,22 @@ function Post({ post, onOpen, badge }) {
 
         {captionText && (
           <p className="text-[#faf0e6] text-base lg:text-sm mb-3 lg:mb-2 whitespace-pre-wrap">
-            {visibleCaption}
+            {splitTextWithLinks(visibleCaption).map((part, index) =>
+              part.type === "link" ? (
+                <a
+                  key={`caption-link-${index}`}
+                  href={part.value}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-sky-300 underline underline-offset-2 break-all"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {part.value}
+                </a>
+              ) : (
+                <span key={`caption-text-${index}`}>{part.value}</span>
+              )
+            )}
             {isCaptionLong && (
               <button
                 type="button"
@@ -1030,7 +1073,7 @@ function Post({ post, onOpen, badge }) {
         <div className="flex justify-around text-[#b9b4c7] pt-2 lg:pt-1 border-t border-white/10 lg:text-sm">
           <Motion.button
             onClick={handleLike}
-            disabled={likePending}
+            disabled={likePending || previewMode}
             className={`relative flex items-center gap-2 hover:text-red-300 transition-colors min-h-[44px] lg:min-h-[38px] px-2 disabled:opacity-70 disabled:cursor-not-allowed ${
               isLiked ? "text-red-300" : ""
             }`}
@@ -1051,26 +1094,38 @@ function Post({ post, onOpen, badge }) {
             <span className="tabular-nums min-w-[2ch] text-right">{likesCount}</span>
           </Motion.button>
           <Motion.button
-            onClick={() => setShowComments(true)}
-            className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors"
-            whileTap={{ scale: 0.9 }}
+            onClick={() => {
+              if (previewMode) return;
+              setShowComments(true);
+            }}
+            disabled={previewMode}
+            className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            whileTap={{ scale: previewMode ? 1 : 0.9 }}
           >
             <i className="fa-regular fa-comment"></i>
             <span>{commentsCount}</span>
           </Motion.button>
           <Motion.button
-            onClick={() => setShowShare(true)}
-            className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors"
-            whileTap={{ scale: 0.9 }}
+            onClick={() => {
+              if (previewMode) return;
+              setShowShare(true);
+            }}
+            disabled={previewMode}
+            className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            whileTap={{ scale: previewMode ? 1 : 0.9 }}
           >
             <i className="fa-solid fa-share-nodes"></i>
             <span>Share</span>
           </Motion.button>
           {onOpen && (
             <Motion.button
-              onClick={onOpen}
-              className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors"
-              whileTap={{ scale: 0.9 }}
+              onClick={() => {
+                if (previewMode) return;
+                onOpen();
+              }}
+              disabled={previewMode}
+              className="flex items-center space-x-2 hover:text-[#b9b4c7] transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              whileTap={{ scale: previewMode ? 1 : 0.9 }}
             >
               <i className="fa-regular fa-eye"></i>
               <span>View</span>
@@ -1079,7 +1134,7 @@ function Post({ post, onOpen, badge }) {
         </div>
       </Motion.div>
 
-      {showComments && (
+      {!previewMode && showComments && (
         <CommentModal
           post={post}
           isOpen={showComments}
@@ -1087,44 +1142,51 @@ function Post({ post, onOpen, badge }) {
         />
       )}
 
-      <ShareSheet
-        isOpen={showShare}
-        onClose={() => setShowShare(false)}
-        postUrl={postUrl}
-        postTitle={post.content}
-        postId={postId}
-        postThumbnail={postThumbnail}
-        postPreviewText={postPreviewText}
-        isPrivate={isPrivate}
-        isAnonymous={post.isAnonymous}
-        onShareToChat={() => {
-          setShowShare(false);
-          setShowShareChat(true);
-        }}
-      />
-      <ShareToChatModal
-        isOpen={showShareChat}
-        onClose={() => setShowShareChat(false)}
-        postUrl={postUrl}
-        postTitle={post.content}
-        postId={postId}
-        postThumbnail={postThumbnail}
-        postPreviewText={postPreviewText}
-        postIsAnonymous={post.isAnonymous}
-        postAuthorName={resolvedAuthorName}
-        postAuthorId={authorId}
-      />
-      <ReportModal
-        isOpen={showReport}
-        onClose={() => setShowReport(false)}
-        onSubmit={submitReport}
-        title="Report Post"
-      />
+      {!previewMode && (
+        <>
+          <ShareSheet
+            isOpen={showShare}
+            onClose={() => setShowShare(false)}
+            postUrl={postUrl}
+            postTitle={post.content}
+            postId={postId}
+            postThumbnail={postThumbnail}
+            postPreviewText={postPreviewText}
+            isPrivate={isPrivate}
+            isAnonymous={post.isAnonymous}
+            onShareToChat={() => {
+              setShowShare(false);
+              setShowShareChat(true);
+            }}
+          />
+          <ShareToChatModal
+            isOpen={showShareChat}
+            onClose={() => setShowShareChat(false)}
+            postUrl={postUrl}
+            postTitle={post.content}
+            postId={postId}
+            postThumbnail={postThumbnail}
+            postPreviewText={postPreviewText}
+            postIsAnonymous={post.isAnonymous}
+            postAuthorName={resolvedAuthorName}
+            postAuthorId={authorId}
+          />
+          <ReportModal
+            isOpen={showReport}
+            onClose={() => setShowReport(false)}
+            onSubmit={submitReport}
+            title="Report Post"
+          />
+        </>
+      )}
     </>
   );
 }
 
 const arePostPropsEqual = (prev, next) =>
-  prev.post === next.post && prev.badge === next.badge && prev.onOpen === next.onOpen;
+  prev.post === next.post &&
+  prev.badge === next.badge &&
+  prev.onOpen === next.onOpen &&
+  prev.isPreview === next.isPreview;
 
 export default memo(Post, arePostPropsEqual);

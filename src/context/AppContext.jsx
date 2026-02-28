@@ -162,17 +162,30 @@ const mergePostsByNewest = (incoming, existing) => {
 
 const resolveEntityId = (value) => {
   if (!value) return "";
-  if (typeof value === "string" || typeof value === "number") return String(value);
-  return String(
-    value._id ||
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw) return "";
+    const lowered = raw.toLowerCase();
+    if (raw === "[object Object]" || lowered === "undefined" || lowered === "null") {
+      return "";
+    }
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested =
+      value._id ||
       value.id ||
       value.userId ||
       value.user_id ||
       value.profileId ||
+      value.profile_id ||
       value.ownerId ||
       value.authorId ||
-      ""
-  );
+      "";
+    if (nested) return resolveEntityId(nested);
+  }
+  return "";
 };
 
 const isMessageNotification = (notif) => {
@@ -521,10 +534,10 @@ export const AppProvider = ({ children }) => {
 
   const setFriendStatus = useCallback(
     (userId, status, options = {}) => {
-      if (!userId) return;
+      const id = resolveEntityId(userId);
+      if (!id) return;
       const resolvedStatus = status || "none";
       const force = options.force === true;
-      const id = String(userId);
       if (resolvedStatus === "pending_sent") {
         setPendingSentOverride(id, true);
       } else {
@@ -553,8 +566,8 @@ export const AppProvider = ({ children }) => {
 
   const getFriendStatus = useCallback(
     (userId) => {
-      if (!userId) return "none";
-      const id = String(userId);
+      const id = resolveEntityId(userId);
+      if (!id) return "none";
       if (blockedUsers.some((blockedId) => String(blockedId) === id)) return "blocked";
       const hasFriendMap = friendMapLoaded || Object.keys(friendMap || {}).length > 0;
       if (hasFriendMap && Object.prototype.hasOwnProperty.call(friendMap, id)) {
@@ -661,8 +674,8 @@ export const AppProvider = ({ children }) => {
 
   const ensureFriendStatus = useCallback(
     async (userId) => {
-      if (!userId) return "none";
-      const id = String(userId);
+      const id = resolveEntityId(userId);
+      if (!id) return "none";
       if (getFriendStatus(id) !== "none") return getFriendStatus(id);
       if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
         return friendMap[id] || "none";
@@ -690,13 +703,14 @@ export const AppProvider = ({ children }) => {
 
   const sendFriendRequest = useCallback(
     async (targetUserId) => {
-      if (!targetUserId) return null;
-      setFriendStatus(targetUserId, "pending_sent", { force: true });
+      const id = resolveEntityId(targetUserId);
+      if (!id) return null;
+      setFriendStatus(id, "pending_sent", { force: true });
       try {
-        const res = await apiSendFriendRequest(targetUserId);
+        const res = await apiSendFriendRequest(id);
         return res;
       } catch (error) {
-        setFriendStatus(targetUserId, "none", { force: true });
+        setFriendStatus(id, "none", { force: true });
         throw error;
       }
     },
@@ -740,9 +754,10 @@ export const AppProvider = ({ children }) => {
 
   const rejectFriend = useCallback(
     async (requesterId) => {
-      if (!requesterId) return null;
-      const res = await apiRejectFriendRequest(requesterId);
-      setFriendStatus(requesterId, "none", { force: true });
+      const id = resolveEntityId(requesterId);
+      if (!id) return null;
+      const res = await apiRejectFriendRequest(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]
@@ -750,9 +765,10 @@ export const AppProvider = ({ children }) => {
 
   const cancelFriend = useCallback(
     async (recipientId) => {
-      if (!recipientId) return null;
-      const res = await apiCancelFriendRequest(recipientId);
-      setFriendStatus(recipientId, "none", { force: true });
+      const id = resolveEntityId(recipientId);
+      if (!id) return null;
+      const res = await apiCancelFriendRequest(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]
@@ -760,9 +776,10 @@ export const AppProvider = ({ children }) => {
 
   const removeFriend = useCallback(
     async (friendId) => {
-      if (!friendId) return null;
-      const res = await apiRemoveFriend(friendId);
-      setFriendStatus(friendId, "none", { force: true });
+      const id = resolveEntityId(friendId);
+      if (!id) return null;
+      const res = await apiRemoveFriend(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]

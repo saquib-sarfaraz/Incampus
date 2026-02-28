@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
@@ -26,12 +26,29 @@ export default function ShareToChatModal({
   postAuthorId,
 }) {
   const { currentUser } = useAuth();
-  const { friendIds, friendMapLoaded } = useApp();
+  const { friendIds, friendMapLoaded, updateChatMeta } = useApp();
   const [search, setSearch] = useState("");
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [selectedTargets, setSelectedTargets] = useState(new Set());
   const [toast, setToast] = useState("");
+  const contactsCacheRef = useRef({ userId: "", ts: 0, contacts: [] });
+
+  const normalizeId = useCallback((value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (typeof value === "object") {
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.$oid ||
+        "";
+      return normalizeId(nested);
+    }
+    return "";
+  }, []);
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -83,18 +100,30 @@ export default function ShareToChatModal({
     if (!isOpen) return;
     const loadContacts = async () => {
       const friends = resolvedFriendIds || [];
+      const userId = normalizeId(currentUser?.id || currentUser?._id || "");
+      const cached = contactsCacheRef.current;
+      const cachedHasContacts =
+        cached.userId === userId && cached.contacts.length > 0;
+      if (cachedHasContacts) {
+        setContacts(cached.contacts);
+      }
       if (friends.length === 0) {
         setContacts([]);
         return;
       }
-      setLoading(true);
+      const shouldRefresh = Date.now() - cached.ts > 5 * 60 * 1000;
+      if (cachedHasContacts && !shouldRefresh) {
+        setLoading(false);
+        return;
+      }
+      setLoading(!cachedHasContacts);
       try {
         const users = await Promise.all(
           friends.map(async (id) => {
             const user = await getUserById(id);
             return user
               ? {
-                  id: user._id || user.id,
+                  id: normalizeId(user._id || user.id),
                   label: user.fullName || user.username || "User",
                   subtitle: user.username ? `@${user.username}` : "Friend",
                   avatar: user.profilePicUrl || ANONYMOUS_AVATAR,
@@ -103,7 +132,11 @@ export default function ShareToChatModal({
               : null;
           })
         );
-        setContacts(users.filter(Boolean));
+        const nextContacts = users.filter(Boolean);
+        if (nextContacts.length > 0) {
+          contactsCacheRef.current = { userId, ts: Date.now(), contacts: nextContacts };
+          setContacts(nextContacts);
+        }
       } catch (err) {
         void err;
       } finally {
@@ -111,7 +144,7 @@ export default function ShareToChatModal({
       }
     };
     loadContacts();
-  }, [isOpen, resolvedFriendIds]);
+  }, [isOpen, resolvedFriendIds, currentUser?.id, currentUser?._id, normalizeId]);
 
   useEffect(() => {
     if (isOpen) return;
@@ -152,11 +185,16 @@ export default function ShareToChatModal({
 
     const canUseSocket = Boolean(socket?.connected);
     ids.forEach((targetId) => {
+      const clientMessageId =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const message = {
         from: currentUser.id,
         to: targetId,
         text: `Shared a post: ${previewText}`,
         createdAt: new Date().toISOString(),
+        clientMessageId,
         messageType: "shared_post",
         type: "shared_post",
         postId,
@@ -168,6 +206,7 @@ export default function ShareToChatModal({
         postAuthorId: postIsAnonymous ? undefined : postAuthorId,
         senderId: currentUser.id,
       };
+      updateChatMeta?.(targetId, message, { incrementUnread: false });
       if (canUseSocket) {
         const isGroup = String(targetId).startsWith("group:");
         socket.emit("chat:sendMessage", {

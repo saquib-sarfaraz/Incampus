@@ -51,7 +51,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
     >
       <div className="relative grid grid-cols-5 items-end px-4 pb-2 pt-5">
         <Motion.button
-          onClick={() => navigate(navItems[0].path)}
+          onClick={() => navigate(navItems[0].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[0].path)
               ? "active-link text-[#faf0e6]"
@@ -66,7 +66,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </Motion.button>
 
         <Motion.button
-          onClick={() => navigate(navItems[1].path)}
+          onClick={() => navigate(navItems[1].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[1].path)
               ? "active-link text-[#faf0e6]"
@@ -93,7 +93,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </div>
 
         <Motion.button
-          onClick={() => navigate(navItems[2].path)}
+          onClick={() => navigate(navItems[2].path, { replace: true })}
           onMouseEnter={preloadChatPage}
           onFocus={preloadChatPage}
           onTouchStart={preloadChatPage}
@@ -114,7 +114,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </Motion.button>
 
         <Motion.button
-          onClick={() => navigate(navItems[3].path)}
+          onClick={() => navigate(navItems[3].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[3].path)
               ? "active-link text-[#faf0e6]"

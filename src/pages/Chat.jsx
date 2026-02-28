@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
-import { buildUserPreview } from "../utils/userProfile";
+import { buildUserPreview, normalizeUserId } from "../utils/userProfile";
 import {
   getChatMessages,
   getGroupChatMessages,
@@ -900,13 +900,16 @@ export default function Chat() {
   } = useApp();
   const handleOpenProfile = useCallback(
     (userId, preview) => {
-      if (!userId) return;
-      const cachedUser = getUserFromCache?.(userId);
-      prefetchUserProfile?.(userId, cachedUser || preview);
+      const safeUserId = normalizeUserId(userId || preview);
+      if (!safeUserId) return;
+      const cachedUser = getUserFromCache?.(safeUserId);
+      prefetchUserProfile?.(safeUserId, cachedUser || preview);
       const previewUser = buildUserPreview({ ...(cachedUser || {}), ...(preview || {}) }, {
-        _id: userId,
+        _id: safeUserId,
       });
-      navigate(`/profile/${userId}`, { state: { userPreview: previewUser } });
+      navigate(`/profile/${safeUserId}`, {
+        state: { userPreview: previewUser, modal: true },
+      });
     },
     [navigate, prefetchUserProfile, getUserFromCache]
   );
@@ -3819,8 +3822,8 @@ export default function Chat() {
                 className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
               >
                 {activeChatUser?.isGroup && !isActiveGroupMember && (
-                  <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
-                    <span>
+                  <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
+                    <span className="min-w-0">
                       {isActiveGroupPending
                         ? "Join request pending approval."
                         : isActiveGroupPrivate
@@ -3832,7 +3835,7 @@ export default function Chat() {
                         type="button"
                         onClick={handleRequestJoinGroup}
                         disabled={groupRequestLoading}
-                        className="rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60"
+                        className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
                       >
                         {groupRequestLoading ? "Sending..." : "Request Join"}
                       </button>
@@ -3840,14 +3843,14 @@ export default function Chat() {
                   </div>
                 )}
                 {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
-                  <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7]">
-                    <span>Only friends can message.</span>
+                  <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
+                    <span className="min-w-0">Only friends can message.</span>
                     {friendStatus === "none" ? (
                       <button
                         type="button"
                         onClick={handleSendFriendRequest}
                         disabled={friendRequestLoading}
-                        className="rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60"
+                        className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
                       >
                         {friendRequestLoading ? "Sending..." : "Send Request"}
                       </button>
