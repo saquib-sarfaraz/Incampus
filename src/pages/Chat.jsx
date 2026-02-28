@@ -989,23 +989,7 @@ export default function Chat() {
   const missingGroupSenderRef = useRef(new Set());
   const typingTimeoutsRef = useRef({});
   const lastTypingSentRef = useRef({});
-
-  useEffect(() => {
-    if (!currentUser?.id || !activeChatId) return;
-    const existing = messagesByChat[activeChatId];
-    if (existing && existing.length) return;
-    const cached = readMessagesCache(currentUser.id, activeChatId);
-    if (cached && cached.length) {
-      mergeMessages(activeChatId, cached);
-    }
-  }, [currentUser?.id, activeChatId, messagesByChat, mergeMessages]);
-
-  useEffect(() => {
-    if (!currentUser?.id || !activeChatId) return;
-    const messages = messagesByChat[activeChatId];
-    if (!messages || messages.length === 0) return;
-    writeMessagesCache(currentUser.id, activeChatId, messages);
-  }, [currentUser?.id, activeChatId, messagesByChat]);
+  const mergeMessagesRef = useRef(null);
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -1587,6 +1571,24 @@ export default function Chat() {
     },
     [ensureIndex, currentUser?.id]
   );
+  mergeMessagesRef.current = mergeMessages;
+
+  useEffect(() => {
+    if (!currentUser?.id || !activeChatId) return;
+    const existing = messagesByChat[activeChatId];
+    if (existing && existing.length) return;
+    const cached = readMessagesCache(currentUser.id, activeChatId);
+    if (cached && cached.length && mergeMessagesRef.current) {
+      mergeMessagesRef.current(activeChatId, cached);
+    }
+  }, [currentUser?.id, activeChatId, messagesByChat]);
+
+  useEffect(() => {
+    if (!currentUser?.id || !activeChatId) return;
+    const messages = messagesByChat[activeChatId];
+    if (!messages || messages.length === 0) return;
+    writeMessagesCache(currentUser.id, activeChatId, messages);
+  }, [currentUser?.id, activeChatId, messagesByChat]);
 
   const patchMessages = useCallback((chatId, predicate, updater) => {
     if (typeof predicate !== "function") return;
@@ -2863,12 +2865,18 @@ export default function Chat() {
       const chatId = resolveChatIdFromPayload(payload);
       if (!chatId) return;
       const isGroupMessage = String(chatId).startsWith("group:");
-      requestAnimationFrame(() => {
-        mergeMessages(chatId, [msg]);
-        updateChatMeta(chatId, msg);
-      });
 
       const senderId = resolveMessageSenderId(msg);
+      const shouldIncrementUnread =
+        chatId !== activeChatRef.current &&
+        senderId &&
+        String(senderId) !== String(currentUser.id);
+
+      requestAnimationFrame(() => {
+        mergeMessages(chatId, [msg]);
+        updateChatMeta(chatId, msg, { incrementUnread: shouldIncrementUnread });
+      });
+
       if (!isGroupMessage && senderId && String(senderId) !== String(currentUser.id)) {
         const messageId = msg._id || msg.id || msg.clientMessageId;
         const deliveredPayload = {
