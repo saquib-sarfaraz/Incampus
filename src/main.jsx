@@ -6,7 +6,21 @@ import "./index.css";
 
 if (typeof window !== "undefined" && "serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/firebase-messaging-sw.js").catch(() => {});
+    let debug = false;
+    try {
+      debug =
+        import.meta.env.DEV || localStorage.getItem("incampus:debug:sw") === "1";
+    } catch {
+      debug = import.meta.env.DEV;
+    }
+    navigator.serviceWorker
+      .register("/firebase-messaging-sw.js")
+      .then((reg) => {
+        if (debug) console.log("[sw] registered", reg);
+      })
+      .catch((err) => {
+        if (debug) console.log("[sw] register error", err);
+      });
   });
 }
 
