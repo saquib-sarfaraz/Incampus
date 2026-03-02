@@ -1,5 +1,5 @@
 import { getToken, onMessage } from "firebase/messaging";
-import { getFirebaseMessaging } from "./firebase";
+import { getFirebaseMessaging, getFirebaseVapidKey } from "./firebase";
 import { registerPushToken } from "../services/api";
 
 const SW_PATH = "/firebase-messaging-sw.js";
@@ -28,7 +28,8 @@ export const initPushNotifications = async ({ currentUser }) => {
   if (permission !== "granted") return;
 
   try {
-    const vapidKey = import.meta.env.VITE_FIREBASE_VAPID_KEY || "";
+    const envKey = import.meta.env.VITE_FIREBASE_VAPID_KEY || "";
+    const vapidKey = getFirebaseVapidKey() || envKey;
     const token = await getToken(messaging, {
       vapidKey: vapidKey || undefined,
       serviceWorkerRegistration: swRegistration || undefined,

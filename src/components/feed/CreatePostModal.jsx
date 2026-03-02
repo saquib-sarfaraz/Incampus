@@ -10,6 +10,7 @@ import {
   detectAspectRatio,
   resolveAspectRatioString,
 } from "../../utils/media";
+import { rememberAnonymousPost } from "../../utils/anonymousPosts";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
@@ -210,7 +211,7 @@ const applyImageEdits = async ({
 
 export default function CreatePostModal({ isOpen, onClose, onCreated }) {
   const { currentUser } = useAuth();
-  const { loadPosts } = useApp();
+  const { loadPosts, addPost } = useApp();
   const [step, setStep] = useState(1);
   const [postMode, setPostMode] = useState("post");
   const [visibility, setVisibility] = useState("universal");
@@ -775,7 +776,7 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
           }
         }
       }
-      await createPost(
+      const response = await createPost(
         {
           content: trimmedText,
           isAnonymous,
@@ -795,6 +796,20 @@ export default function CreatePostModal({ isOpen, onClose, onCreated }) {
         },
         isThought ? null : finalMedia
       );
+
+      const createdPost =
+        response?.post || response?.data?.post || response?.data || response;
+      if (createdPost && (createdPost._id || createdPost.id)) {
+        addPost?.({
+          ...createdPost,
+          isAnonymous,
+          authorId: createdPost.authorId || currentUser.id,
+          __localAuthorId: currentUser.id,
+        });
+        if (isAnonymous) {
+          rememberAnonymousPost(currentUser.id, createdPost);
+        }
+      }
       await loadPosts();
       setToast({ title: "Posted", message: "Your post is live on InCampus." });
       onCreated?.();

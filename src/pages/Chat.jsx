@@ -8,6 +8,7 @@ import {
   getChatMessages,
   getGroupChatMessages,
   getChatGroups,
+  getPublicGroups,
   getPendingRequests,
   getUserById,
   sendChatMessage,
@@ -355,6 +356,45 @@ const normalizeGroupItem = (group, currentUserId, fallbackRank = 10) => {
   };
 };
 
+const normalizeCollegeKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const resolveContactCollege = (contact) =>
+  contact?.college ||
+  contact?.university ||
+  contact?.school ||
+  contact?.collegeName ||
+  contact?.collegeTagName ||
+  contact?.collegeTag ||
+  "";
+
+const isContactAlumni = (contact) => {
+  if (!contact) return false;
+  if (contact.isAlumni || contact.is_alumni) return true;
+  const raw = String(
+    contact.studentType ||
+      contact.student_type ||
+      contact.accountType ||
+      contact.userType ||
+      contact.user_type ||
+      contact.role ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
+  if (!raw) return false;
+  return (
+    raw.includes("alumni") ||
+    raw.includes("alumnus") ||
+    raw.includes("graduate") ||
+    raw.includes("grad")
+  );
+};
+
 const isAnonymousUser = (userData) =>
   Boolean(
     userData?.isAnonymous ||
@@ -640,56 +680,41 @@ const ContactListItem = memo(function ContactListItem({
   return (
     <Motion.div
       onClick={handleClick}
-      className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-        unreadCount > 0
-          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-          : "border-transparent hover:bg-white/5"
-      }`}
-      whileHover={{ scale: 1.01 }}
+      className={`chat-row ${unreadCount > 0 ? "chat-row-unread" : "chat-row-idle"}`}
+      whileHover={{ y: -2 }}
       whileTap={{ scale: 0.98 }}
     >
       <div className="relative">
         <img
           src={avatarUrl}
           alt={displayName}
-          className="w-11 h-11 rounded-full object-cover"
+          className="chat-avatar"
           loading="lazy"
           decoding="async"
         />
         {isOnline && (
-          <span className="absolute bottom-0 right-0 flex h-3 w-3 items-center justify-center">
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-40"></span>
-            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+          <span className="chat-online-dot">
+            <span className="chat-online-ping" />
           </span>
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <p
-          className={`text-sm text-[#faf0e6] truncate ${
-            unreadCount > 0 ? "font-bold" : "font-semibold"
-          }`}
-        >
+        <p className={`chat-name ${unreadCount > 0 ? "chat-name-unread" : ""}`}>
           <span className="inline-flex items-center gap-1">
             {displayName}
             {isVerified && <BlueTick className="text-[10px]" />}
           </span>
         </p>
-        <p
-          className={`text-xs truncate ${
-            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-          }`}
-        >
+        <p className={`chat-preview ${unreadCount > 0 ? "chat-preview-unread" : ""}`}>
           {lastMessageText}
         </p>
       </div>
       <div className="flex flex-col items-end gap-1">
-        <span className="text-[10px] text-[#b9b4c7]">{formatTime(lastMessageAt)}</span>
+        <span className="chat-time">{formatTime(lastMessageAt)}</span>
         {unreadCount > 0 && (
           <div className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-              {unreadCount}
-            </span>
+            <span className="chat-unread-dot" />
+            <span className="chat-unread-badge">{unreadCount}</span>
           </div>
         )}
       </div>
@@ -699,6 +724,7 @@ const ContactListItem = memo(function ContactListItem({
 
 const GroupListItem = memo(function GroupListItem({
   groupId,
+  groupApiId,
   avatarUrl,
   displayName,
   memberCount,
@@ -709,49 +735,57 @@ const GroupListItem = memo(function GroupListItem({
   isMember,
   isPending,
   onOpen,
+  onRequestJoin,
+  joinLoading,
 }) {
   const handleClick = useCallback(() => {
     if (groupId) onOpen(groupId);
   }, [groupId, onOpen]);
+  const handleRequestJoin = useCallback(
+    (event) => {
+      event.stopPropagation();
+      if (!onRequestJoin) return;
+      onRequestJoin({
+        groupId,
+        groupApiId,
+        visibility,
+        isMember,
+        isPending,
+      });
+    },
+    [groupApiId, groupId, isMember, isPending, onRequestJoin, visibility]
+  );
   const isPrivate = visibility === "private";
+  const canRequestJoin = !isMember && !isPending && !isPrivate;
   return (
     <Motion.div
       onClick={handleClick}
-      className={`chat-list-item flex items-center gap-3 p-3 rounded-2xl cursor-pointer transition-colors border-l-4 ${
-        unreadCount > 0
-          ? "border-[#b9b4c7]/70 bg-white/10 shadow-[0_0_20px_rgba(185,180,199,0.25)]"
-          : "border-transparent hover:bg-white/5"
+      className={`chat-row chat-row-group ${
+        unreadCount > 0 ? "chat-row-unread" : "chat-row-idle"
       }`}
-      whileHover={{ scale: 1.01 }}
+      whileHover={{ y: -2 }}
       whileTap={{ scale: 0.98 }}
     >
       <div className="relative">
         <img
           src={avatarUrl}
           alt={displayName}
-          className="w-11 h-11 rounded-2xl object-cover"
+          className="chat-avatar chat-avatar-group"
           loading="lazy"
           decoding="async"
         />
+        <span className="chat-group-icon">
+          <i className="fa-solid fa-users" />
+        </span>
       </div>
       <div className="flex-1 min-w-0">
-        <p
-          className={`text-sm text-[#faf0e6] whitespace-normal break-words ${
-            unreadCount > 0 ? "font-bold" : "font-semibold"
-          }`}
-        >
+        <p className={`chat-name ${unreadCount > 0 ? "chat-name-unread" : ""}`}>
           <span className="inline-flex items-center gap-1 flex-wrap">
             {displayName}
-            {isPrivate && (
-              <i className="fa-solid fa-lock text-[10px] text-[#b9b4c7]" />
-            )}
+            {isPrivate && <i className="fa-solid fa-lock text-[10px] chat-muted" />}
           </span>
         </p>
-        <p
-          className={`text-xs truncate ${
-            unreadCount > 0 ? "text-[#faf0e6]" : "text-[#b9b4c7]"
-          }`}
-        >
+        <p className={`chat-preview ${unreadCount > 0 ? "chat-preview-unread" : ""}`}>
           {!isMember
             ? isPending
               ? "Join request pending"
@@ -762,16 +796,27 @@ const GroupListItem = memo(function GroupListItem({
         </p>
       </div>
       <div className="flex flex-col items-end gap-1">
-        <span className="text-[10px] text-[#b9b4c7]">{formatTime(lastMessageAt)}</span>
-        <span className="text-[10px] text-[#b9b4c7]">
+        <span className="chat-time">{formatTime(lastMessageAt)}</span>
+        <span className="chat-time">
           {memberCount ? `${memberCount} members` : "Members"}
         </span>
+        {canRequestJoin && (
+          <button
+            type="button"
+            className="chat-join-button"
+            onClick={handleRequestJoin}
+            disabled={joinLoading}
+          >
+            {joinLoading ? "Sending..." : "Request Join"}
+          </button>
+        )}
+        {!isMember && isPending && (
+          <span className="chat-join-pill">Pending</span>
+        )}
         {unreadCount > 0 && (
           <div className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-            <span className="neon-badge text-[10px] px-2 py-0.5 rounded-full">
-              {unreadCount}
-            </span>
+            <span className="chat-unread-dot" />
+            <span className="chat-unread-badge">{unreadCount}</span>
           </div>
         )}
       </div>
@@ -945,6 +990,10 @@ export default function Chat() {
     [navigate, prefetchUserProfile, getUserFromCache]
   );
   const [activeTab, setActiveTab] = useState("contacts");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [contactFilter, setContactFilter] = useState("All");
+  const searchInputRef = useRef(null);
+  const [showDiscoverOnly, setShowDiscoverOnly] = useState(false);
   const [contacts, setContacts] = useState(() => {
     if (typeof window === "undefined") return [];
     return readContactsCache(currentUser?.id) || [];
@@ -966,6 +1015,8 @@ export default function Chat() {
   const [showGroupProfile, setShowGroupProfile] = useState(false);
   const [serverGroups, setServerGroups] = useState([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
+  const [discoverGroups, setDiscoverGroups] = useState([]);
+  const [discoverGroupsLoading, setDiscoverGroupsLoading] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [reportTarget, setReportTarget] = useState(null);
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
@@ -979,6 +1030,7 @@ export default function Chat() {
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [friendRequestLoading, setFriendRequestLoading] = useState(false);
   const [groupRequestLoading, setGroupRequestLoading] = useState(false);
+  const [groupJoinLoadingId, setGroupJoinLoadingId] = useState(null);
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
@@ -1116,6 +1168,40 @@ export default function Chat() {
       .catch(() => {})
       .finally(() => {
         if (active) setGroupsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    let active = true;
+    setDiscoverGroupsLoading(true);
+    getPublicGroups({ visibility: "public", scope: "public", includePublic: true })
+      .then((data) => {
+        if (!active) return;
+        const list = Array.isArray(data) ? data : [];
+        const normalized = list
+          .map((item, index) => normalizeGroupItem(item, currentUser?.id, 200 + index))
+          .filter(Boolean);
+        if (normalized.length) {
+          const seen = new Set();
+          const deduped = [];
+          normalized.forEach((group) => {
+            const key = String(group.id);
+            if (seen.has(key)) return;
+            seen.add(key);
+            deduped.push(group);
+          });
+          setDiscoverGroups(deduped);
+        } else {
+          setDiscoverGroups([]);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setDiscoverGroupsLoading(false);
       });
     return () => {
       active = false;
@@ -2490,6 +2576,20 @@ export default function Chat() {
     }
   };
 
+  const markGroupPending = useCallback((groupId) => {
+    if (!groupId) return;
+    setServerGroups((prev) =>
+      prev.map((group) =>
+        String(group.id) === String(groupId) ? { ...group, isPending: true } : group
+      )
+    );
+    setDiscoverGroups((prev) =>
+      prev.map((group) =>
+        String(group.id) === String(groupId) ? { ...group, isPending: true } : group
+      )
+    );
+  }, []);
+
   const handleOpenChat = useCallback(
     (chatId) => {
       setActiveChatId(chatId);
@@ -2553,6 +2653,45 @@ export default function Chat() {
       pushChatToast(toast);
     },
     [pushChatToast]
+  );
+
+  const handleRequestJoinGroupFromList = useCallback(
+    async ({ groupId, groupApiId, visibility, isMember, isPending }) => {
+      if (!groupId) return;
+      if (isMember || isPending) return;
+      const isPrivate = String(visibility || "public").toLowerCase() === "private";
+      if (isPrivate) {
+        showToast({
+          id: `group-private-${groupId}`,
+          title: "Private group",
+          message: "Only admins can add members to this group.",
+        });
+        return;
+      }
+      const requestId = groupApiId || groupId;
+      if (!requestId) return;
+      setGroupJoinLoadingId(groupId);
+      try {
+        await requestGroupJoin(requestId);
+        markGroupPending(groupId);
+        showToast({
+          id: `group-request-${groupId}`,
+          title: "Request sent",
+          message: "Your join request was sent.",
+        });
+      } catch (error) {
+        showToast({
+          id: `group-request-failed-${groupId}`,
+          title: "Request failed",
+          message: error.message || "Unable to send request.",
+        });
+      } finally {
+        setGroupJoinLoadingId((prev) =>
+          String(prev) === String(groupId) ? null : prev
+        );
+      }
+    },
+    [markGroupPending, showToast]
   );
 
   useEffect(() => {
@@ -2851,6 +2990,13 @@ export default function Chat() {
   const allContacts = useMemo(() => {
     return [...groupList, ...contacts];
   }, [groupList, contacts]);
+
+  const groupUnreadCount = useMemo(() => {
+    return groupList.reduce((total, group) => {
+      const unread = chatMeta[group.id]?.unreadCount || 0;
+      return total + unread;
+    }, 0);
+  }, [groupList, chatMeta]);
 
   useEffect(() => {
     if (!currentUser?.id || typeof window === "undefined") return;
@@ -3260,6 +3406,45 @@ export default function Chat() {
     });
   }, [contacts, chatMeta, getPresence]);
 
+  const normalizedSearch = useMemo(
+    () => String(searchQuery || "").trim().toLowerCase(),
+    [searchQuery]
+  );
+
+  const currentCollegeKey = useMemo(
+    () =>
+      normalizeCollegeKey(
+        currentUser?.college || currentUser?.university || currentUser?.school || ""
+      ),
+    [currentUser?.college, currentUser?.university, currentUser?.school]
+  );
+
+  const filteredContactsList = useMemo(() => {
+    let list = contactsList;
+    if (contactFilter === "Alumni") {
+      list = list.filter((contact) => isContactAlumni(contact));
+    } else if (contactFilter === "Same College") {
+      if (!currentCollegeKey) {
+        list = [];
+      } else {
+        list = list.filter((contact) => {
+          const collegeKey = normalizeCollegeKey(resolveContactCollege(contact));
+          return collegeKey && collegeKey === currentCollegeKey;
+        });
+      }
+    }
+    if (!normalizedSearch) return list;
+    return list.filter((contact) => {
+      const name = resolveContactName(contact);
+      const username =
+        contact?.username ||
+        contact?.userName ||
+        contact?.handle ||
+        "";
+      return `${name} ${username}`.toLowerCase().includes(normalizedSearch);
+    });
+  }, [contactsList, normalizedSearch, contactFilter, currentCollegeKey]);
+
   const groupsSorted = useMemo(() => {
     return [...groupList].sort((a, b) => {
       const aUnread = (chatMeta[a.id]?.unreadCount || 0) > 0;
@@ -3272,8 +3457,21 @@ export default function Chat() {
     });
   }, [groupList, chatMeta]);
 
+  const filteredGroupsSorted = useMemo(() => {
+    if (!normalizedSearch) return groupsSorted;
+    return groupsSorted.filter((group) => {
+      const name =
+        group?.displayName ||
+        group?.name ||
+        group?.title ||
+        group?.groupName ||
+        "";
+      return String(name).toLowerCase().includes(normalizedSearch);
+    });
+  }, [groupsSorted, normalizedSearch]);
+
   const contactItems = useMemo(() => {
-    return contactsList.map((contact, index) => {
+    return filteredContactsList.map((contact, index) => {
       const contactId =
         contact.id ||
         contact._id ||
@@ -3306,24 +3504,106 @@ export default function Chat() {
         />
       );
     });
-  }, [contactsList, chatMeta, getPresence, resolveContactName, resolveContactVerified, handleOpenChat]);
+  }, [
+    filteredContactsList,
+    chatMeta,
+    getPresence,
+    resolveContactName,
+    resolveContactVerified,
+    handleOpenChat,
+  ]);
 
   const { memberGroups, exploreGroups } = useMemo(() => {
     const member = [];
     const explore = [];
-    groupsSorted.forEach((group) => {
+    const publicGroups = [];
+    const filteredDiscover =
+      normalizedSearch
+        ? discoverGroups.filter((group) => {
+            const name =
+              group?.displayName ||
+              group?.name ||
+              group?.title ||
+              group?.groupName ||
+              "";
+            return String(name).toLowerCase().includes(normalizedSearch);
+          })
+        : discoverGroups;
+    const combined = [...filteredGroupsSorted, ...filteredDiscover];
+    const seen = new Set();
+    combined.forEach((group) => {
       if (!group) return;
+      const key = String(group.id);
+      if (seen.has(key)) return;
+      seen.add(key);
+      const visibility = String(group.visibility || "public").toLowerCase();
+      if (visibility === "public") {
+        publicGroups.push(group);
+      }
       const isMember = group.isMember !== false || group.isSystemGroup;
       if (isMember) {
         member.push(group);
         return;
       }
-      const visibility = String(group.visibility || "public").toLowerCase();
       if (visibility === "private" && !group.isPending) return;
       explore.push(group);
     });
+    if (explore.length === 0 && publicGroups.length > 0) {
+      const fallbackSeen = new Set(explore.map((group) => String(group.id)));
+      publicGroups.forEach((group) => {
+        const key = String(group.id);
+        if (fallbackSeen.has(key)) return;
+        fallbackSeen.add(key);
+        explore.push(group);
+      });
+    }
     return { memberGroups: member, exploreGroups: explore };
-  }, [groupsSorted]);
+  }, [filteredGroupsSorted, discoverGroups, normalizedSearch]);
+
+  const filteredGroupRequests = useMemo(() => {
+    if (!normalizedSearch) return groupRequests;
+    return groupRequests.filter(({ req }) => {
+      const user =
+        (req.user && typeof req.user === "object" ? req.user : null) ||
+        (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+        (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+        (req.requester && typeof req.requester === "object" ? req.requester : null) ||
+        null;
+      const name =
+        user?.displayName ||
+        user?.fullName ||
+        user?.username ||
+        "";
+      return String(name).toLowerCase().includes(normalizedSearch);
+    });
+  }, [groupRequests, normalizedSearch]);
+
+  const filteredFriendRequests = useMemo(() => {
+    if (!normalizedSearch) return friendRequests;
+    return friendRequests.filter(({ req }) => {
+      const user =
+        (req.user && typeof req.user === "object" ? req.user : null) ||
+        (req.fromUser && typeof req.fromUser === "object" ? req.fromUser : null) ||
+        (req.sender && typeof req.sender === "object" ? req.sender : null) ||
+        (req.requester && typeof req.requester === "object" ? req.requester : null) ||
+        null;
+      const name =
+        user?.displayName ||
+        user?.fullName ||
+        user?.username ||
+        "";
+      return String(name).toLowerCase().includes(normalizedSearch);
+    });
+  }, [friendRequests, normalizedSearch]);
+
+  const handleSearchChange = useCallback((event) => {
+    setSearchQuery(event.target.value);
+  }, []);
+
+  const handleDiscoverGroups = useCallback(() => {
+    setActiveTab("groups");
+    setShowDiscoverOnly(true);
+  }, []);
 
   const renderGroupItems = useCallback(
     (groups) =>
@@ -3333,6 +3613,12 @@ export default function Chat() {
           group._id ||
           group.groupId ||
           group.group_id ||
+          "";
+        const groupApiId =
+          group.apiId ||
+          group.groupId ||
+          group.group_id ||
+          group._id ||
           "";
         const groupKey = groupId || `group-${index}`;
         const meta = chatMeta[groupId] || {};
@@ -3347,10 +3633,13 @@ export default function Chat() {
         const visibility = group.visibility || "public";
         const isMember = group.isMember !== false;
         const isPending = Boolean(group.isPending);
+        const joinLoading =
+          groupJoinLoadingId && String(groupJoinLoadingId) === String(groupId);
         return (
           <GroupListItem
             key={String(groupKey)}
             groupId={groupId}
+            groupApiId={groupApiId}
             avatarUrl={avatarUrl}
             displayName={displayName}
             memberCount={memberCount}
@@ -3361,10 +3650,12 @@ export default function Chat() {
             isMember={isMember}
             isPending={isPending}
             onOpen={handleOpenChat}
+            onRequestJoin={handleRequestJoinGroupFromList}
+            joinLoading={joinLoading}
           />
         );
       }),
-    [chatMeta, handleOpenChat]
+    [chatMeta, handleOpenChat, handleRequestJoinGroupFromList, groupJoinLoadingId]
   );
 
   useEffect(() => {
@@ -3395,7 +3686,20 @@ export default function Chat() {
               : "translate-x-0 opacity-100"
           }`}
         >
-          <div className="flex space-x-2 border-b border-white/10 p-4">
+          <div className="chat-search">
+            <i className="fa-solid fa-magnifying-glass chat-search-icon" />
+            <input
+              type="text"
+              placeholder="Search contacts, groups..."
+              className="chat-search-input"
+              aria-label="Search chats"
+              value={searchQuery}
+              onChange={handleSearchChange}
+              ref={searchInputRef}
+            />
+          </div>
+
+          <div className="chat-tabs">
             {[
               { key: "contacts", label: "Contacts" },
               { key: "groups", label: "Groups" },
@@ -3404,14 +3708,18 @@ export default function Chat() {
               <button
                 key={tab.key}
                 type="button"
-                onClick={() => setActiveTab(tab.key)}
-                className={`flex-1 px-3 py-2 text-[11px] font-semibold rounded-full transition-all duration-300 ease-out ${
-                  activeTab === tab.key
-                    ? "liquid-button text-[#faf0e6]"
-                    : "bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6]"
-                }`}
+                onClick={() => {
+                  setActiveTab(tab.key);
+                  setShowDiscoverOnly(false);
+                }}
+                className={`chat-tab ${activeTab === tab.key ? "chat-tab-active" : ""}`}
               >
-                {tab.label}
+                <span className="flex items-center justify-center gap-2">
+                  {tab.label}
+                  {tab.key === "groups" && groupUnreadCount > 0 && (
+                    <span className="chat-tab-dot" aria-hidden="true" />
+                  )}
+                </span>
               </button>
             ))}
           </div>
@@ -3426,9 +3734,23 @@ export default function Chat() {
               }`}
             >
               <div
-                className="h-full overflow-y-auto p-4 space-y-2"
+                className="h-full overflow-y-auto p-4 space-y-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
+                <div className="chat-filters">
+                  {["All", "Alumni", "Same College"].map((filter) => (
+                    <button
+                      key={filter}
+                      type="button"
+                      onClick={() => setContactFilter(filter)}
+                      className={`chat-filter ${
+                        filter === contactFilter ? "chat-filter-active" : ""
+                      }`}
+                    >
+                      {filter}
+                    </button>
+                  ))}
+                </div>
                 {contactsLoading ? (
                   <div className="space-y-2">
                     {[1, 2, 3, 4].map((item) => (
@@ -3438,8 +3760,8 @@ export default function Chat() {
                       ></div>
                     ))}
                   </div>
-                ) : contactsList.length === 0 ? (
-                  <p className="text-center text-[#b9b4c7] mt-10">No contacts yet</p>
+                ) : filteredContactsList.length === 0 ? (
+                  <p className="text-center chat-muted mt-10">No contacts yet</p>
                 ) : (
                   contactItems
                 )}
@@ -3455,60 +3777,93 @@ export default function Chat() {
               }`}
             >
               <div
-                className="h-full overflow-y-auto p-4 space-y-2"
+                className="h-full overflow-y-auto p-4 space-y-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
-                {canCreateGroup && (
-                  <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
-                    <div>
-                      <p className="text-xs font-semibold text-[#faf0e6]">Create group</p>
-                      <p className="text-[10px] text-[#b9b4c7]">
-                        Official or community groups
-                      </p>
-                    </div>
-                    <Motion.button
-                      type="button"
-                      onClick={() => setShowGroupModal(true)}
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      className="h-9 w-9 rounded-full bg-[#5c5470] text-[#faf0e6] shadow-[0_4px_14px_rgba(92,84,112,0.35)] transition-all duration-200 ease-out hover:bg-[#7a6f8f] hover:shadow-[0_6px_18px_rgba(92,84,112,0.45)] active:scale-95"
-                      aria-label="Create group"
-                    >
-                      <i className="fa-solid fa-plus text-sm"></i>
-                    </Motion.button>
-                  </div>
-                )}
-                {groupsLoading ? (
-                  <p className="text-center text-[#b9b4c7] mt-6">Loading groups...</p>
-                ) : groupsSorted.length === 0 ? (
-                  <p className="text-center text-[#b9b4c7] mt-10">No groups available</p>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="space-y-2">
-                      <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7] px-1">
-                        Your Groups
-                      </p>
-                      {memberGroups.length === 0 ? (
-                        <p className="text-center text-[#b9b4c7] text-xs mt-2">
-                          No groups joined yet
-                        </p>
-                      ) : (
-                        renderGroupItems(memberGroups)
-                      )}
-                    </div>
-                    <div className="space-y-2 pt-2 border-t border-white/10">
-                      <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7] px-1">
+                {showDiscoverOnly ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => setShowDiscoverOnly(false)}
+                        className="chat-action-secondary text-xs px-4"
+                      >
+                        Back
+                      </button>
+                      <p className="text-[11px] uppercase tracking-[0.3em] chat-muted px-1">
                         Explore Public Groups
                       </p>
-                      {exploreGroups.length === 0 ? (
-                        <p className="text-center text-[#b9b4c7] text-xs mt-2">
-                          No public groups right now
-                        </p>
-                      ) : (
-                        renderGroupItems(exploreGroups)
-                      )}
                     </div>
-                  </div>
+                    {discoverGroupsLoading ? (
+                      <p className="text-center chat-muted text-xs mt-2">
+                        Loading public groups...
+                      </p>
+                    ) : exploreGroups.length === 0 ? (
+                      <p className="text-center chat-muted text-xs mt-2">
+                        No public groups right now
+                      </p>
+                    ) : (
+                      <div className="space-y-3">{renderGroupItems(exploreGroups)}</div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div
+                      className="chat-discover-card"
+                      role="button"
+                      tabIndex={0}
+                      onClick={handleDiscoverGroups}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          handleDiscoverGroups();
+                        }
+                      }}
+                    >
+                      <div>
+                        <p className="text-sm font-semibold chat-text">Discover Groups</p>
+                        <p className="text-xs chat-muted">
+                          Find communities that match your interest
+                        </p>
+                      </div>
+                      <span className="chat-discover-arrow">
+                        <i className="fa-solid fa-arrow-right" />
+                      </span>
+                    </div>
+                    {canCreateGroup && (
+                      <div className="chat-create-card">
+                        <div>
+                          <p className="text-xs font-semibold chat-text">Create group</p>
+                          <p className="text-[10px] chat-muted">
+                            Official or community groups
+                          </p>
+                        </div>
+                        <Motion.button
+                          type="button"
+                          onClick={() => setShowGroupModal(true)}
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          className="chat-icon-button"
+                          aria-label="Create group"
+                        >
+                          <i className="fa-solid fa-plus text-sm"></i>
+                        </Motion.button>
+                      </div>
+                    )}
+                    {groupsLoading ? (
+                      <p className="text-center chat-muted mt-6">Loading groups...</p>
+                    ) : memberGroups.length === 0 ? (
+                      <p className="text-center chat-muted mt-10">No groups joined yet</p>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="space-y-2">
+                          <p className="text-[11px] uppercase tracking-[0.3em] chat-muted px-1">
+                            Your Groups
+                          </p>
+                          {renderGroupItems(memberGroups)}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -3522,24 +3877,24 @@ export default function Chat() {
               }`}
             >
               <div
-                className="h-full overflow-y-auto p-4 space-y-2"
+                className="h-full overflow-y-auto p-4 space-y-3"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
-                {groupRequests.length + friendRequests.length === 0 ? (
-                  <p className="text-center text-[#b9b4c7] mt-10">No pending requests</p>
+                {filteredGroupRequests.length + filteredFriendRequests.length === 0 ? (
+                  <p className="text-center chat-muted mt-10">No pending requests</p>
                 ) : (
                   <div className="space-y-4">
-                    {groupRequests.length > 0 && (
+                    {filteredGroupRequests.length > 0 && (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between px-1">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                          <p className="text-[11px] uppercase tracking-[0.3em] chat-muted">
                             Group Requests
                           </p>
-                          <span className="text-[11px] text-[#b9b4c7]">
-                            {groupRequests.length}
+                          <span className="text-[11px] chat-muted">
+                            {filteredGroupRequests.length}
                           </span>
                         </div>
-                        {groupRequests.map(({ req, meta }, index) => {
+                        {filteredGroupRequests.map(({ req, meta }, index) => {
                           const requestUser =
                             (req.user && typeof req.user === "object" ? req.user : null) ||
                             (req.fromUser && typeof req.fromUser === "object"
@@ -3573,35 +3928,53 @@ export default function Chat() {
                           return (
                             <div
                               key={`${requestKey}-group-${index}`}
-                              className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
+                              className="chat-request-card"
                             >
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center flex-grow gap-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenProfile(requesterId, requestUser)}
+                                  className="flex items-center flex-grow gap-3 text-left"
+                                >
                                   <img
                                     src={requestAvatar}
                                     alt={requestDisplayName}
-                                    className="w-10 h-10 rounded-full object-cover"
+                                    className="chat-avatar chat-avatar-sm"
                                     loading="lazy"
                                     decoding="async"
                                   />
                                   <div className="flex-grow">
-                                    <p className="font-semibold text-sm text-[#faf0e6]">
+                                    <p className="font-semibold text-sm chat-text">
                                       {requestDisplayName}
                                     </p>
-                                    <p className="text-xs text-[#b9b4c7]">Group join request</p>
+                                    <p className="text-xs chat-muted">
+                                      Group join request
+                                    </p>
                                   </div>
+                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenProfile(requesterId, requestUser)}
+                                    className="chat-action-icon"
+                                    title="View profile"
+                                  >
+                                    <i className="fa-solid fa-eye" />
+                                  </button>
+                                  <span className="text-[10px] chat-muted">
+                                    Group Request
+                                  </span>
                                 </div>
-                                <span className="text-[10px] text-[#b9b4c7]">Group Request</span>
                               </div>
                               {meta.groupName && (
-                                <p className="text-[11px] text-[#b9b4c7]">
+                                <p className="text-[11px] chat-muted">
                                   Group: {meta.groupName}
                                 </p>
                               )}
                               <div className="flex gap-2">
                                 <Motion.button
                                   onClick={() => handleAcceptRequest(req)}
-                                  className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
+                                  className="flex-1 chat-action-primary text-xs"
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
                                 >
@@ -3609,7 +3982,7 @@ export default function Chat() {
                                 </Motion.button>
                                 <Motion.button
                                   onClick={() => handleIgnoreRequest(req)}
-                                  className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
+                                  className="flex-1 chat-action-secondary text-xs"
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
                                 >
@@ -3621,17 +3994,17 @@ export default function Chat() {
                         })}
                       </div>
                     )}
-                    {friendRequests.length > 0 && (
+                    {filteredFriendRequests.length > 0 && (
                       <div className="space-y-2">
                         <div className="flex items-center justify-between px-1">
-                          <p className="text-[11px] uppercase tracking-[0.3em] text-[#b9b4c7]">
+                          <p className="text-[11px] uppercase tracking-[0.3em] chat-muted">
                             Friend Requests
                           </p>
-                          <span className="text-[11px] text-[#b9b4c7]">
-                            {friendRequests.length}
+                          <span className="text-[11px] chat-muted">
+                            {filteredFriendRequests.length}
                           </span>
                         </div>
-                        {friendRequests.map(({ req }, index) => {
+                        {filteredFriendRequests.map(({ req }, index) => {
                           const requestUser =
                             (req.user && typeof req.user === "object" ? req.user : null) ||
                             (req.fromUser && typeof req.fromUser === "object"
@@ -3669,34 +4042,50 @@ export default function Chat() {
                           return (
                             <div
                               key={`${requestKey}-friend-${index}`}
-                              className="flex flex-col gap-3 p-3 rounded-2xl bg-white/5"
+                              className="chat-request-card"
                             >
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center flex-grow gap-3">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenProfile(requesterId, requestUser)}
+                                  className="flex items-center flex-grow gap-3 text-left"
+                                >
                                   <img
                                     src={requestAvatar}
                                     alt={requestDisplayName}
-                                    className="w-10 h-10 rounded-full object-cover"
+                                    className="chat-avatar chat-avatar-sm"
                                     loading="lazy"
                                     decoding="async"
                                   />
                                   <div className="flex-grow">
-                                    <p className="font-semibold text-sm text-[#faf0e6]">
+                                    <p className="font-semibold text-sm chat-text">
                                       {requestDisplayName}
                                     </p>
-                                    <p className="text-xs text-[#b9b4c7]">
+                                    <p className="text-xs chat-muted">
                                       {mutualCount > 0
                                         ? `${mutualCount} mutual friends`
                                         : "No mutual friends"}
                                     </p>
                                   </div>
+                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenProfile(requesterId, requestUser)}
+                                    className="chat-action-icon"
+                                    title="View profile"
+                                  >
+                                    <i className="fa-solid fa-eye" />
+                                  </button>
+                                  <span className="text-[10px] chat-muted">
+                                    Friend Request
+                                  </span>
                                 </div>
-                                <span className="text-[10px] text-[#b9b4c7]">Friend Request</span>
                               </div>
                               <div className="flex gap-2">
                                 <Motion.button
                                   onClick={() => handleAcceptRequest(req)}
-                                  className="flex-1 liquid-button text-[#faf0e6] text-xs px-3 py-2 rounded-full"
+                                  className="flex-1 chat-action-primary text-xs"
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
                                 >
@@ -3704,7 +4093,7 @@ export default function Chat() {
                                 </Motion.button>
                                 <Motion.button
                                   onClick={() => handleIgnoreRequest(req)}
-                                  className="flex-1 text-[#b9b4c7] text-xs px-3 py-2 rounded-full border border-white/10 hover:bg-white/10"
+                                  className="flex-1 chat-action-secondary text-xs"
                                   whileHover={{ scale: 1.05 }}
                                   whileTap={{ scale: 0.95 }}
                                 >

@@ -12,6 +12,8 @@ import {
   deleteProfilePic,
   deletePost,
   getUserById,
+  getUserPublicPosts,
+  fetchRankedFeedPage,
   getFriendsList,
   getFriendCount,
   searchColleges,
@@ -37,6 +39,13 @@ import {
   buildUserPreview,
   normalizeUserId,
 } from "../utils/userProfile";
+import {
+  readAnonymousPostIds,
+  readAnonymousPosts,
+  rememberAnonymousPost,
+  forgetAnonymousPost,
+} from "../utils/anonymousPosts";
+import { readFeedSnapshotPosts } from "../utils/feedSnapshot";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const HELP_CENTER_URL = "https://incampus-help.online";
@@ -46,6 +55,178 @@ const AVATAR_OUTPUT_SIZE = 512;
 const AVATAR_PREVIEW_SIZE = 96;
 const AVATAR_ZOOM_MIN = 1;
 const AVATAR_ZOOM_MAX = 3;
+const ANON_RECOVERY_LIMIT = 50;
+const ANON_RECOVERY_SESSION_PREFIX = "incampus:anon:recovery:";
+const PROFILE_POSTS_LIMIT = 20;
+const PROFILE_POSTS_CACHE_PREFIX = "incampus:profile:posts:cache:";
+const PROFILE_POSTS_CACHE_TTL = 5 * 60 * 1000;
+const THEME_STORAGE_KEY = "incampus-theme";
+const THEME_ANIM_CLASS = "theme-transition";
+const THEME_ANIM_DURATION = 400;
+const readAnonSet = (userId) =>
+  new Set(readAnonymousPostIds(userId).map((id) => String(id)));
+
+const resolveStoredTheme = () => {
+  if (typeof window === "undefined") return "current";
+  try {
+    const stored = localStorage.getItem(THEME_STORAGE_KEY);
+    if (
+      stored === "current" ||
+      stored === "dark" ||
+      stored === "light" ||
+      stored === "ocean" ||
+      stored === "sky" ||
+      stored === "midnight"
+    ) {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return "current";
+};
+
+const readProfilePostsCache = (userId) => {
+  if (!userId || typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(`${PROFILE_POSTS_CACHE_PREFIX}${userId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_POSTS_CACHE_TTL) return [];
+    return Array.isArray(parsed.items) ? parsed.items : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeProfilePostsCache = (userId, posts) => {
+  if (!userId || typeof window === "undefined") return;
+  const items = Array.isArray(posts) ? posts.slice(0, 60) : [];
+  try {
+    localStorage.setItem(
+      `${PROFILE_POSTS_CACHE_PREFIX}${userId}`,
+      JSON.stringify({ ts: Date.now(), items })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const resolveIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolveIdValue(nested);
+  }
+  return "";
+};
+
+const resolvePostIdentity = (post) =>
+  resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id || "");
+
+const normalizeProfilePostsResponse = (response) => {
+  if (Array.isArray(response)) {
+    return { items: response, nextCursor: "", hasMore: undefined };
+  }
+  const items = Array.isArray(response?.items)
+    ? response.items
+    : Array.isArray(response?.posts)
+      ? response.posts
+      : Array.isArray(response?.publicPosts)
+        ? response.publicPosts
+        : Array.isArray(response?.data?.items)
+          ? response.data.items
+          : Array.isArray(response?.data?.posts)
+            ? response.data.posts
+            : Array.isArray(response?.data?.publicPosts)
+              ? response.data.publicPosts
+              : Array.isArray(response?.data)
+                ? response.data
+                : [];
+  const nextCursor =
+    response?.nextCursor ||
+    response?.next_cursor ||
+    response?.cursor ||
+    response?.data?.nextCursor ||
+    response?.data?.next_cursor ||
+    "";
+  const hasMore =
+    typeof response?.hasMore === "boolean"
+      ? response.hasMore
+      : typeof response?.data?.hasMore === "boolean"
+        ? response.data.hasMore
+        : undefined;
+  return { items, nextCursor, hasMore };
+};
+
+const mergePostsByIdentity = (primary = [], secondary = []) => {
+  const combined = [];
+  const indexById = new Map();
+  const add = (post) => {
+    const id = resolvePostIdentity(post);
+    if (!id) {
+      combined.push(post);
+      return;
+    }
+    if (indexById.has(id)) {
+      const idx = indexById.get(id);
+      const current = combined[idx];
+      combined[idx] = current === post ? current : { ...current, ...post };
+      return;
+    }
+    indexById.set(id, combined.length);
+    combined.push(post);
+  };
+  (Array.isArray(primary) ? primary : []).forEach(add);
+  (Array.isArray(secondary) ? secondary : []).forEach(add);
+  return combined;
+};
+
+const isPostAnonymous = (post) =>
+  Boolean(
+    post?.isAnonymous ||
+      post?.is_anonymous ||
+      post?.anonymous ||
+      post?.isAnon ||
+      post?.isAnonymousPost ||
+      post?.author?.isAnonymous ||
+    post?.author?.anonymous
+  );
+
+const shouldRunAnonRecovery = (userId) => {
+  if (!userId || typeof window === "undefined") return false;
+  const key = `${ANON_RECOVERY_SESSION_PREFIX}${userId}`;
+  if (sessionStorage.getItem(key)) return false;
+  sessionStorage.setItem(key, String(Date.now()));
+  return true;
+};
+
+const resolvePostOwnerId = (post) =>
+  normalizeUserId([
+    post?.authorId,
+    post?.author_id,
+    post?.userId,
+    post?.user_id,
+    post?.ownerId,
+    post?.owner_id,
+    post?.createdById,
+    post?.created_by,
+    post?.creatorId,
+    post?.creator_id,
+    post?.author,
+    post?.user,
+    post?.owner,
+    post?.createdBy,
+    post?.creator,
+    post?.__localAuthorId,
+    post?.localAuthorId,
+  ]);
 
 const clampValue = (value, min, max) => Math.min(Math.max(value, min), max);
 
@@ -118,8 +299,18 @@ const getPasswordStrength = (value = "") => {
   return { score, label, color, hasLetter, hasNumber, hasSpecial };
 };
 
+const readStoredAuthToken = () => {
+  if (typeof window === "undefined") return "";
+  return (
+    localStorage.getItem("authToken") ||
+    localStorage.getItem("token") ||
+    localStorage.getItem("accessToken") ||
+    ""
+  );
+};
+
 export default function Profile() {
-  const { currentUser, setCurrentUser, logout } = useAuth();
+  const { currentUser, setCurrentUser, logout, authToken, loading: authLoading } = useAuth();
   const { userId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -146,6 +337,14 @@ export default function Profile() {
   const [visiblePostsCount, setVisiblePostsCount] = useState(20);
   const [selectedPost, setSelectedPost] = useState(null);
   const [activeTab, setActiveTab] = useState("overview");
+  const [selectedTheme, setSelectedTheme] = useState(() => resolveStoredTheme());
+  const [profilePosts, setProfilePosts] = useState([]);
+  const [profilePostsLoading, setProfilePostsLoading] = useState(false);
+  const [profilePostsHasMore, setProfilePostsHasMore] = useState(true);
+  const [profilePostsLoaded, setProfilePostsLoaded] = useState(false);
+  const profilePostsCursorRef = useRef("");
+  const profilePostsRef = useRef([]);
+  const profileAuthTokenRef = useRef("");
   const [bio, setBio] = useState("");
   const [settingsName, setSettingsName] = useState("");
   const [settingsUsername, setSettingsUsername] = useState("");
@@ -231,6 +430,131 @@ export default function Profile() {
   const showVerifiedTick = Boolean(
     currentUser?.isVerified || currentUser?.isVerifiedCommunity
   );
+  const isDarkTheme = useMemo(
+    () => !["light", "sky"].includes(selectedTheme),
+    [selectedTheme]
+  );
+  const activeThemeId = useMemo(
+    () => (selectedTheme === "dark" ? "current" : selectedTheme),
+    [selectedTheme]
+  );
+  const themeOptions = useMemo(
+    () => [
+      { id: "current", label: "Default", caption: "Current" },
+      { id: "ocean", label: "Ocean", caption: "Brand" },
+      { id: "sky", label: "Sky", caption: "Light" },
+      { id: "midnight", label: "Midnight", caption: "Dark" },
+    ],
+    []
+  );
+  const applyTheme = useCallback((theme) => {
+    if (typeof document === "undefined") return;
+    const root = document.documentElement;
+    root.classList.add(THEME_ANIM_CLASS);
+    if (theme && theme !== "current") {
+      root.setAttribute("data-theme", theme);
+    } else {
+      root.removeAttribute("data-theme");
+    }
+    const scheme = theme === "light" || theme === "sky" ? "light" : "dark";
+    root.style.colorScheme = scheme;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // ignore storage errors
+    }
+    window.setTimeout(() => {
+      root.classList.remove(THEME_ANIM_CLASS);
+    }, THEME_ANIM_DURATION);
+  }, []);
+  const handleToggleTheme = useCallback(() => {
+    const nextTheme = isDarkTheme ? "light" : "dark";
+    setSelectedTheme(nextTheme);
+    applyTheme(nextTheme);
+  }, [applyTheme, isDarkTheme]);
+  const handleSelectTheme = useCallback(
+    (theme) => {
+      setSelectedTheme(theme);
+      applyTheme(theme);
+    },
+    [applyTheme]
+  );
+
+  const loadProfilePosts = useCallback(
+    async ({ reset = false } = {}) => {
+      if (!resolvedCurrentUserId || isViewingOtherUser) return;
+      if (profilePostsLoading) return;
+      const storedToken = readStoredAuthToken();
+      if (storedToken) {
+        profileAuthTokenRef.current = storedToken;
+      } else if (authLoading) {
+        return;
+      }
+      setProfilePostsLoading(true);
+      try {
+        const cursorParam = reset ? "" : profilePostsCursorRef.current || "";
+        const params = {
+          limit: PROFILE_POSTS_LIMIT,
+          ...(cursorParam ? { cursor: cursorParam } : {}),
+        };
+        const response = await getUserPublicPosts(resolvedCurrentUserId, params);
+        const { items, nextCursor, hasMore } = normalizeProfilePostsResponse(response);
+        const enriched = items.map((post) => {
+          if (!post || typeof post !== "object") return post;
+          const ownerId = resolvePostOwnerId(post);
+          if (ownerId) return post;
+          return { ...post, __localAuthorId: resolvedCurrentUserId };
+        });
+        const base = reset ? [] : profilePostsRef.current;
+        const merged = mergePostsByIdentity(base, enriched);
+        profilePostsRef.current = merged;
+        setProfilePosts(merged);
+        if (merged.length) {
+          writeProfilePostsCache(resolvedCurrentUserId, merged);
+        }
+        if (nextCursor) {
+          profilePostsCursorRef.current = nextCursor;
+        }
+        setProfilePostsHasMore(
+          typeof hasMore === "boolean" ? hasMore : items.length >= PROFILE_POSTS_LIMIT
+        );
+        setProfilePostsLoaded(true);
+      } catch {
+        setProfilePostsHasMore(false);
+        setProfilePostsLoaded(true);
+      } finally {
+        setProfilePostsLoading(false);
+      }
+    },
+    [resolvedCurrentUserId, isViewingOtherUser, profilePostsLoading]
+  );
+
+  useEffect(() => {
+    if (!resolvedCurrentUserId || isViewingOtherUser) return;
+    profilePostsCursorRef.current = "";
+    setProfilePostsHasMore(true);
+    const cachedPosts = readProfilePostsCache(resolvedCurrentUserId);
+    if (cachedPosts.length > 0) {
+      profilePostsRef.current = cachedPosts;
+      setProfilePosts(cachedPosts);
+      setUserPosts(cachedPosts);
+      setProfilePostsLoaded(true);
+    } else {
+      profilePostsRef.current = [];
+      setProfilePosts([]);
+      setUserPosts([]);
+      setProfilePostsLoaded(false);
+    }
+    loadProfilePosts({ reset: true });
+  }, [resolvedCurrentUserId, isViewingOtherUser, loadProfilePosts]);
+
+  useEffect(() => {
+    if (!resolvedCurrentUserId || isViewingOtherUser) return;
+    if (!authToken) return;
+    if (profileAuthTokenRef.current === authToken) return;
+    profileAuthTokenRef.current = authToken;
+    loadProfilePosts({ reset: true });
+  }, [resolvedCurrentUserId, isViewingOtherUser, authToken, loadProfilePosts]);
 
   useEffect(() => {
     if (previewUser && previewUser._id) {
@@ -353,14 +677,92 @@ export default function Profile() {
   }, []);
 
   useEffect(() => {
-    if (currentUser && posts) {
-      const filtered = posts.filter(
-        (p) =>
-          String(p.author?._id || p.authorId || p.author) === String(currentUser.id)
-      );
-      setUserPosts(filtered);
-    }
-  }, [posts, currentUser]);
+    if (!currentUser) return;
+    const currentId = String(currentUser.id || currentUser._id || "");
+    if (!currentId) return;
+    const anonSet = readAnonSet(currentId);
+    const anonSnapshots = readAnonymousPosts(currentId);
+    const feedSnapshot = readFeedSnapshotPosts();
+    const feedAnon = Array.isArray(feedSnapshot)
+      ? feedSnapshot.filter(
+          (post) =>
+            isPostAnonymous(post) &&
+            String(resolvePostOwnerId(post)) === String(currentId)
+        )
+      : [];
+    feedAnon.forEach((post) => rememberAnonymousPost(currentId, post));
+
+    const baseProfile = Array.isArray(profilePosts) ? profilePosts : [];
+    const normalizedBase = baseProfile.map((post) => {
+      if (!post || typeof post !== "object") return post;
+      const ownerId = resolvePostOwnerId(post);
+      if (ownerId) return post;
+      return { ...post, __localAuthorId: currentId, __isLocalOwner: true };
+    });
+
+    const extrasSource = mergePostsByIdentity(posts || [], [
+      ...anonSnapshots,
+      ...feedAnon,
+    ]);
+    const extras = extrasSource.filter((post) => {
+      const ownerId = resolvePostOwnerId(post);
+      if (ownerId && String(ownerId) === currentId) return true;
+      if (!ownerId) {
+        const postId = resolvePostIdentity(post);
+        return postId && anonSet.has(postId);
+      }
+      return false;
+    });
+
+    const merged = mergePostsByIdentity(normalizedBase, extras);
+    const owned = merged.map((post) => {
+      if (!post || typeof post !== "object") return post;
+      if (post.__isLocalOwner) return post;
+      const ownerId = resolvePostOwnerId(post);
+      const localOwnerId = ownerId || currentId;
+      return {
+        ...post,
+        __isLocalOwner: true,
+        ...(localOwnerId ? { __localAuthorId: localOwnerId } : {}),
+      };
+    });
+    setUserPosts(owned);
+  }, [posts, currentUser, profilePosts]);
+
+  useEffect(() => {
+    const userId = currentUser?.id || currentUser?._id;
+    if (!userId || isViewingOtherUser) return;
+    if (!shouldRunAnonRecovery(userId)) return;
+    let active = true;
+    const recover = async () => {
+      try {
+        const response = await fetchRankedFeedPage({
+          page: 1,
+          limit: ANON_RECOVERY_LIMIT,
+        });
+        const list = Array.isArray(response?.items)
+          ? response.items
+          : Array.isArray(response)
+            ? response
+            : [];
+        const recovered = list.filter(
+          (post) =>
+            isPostAnonymous(post) &&
+            String(resolvePostOwnerId(post)) === String(userId)
+        );
+        if (!recovered.length) return;
+        recovered.forEach((post) => rememberAnonymousPost(userId, post));
+        if (!active) return;
+        setUserPosts((prev) => mergePostsByIdentity(prev, recovered));
+      } catch {
+        // ignore recovery errors
+      }
+    };
+    recover();
+    return () => {
+      active = false;
+    };
+  }, [currentUser?.id, currentUser?._id, isViewingOtherUser, fetchRankedFeedPage]);
 
   useEffect(() => {
     setVisiblePostsCount((prev) => {
@@ -376,23 +778,37 @@ export default function Profile() {
     [userPosts, visiblePostsCount]
   );
   const hasMoreUserPosts = visiblePostsCount < userPosts.length;
+  const canLoadMorePosts = hasMoreUserPosts || profilePostsHasMore;
 
   useEffect(() => {
     if (!profileLoadMoreRef.current) return;
-    if (!hasMoreUserPosts) return;
+    if (!canLoadMorePosts) return;
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[0];
         if (!entry?.isIntersecting) return;
-        setVisiblePostsCount((prev) =>
-          Math.min(prev + 20, userPosts.length)
-        );
+        if (visiblePostsCount < userPosts.length) {
+          setVisiblePostsCount((prev) =>
+            Math.min(prev + 20, userPosts.length)
+          );
+          return;
+        }
+        if (profilePostsHasMore && !profilePostsLoading) {
+          loadProfilePosts();
+        }
       },
       { rootMargin: "200px" }
     );
     observer.observe(profileLoadMoreRef.current);
     return () => observer.disconnect();
-  }, [hasMoreUserPosts, userPosts.length]);
+  }, [
+    canLoadMorePosts,
+    userPosts.length,
+    visiblePostsCount,
+    profilePostsHasMore,
+    profilePostsLoading,
+    loadProfilePosts,
+  ]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -1158,16 +1574,25 @@ export default function Profile() {
   const handleDeletePost = async (postId) => {
     if (!confirm("Delete this post?")) return;
     const targetId = String(postId || "");
+    const currentUserId = currentUser?.id || currentUser?._id;
     if (targetId) {
       removePost(targetId);
+      if (currentUserId) {
+        forgetAnonymousPost(currentUserId, targetId);
+      }
       setUserPosts((prev) =>
         prev.filter(
-          (post) =>
-            String(
-              post?._id || post?.id || post?.postId || post?.post_id || ""
-            ) !== targetId
+          (post) => resolvePostIdentity(post) !== targetId
         )
       );
+      setProfilePosts((prev) => {
+        const next = prev.filter((post) => resolvePostIdentity(post) !== targetId);
+        profilePostsRef.current = next;
+        if (currentUserId) {
+          writeProfilePostsCache(currentUserId, next);
+        }
+        return next;
+      });
     }
     setToast({ title: "Post Deleted", message: "Your post was removed." });
     try {
@@ -1711,7 +2136,18 @@ export default function Profile() {
                 Your Posts
               </h3>
 
-              {userPosts.length === 0 ? (
+              {!profilePostsLoaded && userPosts.length === 0 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                  {[1, 2, 3, 4, 5, 6, 7, 8].map((item) => (
+                    <div
+                      key={`profile-initial-loading-${item}`}
+                      className="aspect-square rounded-lg border border-white/10 bg-white/5 animate-pulse"
+                    >
+                      <div className="h-full w-full rounded-lg bg-white/10" />
+                    </div>
+                  ))}
+                </div>
+              ) : userPosts.length === 0 ? (
                 <div className="text-center p-12 glass-card rounded-3xl mt-6">
                   <i className="fa-solid fa-ghost text-3xl text-[#b9b4c7] mb-3"></i>
                   <p className="text-[#b9b4c7]">
@@ -1723,17 +2159,24 @@ export default function Profile() {
                   {visibleUserPosts.map((post, index) => (
                     <Motion.div
                       key={
-                        post._id ||
-                        post.id ||
-                        post.postId ||
-                        post.post_id ||
-                        `post-${index}`
+                        resolvePostIdentity(post) || `post-${index}`
                       }
                       initial={{ opacity: 0, scale: 0.9 }}
                       animate={{ opacity: 1, scale: 1 }}
                       transition={{ delay: index * 0.05 }}
                       className="aspect-square relative group cursor-pointer"
-                      onClick={() => setSelectedPost(post)}
+                      onClick={() => {
+                        const ownerId = resolvedCurrentUserId;
+                        if (ownerId) {
+                          setSelectedPost({
+                            ...post,
+                            __isLocalOwner: true,
+                            __localAuthorId: ownerId,
+                          });
+                        } else {
+                          setSelectedPost(post);
+                        }
+                      }}
                     >
                       {post.mediaUrl ? (
                         <img
@@ -1764,7 +2207,7 @@ export default function Profile() {
                       </div>
                     </Motion.div>
                   ))}
-                  {hasMoreUserPosts && (
+                  {canLoadMorePosts && (
                     <div
                       ref={profileLoadMoreRef}
                       className="col-span-full h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
@@ -1875,6 +2318,61 @@ export default function Profile() {
 
         {resolvedActiveTab === "settings" && (
           <div className="space-y-6">
+            <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-[#faf0e6]">Appearance</h3>
+                <span className="text-xs text-[#b9b4c7]">Theme Mode</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {themeOptions.map((theme) => {
+                  const isActive = activeThemeId === theme.id;
+                  return (
+                    <button
+                      key={theme.id}
+                      type="button"
+                      onClick={() => handleSelectTheme(theme.id)}
+                      className={`theme-card ${isActive ? "active" : ""}`}
+                    >
+                      {isActive && (
+                        <span className="theme-card-check">
+                          <i className="fa-solid fa-check"></i>
+                        </span>
+                      )}
+                      <div
+                        className="theme-card-preview"
+                        data-theme={theme.id}
+                      ></div>
+                      <div>
+                        <p className="text-sm font-semibold text-[#faf0e6]">
+                          {theme.label}
+                        </p>
+                        <p className="text-[11px] text-[#b9b4c7]">
+                          {theme.caption}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-5 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-[#faf0e6]">Quick Toggle</p>
+                  <p className="text-xs text-[#b9b4c7]">Dark / Light</p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isDarkTheme}
+                  aria-label="Toggle dark mode"
+                  onClick={handleToggleTheme}
+                  className={`theme-toggle ${isDarkTheme ? "active" : ""}`}
+                >
+                  <span className="theme-toggle-knob" />
+                </button>
+              </div>
+            </div>
+
             <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
               <h3 className="text-lg font-semibold text-[#faf0e6] mb-4">
                 Account Details

@@ -63,8 +63,8 @@ export default function RootTabs() {
   const modalProfileRequested = Boolean(location.state?.modal);
   const shouldOverlayProfile = Boolean(
     profileRouteId &&
-      !isSelfProfile &&
-      (modalProfileRequested || (prevTabRef.current && prevTabRef.current !== "profile"))
+      (modalProfileRequested ||
+        (!isSelfProfile && prevTabRef.current && prevTabRef.current !== "profile"))
   );
   const activeKey = shouldOverlayProfile
     ? prevTabRef.current || "profile"

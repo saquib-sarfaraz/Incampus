@@ -1,18 +1,28 @@
 /* eslint-disable no-undef */
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.0/firebase-messaging-compat.js");
+importScripts("/firebase-config.js");
 
-const firebaseConfig = {
-  apiKey: "REPLACE_WITH_FIREBASE_API_KEY",
-  authDomain: "REPLACE_WITH_FIREBASE_AUTH_DOMAIN",
-  projectId: "REPLACE_WITH_FIREBASE_PROJECT_ID",
-  storageBucket: "REPLACE_WITH_FIREBASE_STORAGE_BUCKET",
-  messagingSenderId: "REPLACE_WITH_FIREBASE_MESSAGING_SENDER_ID",
-  appId: "REPLACE_WITH_FIREBASE_APP_ID",
-  measurementId: "REPLACE_WITH_FIREBASE_MEASUREMENT_ID",
+const firebaseConfig =
+  self.__FIREBASE_CONFIG__ || {
+    apiKey: "REPLACE_WITH_FIREBASE_API_KEY",
+    authDomain: "REPLACE_WITH_FIREBASE_AUTH_DOMAIN",
+    projectId: "REPLACE_WITH_FIREBASE_PROJECT_ID",
+    storageBucket: "REPLACE_WITH_FIREBASE_STORAGE_BUCKET",
+    messagingSenderId: "REPLACE_WITH_FIREBASE_MESSAGING_SENDER_ID",
+    appId: "REPLACE_WITH_FIREBASE_APP_ID",
+    measurementId: "REPLACE_WITH_FIREBASE_MEASUREMENT_ID",
+  };
+
+const isValidValue = (value) => {
+  if (!value) return false;
+  const raw = String(value);
+  return raw && !raw.startsWith("REPLACE_WITH");
 };
-
-const hasConfig = firebaseConfig.apiKey && firebaseConfig.projectId && firebaseConfig.messagingSenderId;
+const hasConfig =
+  isValidValue(firebaseConfig.apiKey) &&
+  isValidValue(firebaseConfig.projectId) &&
+  isValidValue(firebaseConfig.messagingSenderId);
 
 if (hasConfig) {
   firebase.initializeApp(firebaseConfig);
