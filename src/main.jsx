@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "./App.jsx";
 import "./index.css";
 
+if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/firebase-messaging-sw.js").catch(() => {});
+  });
+}
+
 if (import.meta.env.PROD && typeof window !== "undefined") {
   window.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { isDisabled: true };
 }
