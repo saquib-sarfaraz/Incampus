@@ -57,6 +57,7 @@ export default function GroupProfileModal({
   onClose,
   onMembershipChange,
   onDeleted,
+  onOpenProfile,
 }) {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
@@ -623,6 +624,11 @@ export default function GroupProfileModal({
                                     isVerified: user.isVerified,
                                     isVerifiedCommunity: user.isVerifiedCommunity,
                                   });
+                                  if (onOpenProfile) {
+                                    onOpenProfile(safeUserId, preview);
+                                    onClose?.();
+                                    return;
+                                  }
                                   navigate(`/profile/${safeUserId}`, {
                                     state: { userPreview: preview, modal: true },
                                   });

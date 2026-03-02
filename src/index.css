@@ -1561,3 +1561,97 @@ html[data-theme] .bg-\[\#1a120b\]\/95 {
   margin-top: 4px;
   text-align: right;
 }
+
+.install-banner {
+  position: fixed;
+  left: 16px;
+  right: 16px;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  z-index: 9999;
+  animation: install-banner-slide-up 0.4s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes install-banner-slide-up {
+  from {
+    transform: translateY(120%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.install-content {
+  pointer-events: auto;
+  background: rgba(20, 20, 25, 0.95);
+  backdrop-filter: blur(14px);
+  border-radius: 16px;
+  padding: 14px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  max-width: 720px;
+  margin: 0 auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.install-content img {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+}
+
+.install-content .left {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.install-content .title {
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.install-content .subtitle {
+  font-size: 12px;
+  color: #aaa;
+}
+
+.install-content .actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.install-content .dismiss {
+  background: transparent;
+  border: none;
+  color: #b9b4c7;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.install-content .install-btn {
+  background: #6366f1;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 10px;
+  color: #ffffff;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.install-content .install-btn:hover {
+  filter: brightness(1.05);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .install-banner {
+    animation: none;
+  }
+}
