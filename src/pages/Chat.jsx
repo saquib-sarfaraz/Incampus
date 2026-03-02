@@ -26,6 +26,7 @@ import BottomNav from "../components/common/BottomNav";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import ReportModal from "../components/moderation/ReportModal";
 import PostModal from "../components/profile/PostModal";
+import UserProfileModal from "../components/profile/UserProfileModal";
 import BlueTick from "../components/common/BlueTick";
 import CreateGroupModal from "../components/chat/CreateGroupModal";
 import GroupProfileModal from "../components/chat/GroupProfileModal";
@@ -974,8 +975,10 @@ export default function Chat() {
     rejectFriend,
     prefetchUserProfile,
   } = useApp();
+  const [activePanel, setActivePanel] = useState("chat");
+  const [selectedProfile, setSelectedProfile] = useState(null);
   const handleOpenProfile = useCallback(
-    (userId, preview) => {
+    (userId, preview, options = {}) => {
       const safeUserId = normalizeUserId(userId || preview);
       if (!safeUserId) return;
       const cachedUser = getUserFromCache?.(safeUserId);
@@ -983,11 +986,26 @@ export default function Chat() {
       const previewUser = buildUserPreview({ ...(cachedUser || {}), ...(preview || {}) }, {
         _id: safeUserId,
       });
+      if (options?.panel) {
+        setSelectedProfile(previewUser);
+        setActivePanel("profile");
+        return;
+      }
       navigate(`/profile/${safeUserId}`, {
         state: { userPreview: previewUser, modal: true },
       });
     },
     [navigate, prefetchUserProfile, getUserFromCache]
+  );
+  const handleCloseProfilePanel = useCallback(() => {
+    setActivePanel("chat");
+    setSelectedProfile(null);
+  }, []);
+  const handleOpenProfileInPanel = useCallback(
+    (userId, preview) => {
+      handleOpenProfile(userId, preview, { panel: true });
+    },
+    [handleOpenProfile]
   );
   const [activeTab, setActiveTab] = useState("contacts");
   const [searchQuery, setSearchQuery] = useState("");
@@ -3330,6 +3348,11 @@ export default function Chat() {
   const currentUserId = currentUser?.id;
   const activeChatUser = allContacts.find((c) => c.id === activeChatId);
   const isChatOpen = Boolean(activeChatId);
+  const showProfilePanel = activePanel === "profile" && Boolean(selectedProfile);
+  useEffect(() => {
+    setActivePanel("chat");
+    setSelectedProfile(null);
+  }, [activeChatId]);
   useEffect(() => {
     if (!activeChatUser?.isGroup && showGroupProfile) {
       setShowGroupProfile(false);
@@ -4125,225 +4148,264 @@ export default function Chat() {
           } ${isMobile && !isChatOpen ? "pointer-events-none" : ""}`}
         >
           {isChatOpen ? (
-            <>
-              <div
-                id="chat-header"
-                className="sticky top-0 flex-shrink-0 z-30 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
-              >
-                <div className="flex items-center gap-3">
-                  {isMobile && (
+            showProfilePanel ? (
+              <>
+                <div
+                  id="chat-header"
+                  className="sticky top-0 flex-shrink-0 z-30 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
+                >
+                  <div className="flex items-center gap-3">
                     <button
-                      onClick={handleCloseChat}
+                      type="button"
+                      onClick={handleCloseProfilePanel}
                       className="text-[#b9b4c7] hover:text-[#faf0e6] transition-colors"
+                      aria-label="Back to chat"
                     >
                       <i className="fa-solid fa-arrow-left"></i>
                     </button>
-                  )}
-                  {activeChatUser?.isGroup ? (
-                    <>
-                      <img
-                        src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
-                        alt={activeChatName}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                      <div>
-                        <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
-                          <span className="flex items-center">
-                            {activeChatName || "Chat"}
-                            {activeChatVerified && <BlueTick className="text-[12px]" />}
-                          </span>
+                    <div>
+                      <p className="font-semibold text-[#faf0e6]">Profile</p>
+                      {selectedProfile?.displayName && (
+                        <p className="text-xs text-[#b9b4c7] truncate">
+                          {selectedProfile.displayName}
                         </p>
-                        <p className="text-xs text-[#b9b4c7]">
-                          {showTyping ? "Someone is typing..." : "Group channel"}
-                        </p>
-                      </div>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleOpenProfile(
-                          activeChatUser?.id ||
-                            activeChatUser?._id ||
-                            activeChatUser?.userId ||
-                            activeChatUser?.user_id,
-                          activeChatUser
-                        )
-                      }
-                      className="flex items-center gap-3 text-left"
-                    >
-                      <img
-                        src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
-                        alt={activeChatName}
-                        className="w-10 h-10 rounded-full object-cover"
-                      />
-                      <div>
-                        <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
-                          <span className="flex items-center">
-                            {activeChatName || "Chat"}
-                            {activeChatVerified && <BlueTick className="text-[12px]" />}
-                          </span>
-                          {activePresence.isOnline && (
-                            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
-                          )}
-                        </p>
-                        <p className="text-xs text-[#b9b4c7]">
-                          {showTyping
-                            ? "Typing..."
-                            : activePresence.isOnline
-                              ? "Online"
-                              : formatLastSeen(activePresence.lastSeen)}
-                        </p>
-                      </div>
-                    </button>
-                  )}
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {activeChatUser?.isGroup && (
-                    <button
-                      type="button"
-                      onClick={() => setShowGroupProfile(true)}
-                      className="h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm text-[#b9b4c7] hover:text-[#faf0e6] transition-colors"
-                      title="Group info"
-                    >
-                      <i className="fa-solid fa-circle-info" />
-                    </button>
-                  )}
-                  {isMobile && (
-                    <button
-                      type="button"
-                      onClick={() => setChatSoundEnabled((prev) => !prev)}
-                      className={`h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm transition-colors ${
-                        chatSoundEnabled
-                          ? "bg-white/10 text-[#faf0e6]"
-                          : "bg-white/5 text-[#b9b4c7]"
-                      }`}
-                      title={chatSoundEnabled ? "Sound on" : "Sound off"}
-                      aria-pressed={chatSoundEnabled}
-                    >
-                      <i
-                        className={`fa-solid ${
-                          chatSoundEnabled ? "fa-volume-high" : "fa-volume-xmark"
-                        }`}
-                      />
-                    </button>
-                  )}
-                  {!activeChatUser?.isGroup && activeChatUser?.id && (
-                    <button
-                      onClick={handleBlockActiveUser}
-                      className="text-xs text-rose-200 border border-rose-300/30 px-3 py-1 rounded-full hover:bg-rose-300/10"
-                    >
-                      <i className="fa-solid fa-ban mr-1"></i>
-                      Block
-                    </button>
-                  )}
+                <div className="flex-1 min-h-0 overflow-y-auto">
+                  <UserProfileModal
+                    isOpen
+                    user={selectedProfile}
+                    currentUser={currentUser}
+                    onClose={handleCloseProfilePanel}
+                    variant="panel"
+                  />
                 </div>
-              </div>
-
-              <div
-                id="chat-messages"
-                className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 pb-[calc(5rem+env(safe-area-inset-bottom))] space-y-4"
-                style={{ WebkitOverflowScrolling: "touch" }}
-                ref={messagesContainerRef}
-              >
-                <MessageList
-                  messages={visibleMessages}
-                  currentUserId={currentUserId}
-                  isActiveGroupChat={isActiveGroupChat}
-                  isDirectChat={isDirectChat}
-                  onOpenSharedPost={handleOpenSharedPost}
-                  onReport={handleReportMessage}
-                  onDelete={handleDeleteMessage}
-                  canDeleteMessage={canDeleteMessage}
-                  isMobile={isMobile}
-                  resolveMessageSender={resolveMessageSender}
-                  onOpenProfile={handleOpenProfile}
-                  messagesEndRef={messagesEndRef}
-                />
-              </div>
-
-              <div
-                id="chat-input-bar"
-                className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
-              >
-                {activeChatUser?.isGroup && !isActiveGroupMember && (
-                  <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
-                    <span className="min-w-0">
-                      {isActiveGroupPending
-                        ? "Join request pending approval."
-                        : isActiveGroupPrivate
-                          ? "Private group. Admins can add members."
-                          : "Request access to join this group."}
-                    </span>
-                    {!isActiveGroupPending && !isActiveGroupPrivate && (
+              </>
+            ) : (
+              <>
+                <div
+                  id="chat-header"
+                  className="sticky top-0 flex-shrink-0 z-30 h-16 px-4 py-2 border-b border-white/10 flex items-center justify-between bg-[#1a120b]/95 backdrop-blur-xl"
+                >
+                  <div className="flex items-center gap-3">
+                    {isMobile && (
+                      <button
+                        onClick={handleCloseChat}
+                        className="text-[#b9b4c7] hover:text-[#faf0e6] transition-colors"
+                      >
+                        <i className="fa-solid fa-arrow-left"></i>
+                      </button>
+                    )}
+                    {activeChatUser?.isGroup ? (
+                      <>
+                        <img
+                          src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
+                          alt={activeChatName}
+                          className="w-10 h-10 rounded-full object-cover"
+                        />
+                        <div>
+                          <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
+                            <span className="flex items-center">
+                              {activeChatName || "Chat"}
+                              {activeChatVerified && <BlueTick className="text-[12px]" />}
+                            </span>
+                          </p>
+                          <p className="text-xs text-[#b9b4c7]">
+                            {showTyping ? "Someone is typing..." : "Group channel"}
+                          </p>
+                        </div>
+                      </>
+                    ) : (
                       <button
                         type="button"
-                        onClick={handleRequestJoinGroup}
-                        disabled={groupRequestLoading}
-                        className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
+                        onClick={() =>
+                          handleOpenProfile(
+                            activeChatUser?.id ||
+                              activeChatUser?._id ||
+                              activeChatUser?.userId ||
+                              activeChatUser?.user_id,
+                            activeChatUser
+                          )
+                        }
+                        className="flex items-center gap-3 text-left"
                       >
-                        {groupRequestLoading ? "Sending..." : "Request Join"}
+                        <img
+                          src={activeChatUser?.profilePicUrl || ANONYMOUS_AVATAR}
+                          alt={activeChatName}
+                          className="w-10 h-10 rounded-full object-cover"
+                        />
+                        <div>
+                          <p className="font-semibold text-[#faf0e6] flex items-center gap-2">
+                            <span className="flex items-center">
+                              {activeChatName || "Chat"}
+                              {activeChatVerified && <BlueTick className="text-[12px]" />}
+                            </span>
+                            {activePresence.isOnline && (
+                              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
+                            )}
+                          </p>
+                          <p className="text-xs text-[#b9b4c7]">
+                            {showTyping
+                              ? "Typing..."
+                              : activePresence.isOnline
+                                ? "Online"
+                                : formatLastSeen(activePresence.lastSeen)}
+                          </p>
+                        </div>
                       </button>
                     )}
                   </div>
-                )}
-                {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
-                  <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
-                    <span className="min-w-0">Only friends can message.</span>
-                    {friendStatus === "none" ? (
+                  <div className="flex items-center gap-2">
+                    {activeChatUser?.isGroup && (
                       <button
                         type="button"
-                        onClick={handleSendFriendRequest}
-                        disabled={friendRequestLoading}
-                        className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
+                        onClick={() => setShowGroupProfile(true)}
+                        className="h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm text-[#b9b4c7] hover:text-[#faf0e6] transition-colors"
+                        title="Group info"
                       >
-                        {friendRequestLoading ? "Sending..." : "Send Request"}
+                        <i className="fa-solid fa-circle-info" />
                       </button>
-                    ) : friendStatus === "pending_sent" ? (
-                      <span className="text-[#b9b4c7]">Request sent</span>
-                    ) : friendStatus === "pending_received" ? (
-                      <span className="text-[#b9b4c7]">Request pending</span>
-                    ) : friendStatus === "blocked" ? (
-                      <span className="text-[#b9b4c7]">Blocked</span>
-                    ) : null}
+                    )}
+                    {isMobile && (
+                      <button
+                        type="button"
+                        onClick={() => setChatSoundEnabled((prev) => !prev)}
+                        className={`h-9 w-9 rounded-full border border-white/10 flex items-center justify-center text-sm transition-colors ${
+                          chatSoundEnabled
+                            ? "bg-white/10 text-[#faf0e6]"
+                            : "bg-white/5 text-[#b9b4c7]"
+                        }`}
+                        title={chatSoundEnabled ? "Sound on" : "Sound off"}
+                        aria-pressed={chatSoundEnabled}
+                      >
+                        <i
+                          className={`fa-solid ${
+                            chatSoundEnabled ? "fa-volume-high" : "fa-volume-xmark"
+                          }`}
+                        />
+                      </button>
+                    )}
+                    {!activeChatUser?.isGroup && activeChatUser?.id && (
+                      <button
+                        onClick={handleBlockActiveUser}
+                        className="text-xs text-rose-200 border border-rose-300/30 px-3 py-1 rounded-full hover:bg-rose-300/10"
+                      >
+                        <i className="fa-solid fa-ban mr-1"></i>
+                        Block
+                      </button>
+                    )}
                   </div>
-                )}
-                <form
-                  id="chat-input-row"
-                  onSubmit={handleSendMessage}
-                  className="flex items-center space-x-3"
+                </div>
+
+                <div
+                  id="chat-messages"
+                  className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 pb-[calc(5rem+env(safe-area-inset-bottom))] space-y-4"
+                  style={{ WebkitOverflowScrolling: "touch" }}
+                  ref={messagesContainerRef}
                 >
-                  <input
-                    id="chat-input-field"
-                    type="text"
-                    value={messageText}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setMessageText(value);
-                      emitTyping(value);
-                    }}
-                    placeholder={
-                      canChatActive ? "Type a message..." : "Only friends can message"
+                  <MessageList
+                    messages={visibleMessages}
+                    currentUserId={currentUserId}
+                    isActiveGroupChat={isActiveGroupChat}
+                    isDirectChat={isDirectChat}
+                    onOpenSharedPost={handleOpenSharedPost}
+                    onReport={handleReportMessage}
+                    onDelete={handleDeleteMessage}
+                    canDeleteMessage={canDeleteMessage}
+                    isMobile={isMobile}
+                    resolveMessageSender={resolveMessageSender}
+                    onOpenProfile={
+                      isActiveGroupChat ? handleOpenProfileInPanel : handleOpenProfile
                     }
-                    disabled={!canChatActive}
-                    className={`flex-grow px-4 py-2 rounded-full glass-input text-sm ${
-                      canChatActive ? "" : "opacity-60 cursor-not-allowed"
-                    }`}
+                    messagesEndRef={messagesEndRef}
                   />
-                  <Motion.button
-                    type="submit"
-                    disabled={!canChatActive}
-                    className={`liquid-button text-[#faf0e6] rounded-full h-10 w-10 flex items-center justify-center ${
-                      canChatActive ? "" : "opacity-60 cursor-not-allowed"
-                    }`}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
+                </div>
+
+                <div
+                  id="chat-input-bar"
+                  className="flex-shrink-0 z-20 px-4 py-3 min-h-[64px] border-t border-white/10 bg-[#1a120b]/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]"
+                >
+                  {activeChatUser?.isGroup && !isActiveGroupMember && (
+                    <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
+                      <span className="min-w-0">
+                        {isActiveGroupPending
+                          ? "Join request pending approval."
+                          : isActiveGroupPrivate
+                            ? "Private group. Admins can add members."
+                            : "Request access to join this group."}
+                      </span>
+                      {!isActiveGroupPending && !isActiveGroupPrivate && (
+                        <button
+                          type="button"
+                          onClick={handleRequestJoinGroup}
+                          disabled={groupRequestLoading}
+                          className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
+                        >
+                          {groupRequestLoading ? "Sending..." : "Request Join"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {!canChatActive && !activeChatUser?.isGroup && activeChatId && (
+                    <div className="mb-3 flex flex-col items-start justify-between gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-[#b9b4c7] sm:flex-row sm:items-center sm:gap-3">
+                      <span className="min-w-0">Only friends can message.</span>
+                      {friendStatus === "none" ? (
+                        <button
+                          type="button"
+                          onClick={handleSendFriendRequest}
+                          disabled={friendRequestLoading}
+                          className="w-full rounded-full bg-[#b9b4c7]/20 px-3 py-1 text-[#faf0e6] hover:bg-[#b9b4c7]/30 transition-colors disabled:opacity-60 sm:w-auto"
+                        >
+                          {friendRequestLoading ? "Sending..." : "Send Request"}
+                        </button>
+                      ) : friendStatus === "pending_sent" ? (
+                        <span className="text-[#b9b4c7]">Request sent</span>
+                      ) : friendStatus === "pending_received" ? (
+                        <span className="text-[#b9b4c7]">Request pending</span>
+                      ) : friendStatus === "blocked" ? (
+                        <span className="text-[#b9b4c7]">Blocked</span>
+                      ) : null}
+                    </div>
+                  )}
+                  <form
+                    id="chat-input-row"
+                    onSubmit={handleSendMessage}
+                    className="flex items-center space-x-3"
                   >
-                    <i className="fa-solid fa-paper-plane"></i>
-                  </Motion.button>
-                </form>
-              </div>
-            </>
+                    <input
+                      id="chat-input-field"
+                      type="text"
+                      value={messageText}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setMessageText(value);
+                        emitTyping(value);
+                      }}
+                      placeholder={
+                        canChatActive ? "Type a message..." : "Only friends can message"
+                      }
+                      disabled={!canChatActive}
+                      className={`flex-grow px-4 py-2 rounded-full glass-input text-sm ${
+                        canChatActive ? "" : "opacity-60 cursor-not-allowed"
+                      }`}
+                    />
+                    <Motion.button
+                      type="submit"
+                      disabled={!canChatActive}
+                      className={`liquid-button text-[#faf0e6] rounded-full h-10 w-10 flex items-center justify-center ${
+                        canChatActive ? "" : "opacity-60 cursor-not-allowed"
+                      }`}
+                      whileHover={{ scale: 1.05 }}
+                      whileTap={{ scale: 0.95 }}
+                    >
+                      <i className="fa-solid fa-paper-plane"></i>
+                    </Motion.button>
+                  </form>
+                </div>
+              </>
+            )
           ) : (
             !isMobile && (
               <div className="w-full h-full flex items-center justify-center text-[#b9b4c7]">
@@ -4378,6 +4440,10 @@ export default function Chat() {
         onClose={() => setShowGroupProfile(false)}
         onMembershipChange={handleGroupMembershipChange}
         onDeleted={handleGroupDeleted}
+        onOpenProfile={(userId, preview) => {
+          handleOpenProfileInPanel(userId, preview);
+          setShowGroupProfile(false);
+        }}
       />
       {sharedPost && (
         <PostModal

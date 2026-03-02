@@ -11,6 +11,7 @@ import Register from "./pages/Register";
 import Landing from "./pages/Landing";
 import AuthSuccess from "./pages/AuthSuccess";
 import CollegeSetup from "./pages/CollegeSetup";
+import InstallBanner from "./components/InstallBanner";
 
 export default function App() {
   useEffect(() => {
@@ -75,6 +76,7 @@ export default function App() {
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+          <InstallBanner />
         </AppProvider>
       </AuthProvider>
     </Router>
