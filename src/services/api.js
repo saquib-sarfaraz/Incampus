@@ -1323,6 +1323,20 @@ export const getChatGroups = async (params = {}) => {
   return normalizeList(data, ["groups", "items", "data"]);
 };
 
+export const getPublicGroups = async (params = {}) => {
+  const data = await apiFetchWithFallback(
+    [
+      "/groups/public",
+      "/groups/discover",
+      "/groups/explore",
+      "/public/groups",
+      "/groups",
+    ],
+    { params }
+  );
+  return normalizeList(data, ["groups", "items", "data"]);
+};
+
 export const sendChatMessage = async (payload) => {
   if (!payload) return null;
   const body = { ...payload };

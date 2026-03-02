@@ -9,6 +9,7 @@ import {
   detectAspectRatio,
   resolveAspectRatioString,
 } from "../../utils/media";
+import { rememberAnonymousPost } from "../../utils/anonymousPosts";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const COLLEGE_SEARCH_DEBOUNCE_MS = 150;
@@ -70,7 +71,7 @@ const normalizeCollegeList = (data) => {
 
 export default function PostCreator() {
   const { currentUser } = useAuth();
-  const { loadPosts } = useApp();
+  const { loadPosts, addPost } = useApp();
   const [postMode, setPostMode] = useState("post");
   const [visibility, setVisibility] = useState("universal");
   const [text, setText] = useState("");
@@ -290,7 +291,7 @@ export default function PostCreator() {
           finalMedia = mediaFile;
         }
       }
-      await createPost(
+      const response = await createPost(
         {
           content: trimmedText,
           isAnonymous,
@@ -310,6 +311,20 @@ export default function PostCreator() {
         },
         isThought ? null : finalMedia
       );
+
+      const createdPost =
+        response?.post || response?.data?.post || response?.data || response;
+      if (createdPost && (createdPost._id || createdPost.id)) {
+        addPost?.({
+          ...createdPost,
+          isAnonymous,
+          authorId: createdPost.authorId || currentUser.id,
+          __localAuthorId: currentUser.id,
+        });
+        if (isAnonymous) {
+          rememberAnonymousPost(currentUser.id, createdPost);
+        }
+      }
 
       setText("");
       setMediaFile(null);

@@ -35,25 +35,6 @@ const VIEW_STORAGE_PREFIX = "incampus:post:view:";
 const CAPTION_PREVIEW_LENGTH = 100;
 const viewedPostsSession = new Set();
 
-const buildLikeBurst = (seed, count = 5) => {
-  if (!seed) return [];
-  let s = Math.abs(seed) % 2147483647;
-  const next = () => {
-    s = (s * 48271) % 2147483647;
-    return s / 2147483647;
-  };
-  return Array.from({ length: count }, () => {
-    const angle = next() * Math.PI * 2;
-    const radius = 18 + next() * 30;
-    return {
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-      scale: 0.7 + next() * 0.6,
-      delay: next() * 0.08,
-    };
-  });
-};
-
 const toNumber = (value) => {
   if (Array.isArray(value)) return value.length;
   const parsed = Number(value);
@@ -261,8 +242,32 @@ const resolvePostAuthorEntity = (post) =>
   post?.creator ||
   null;
 
+const normalizeIdValue = (value) => {
+  if (!value) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    return isLikelyId(raw) ? raw : "";
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return normalizeIdValue(value.$oid);
+    const nested =
+      value._id ||
+      value.id ||
+      value.userId ||
+      value.user_id ||
+      value.authorId ||
+      value.author_id ||
+      "";
+    return normalizeIdValue(nested);
+  }
+  return "";
+};
+
 const resolvePostAuthorId = (post) => {
   const direct =
+    post?.__localAuthorId ||
+    post?.localAuthorId ||
+    post?.__localOwnerId ||
     post?.authorId ||
     post?.author_id ||
     post?.userId ||
@@ -274,12 +279,11 @@ const resolvePostAuthorId = (post) => {
     post?.postedById ||
     post?.creatorId ||
     "";
-  if (direct) {
-    return isLikelyId(String(direct)) ? String(direct) : "";
-  }
+  const resolvedDirect = normalizeIdValue(direct);
+  if (resolvedDirect) return resolvedDirect;
   const entity = resolvePostAuthorEntity(post);
-  const entityId = entity?._id || entity?.id || entity || "";
-  return isLikelyId(String(entityId)) ? String(entityId) : "";
+  const entityId = normalizeIdValue(entity?._id || entity?.id || entity || "");
+  return entityId;
 };
 
 const resolvePostAuthorName = (post, entity) => {
@@ -369,6 +373,17 @@ const resolvePostAuthorVerified = (post, entity) =>
         : false)
   );
 
+const isPostAnonymous = (post) =>
+  Boolean(
+    post?.isAnonymous ||
+      post?.is_anonymous ||
+      post?.anonymous ||
+      post?.isAnon ||
+      post?.isAnonymousPost ||
+      post?.author?.isAnonymous ||
+      post?.author?.anonymous
+  );
+
 function Post({ post, onOpen, badge, isPreview = false }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, updatePost, addBlockedUser, prefetchUserProfile } = useApp();
@@ -401,6 +416,13 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const authorId = resolvePostAuthorId(post);
   const authorName = resolvePostAuthorName(post, authorEntity);
   const authorPic = resolvePostAuthorPic(post, authorEntity);
+  const isAnonymous = isPostAnonymous(post);
+  const currentUserId = currentUser?.id || currentUser?._id || currentUser?.userId;
+  const isOwner =
+    Boolean(post?.__isLocalOwner) ||
+    (currentUserId &&
+      authorId &&
+      String(authorId) === String(currentUserId));
   const previewMode = Boolean(isPreview || post?.isPreview);
   const baseLikesRaw = Array.isArray(post.likes)
     ? post.likes
@@ -423,7 +445,6 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const postMediaUrl = resolvePostMediaUrl(post);
   const explicitAspect = resolvePostAspectRatio(post);
   const [mediaAspect, setMediaAspect] = useState(explicitAspect || "4:5");
-  const likeBurst = useMemo(() => buildLikeBurst(mediaLikePulse, 6), [mediaLikePulse]);
   useEffect(() => {
     setMediaAspect(explicitAspect || "4:5");
   }, [explicitAspect, postId]);
@@ -441,7 +462,16 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     ? getOptimizedVideoUrl(postMediaUrl)
     : getOptimizedFillUrl(postMediaUrl, { width: 900, aspectRatio: effectiveAspect });
   const postSrcSet = !isVideo ? getMediaSrcSet(postMediaUrl) : null;
-  const avatarUrl = getOptimizedMediaUrl(resolveAvatarUrl(author, authorPic), { width: 80, height: 80 });
+  const ownerDisplayName =
+    currentUser?.displayName ||
+    currentUser?.fullName ||
+    currentUser?.username ||
+    "You";
+  const ownerAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
+  const resolvedAvatar = isAnonymous && isOwner
+    ? ownerAvatar
+    : resolveAvatarUrl(author, authorPic);
+  const avatarUrl = getOptimizedMediaUrl(resolvedAvatar, { width: 80, height: 80 });
   const postPreviewText =
     post.content && post.content.length > 0
       ? post.content.slice(0, 80)
@@ -449,16 +479,18 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const isPrivate = resolvePostPrivacy(post) === "friends";
   const resolvedAuthorName = author?.displayName || authorName || "";
   const authorIsVerified =
-    !post.isAnonymous &&
+    !isAnonymous &&
     Boolean(author?.isVerified ?? resolvePostAuthorVerified(post, authorEntity));
-  const authorDisplayName = post.isAnonymous
-    ? "Anonymous Student"
+  const authorDisplayName = isAnonymous
+    ? isOwner
+      ? `${ownerDisplayName} (Anonymous)`
+      : "Anonymous Student"
     : sanitizeDisplayName(author?.displayName) ||
       sanitizeDisplayName(authorName) ||
       "User";
   const handleOpenProfile = useCallback(() => {
     if (previewMode) return;
-    if (post.isAnonymous) return;
+    if (isAnonymous) return;
     const safeAuthorId = normalizeUserId(authorId);
     const targetId = normalizeUserId(
       authorId ||
@@ -489,7 +521,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     }
   }, [
     navigate,
-    post.isAnonymous,
+    isAnonymous,
     previewMode,
     authorId,
     author,
@@ -506,10 +538,18 @@ function Post({ post, onOpen, badge, isPreview = false }) {
 
   useEffect(() => {
     const loadAuthor = async () => {
-      if (post.isAnonymous) {
+    if (isAnonymous) {
+      if (isOwner) {
+        setAuthor({
+          displayName: ownerDisplayName,
+          profilePicUrl: ownerAvatar,
+          isVerified: Boolean(currentUser?.isVerified),
+        });
+      } else {
         setAuthor({ displayName: "Anonymous Student", profilePicUrl: ANONYMOUS_AVATAR });
-        return;
       }
+      return;
+    }
 
       if (!authorId) return;
 
@@ -560,13 +600,17 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     loadAuthor();
   }, [
     post,
-    post.isAnonymous,
+    isAnonymous,
+    isOwner,
     authorId,
     authorName,
     authorPic,
     authorEntity,
     getUserFromCache,
     cacheUser,
+    ownerDisplayName,
+    ownerAvatar,
+    currentUser?.isVerified,
   ]);
 
   useEffect(() => {
@@ -780,7 +824,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
         reason,
         details,
         context: "feed",
-        isAnonymous: Boolean(post.isAnonymous),
+        isAnonymous: Boolean(isAnonymous),
       });
       alert("Thanks for reporting. Our team will review it.");
     } catch (error) {
@@ -838,7 +882,6 @@ function Post({ post, onOpen, badge, isPreview = false }) {
 
   const collegeTagName = resolveCollegeTag();
   const commentsCount = resolvePostCommentsCount(post);
-  const isOwner = String(authorId) === String(currentUser?.id);
   const rawCaption = typeof post.content === "string" ? post.content : post.content ? String(post.content) : "";
   const captionText = rawCaption.trim();
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
@@ -1003,7 +1046,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
             type="button"
             onClick={handleOpenProfile}
             className="flex items-center text-left"
-            disabled={post.isAnonymous}
+            disabled={isAnonymous}
           >
             <img
               src={avatarUrl || ANONYMOUS_AVATAR}
@@ -1174,22 +1217,6 @@ function Post({ post, onOpen, badge, isPreview = false }) {
                   transition={{ duration: 0.45, ease: "easeOut" }}
                   aria-hidden="true"
                 />
-                {likeBurst.map((item, index) => (
-                  <Motion.i
-                    key={`media-like-burst-${mediaLikePulse}-${index}`}
-                    className="fa-solid fa-heart text-rose-200/90 absolute left-1/2 top-1/2"
-                    initial={{ opacity: 0, scale: 0.4, x: 0, y: 0 }}
-                    animate={{
-                      opacity: [0, 0.9, 0],
-                      scale: [0.4, item.scale, 0.6],
-                      x: item.x,
-                      y: item.y,
-                    }}
-                    transition={{ duration: 0.55, ease: "easeOut", delay: item.delay }}
-                    style={{ fontSize: "16px" }}
-                    aria-hidden="true"
-                  />
-                ))}
               </div>
             )}
           </div>
@@ -1278,7 +1305,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
             postThumbnail={postThumbnail}
             postPreviewText={postPreviewText}
             isPrivate={isPrivate}
-            isAnonymous={post.isAnonymous}
+            isAnonymous={isAnonymous}
             onShareToChat={() => {
               setShowShare(false);
               setShowShareChat(true);
@@ -1292,7 +1319,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
             postId={postId}
             postThumbnail={postThumbnail}
             postPreviewText={postPreviewText}
-            postIsAnonymous={post.isAnonymous}
+            postIsAnonymous={isAnonymous}
             postAuthorName={resolvedAuthorName}
             postAuthorId={authorId}
           />

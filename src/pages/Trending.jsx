@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion as Motion } from "framer-motion";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
 import { searchAll, searchUsers, likePost, fetchRankedFeedPage } from "../services/api";
@@ -70,10 +70,25 @@ const TRENDING_MAX_VISIBLE = Number.MAX_SAFE_INTEGER;
 const TRENDING_PAGE_LIMIT = 20;
 const TRENDING_PREFETCH_THRESHOLD = 2;
 
+const resolveIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolveIdValue(nested);
+  }
+  return "";
+};
+
 const resolvePostIdentity = (post) => {
   if (!post) return "";
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   const authorId =
     post?.authorId ||
     post?.author_id ||
@@ -90,8 +105,8 @@ const resolvePostIdentity = (post) => {
 
 const resolveCursorValue = (post) => {
   if (!post) return "";
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
   if (createdAt) return String(createdAt);
   return "";
@@ -642,6 +657,7 @@ export default function Trending() {
   } = useApp();
   const { currentUser } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
   const [searchTab, setSearchTab] = useState("all");
   const [searchData, setSearchData] = useState(DEFAULT_SEARCH_RESULTS);
@@ -663,6 +679,7 @@ export default function Trending() {
   const [selectedPost, setSelectedPost] = useState(null);
   const [commentPost, setCommentPost] = useState(null);
   const [sharePost, setSharePost] = useState(null);
+  const searchInputRef = useRef(null);
   const [shareChatPost, setShareChatPost] = useState(null);
   const [selectedStoryIndex, setSelectedStoryIndex] = useState(null);
   const searchRef = useRef(null);
@@ -675,6 +692,23 @@ export default function Trending() {
   const trendingBuiltAtRef = useRef(0);
   const trendingCursorRef = useRef("");
   const trendingPostsLoadingRef = useRef(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || "");
+    const paramTab = params.get("tab");
+    const stateTab = location.state?.focusTab;
+    const nextTab = stateTab || paramTab;
+    if (
+      nextTab &&
+      ["all", "people", "posts", "communities"].includes(nextTab) &&
+      nextTab !== searchTab
+    ) {
+      setSearchTab(nextTab);
+    }
+    if (location.state?.focusSearch && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [location.search, location.state, searchTab]);
 
   const setActionLoading = useCallback((userId, value) => {
     if (!userId) return;
@@ -2474,6 +2508,7 @@ export default function Trending() {
               onFocus={() => hasSearchQuery && setShowSearchResults(true)}
               placeholder="Search students, posts, and campus signals..."
               className="w-full pl-11 pr-4 py-3 rounded-full glass-input"
+              ref={searchInputRef}
             />
           </div>
 

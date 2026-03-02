@@ -120,16 +120,17 @@ const normalizeStoriesList = (list) => {
 
 const resolvePostIdentity = (post) => {
   if (!post) return "";
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
-  const authorId =
+  const id = resolveEntityId(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
+  const authorId = resolveEntityId(
     post?.authorId ||
-    post?.author_id ||
-    post?.userId ||
-    post?.user_id ||
-    post?.author?._id ||
-    post?.author?.id ||
-    "";
+      post?.author_id ||
+      post?.userId ||
+      post?.user_id ||
+      post?.author?._id ||
+      post?.author?.id ||
+      post?.author
+  );
   const createdAt =
     post?.createdAt || post?.created_at || post?.timestamp || post?.time || "";
   if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;

@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
+import { useAuth } from "../../context/authContext";
 import {
   getUserById,
   getUserProfileBundle,
   getUserPublicPosts,
+  fetchRankedFeedPage,
   getFriendCount,
   reportUser,
   blockUser,
@@ -29,11 +31,29 @@ import {
   resolveCommunityEmail,
   normalizeUserId,
 } from "../../utils/userProfile";
+import {
+  readAnonymousPostIds,
+  readAnonymousPosts,
+  rememberAnonymousPost,
+} from "../../utils/anonymousPosts";
+import { readFeedSnapshotPosts } from "../../utils/feedSnapshot";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const relationshipCache = new Map();
 const PROFILE_CACHE_TTL = 5 * 60 * 1000;
 const PROFILE_CACHE_PREFIX = "incampus:profile:cache:";
+const ANON_RECOVERY_LIMIT = 50;
+const ANON_RECOVERY_SESSION_PREFIX = "incampus:anon:recovery:";
+
+const readStoredAuthToken = () => {
+  if (typeof window === "undefined") return "";
+  return (
+    localStorage.getItem("authToken") ||
+    localStorage.getItem("token") ||
+    localStorage.getItem("accessToken") ||
+    ""
+  );
+};
 
 const isDeletedPlaceholderName = (value) => {
   if (value === null || value === undefined) return false;
@@ -72,6 +92,14 @@ const readProfileCache = (userId) => {
   }
 };
 
+const shouldRunAnonRecovery = (userId) => {
+  if (!userId || typeof window === "undefined") return false;
+  const key = `${ANON_RECOVERY_SESSION_PREFIX}${userId}`;
+  if (sessionStorage.getItem(key)) return false;
+  sessionStorage.setItem(key, String(Date.now()));
+  return true;
+};
+
 const writeProfileCache = (userId, data) => {
   if (!userId || !data || typeof window === "undefined") return;
   try {
@@ -86,6 +114,21 @@ const writeProfileCache = (userId, data) => {
 
 const normalizeIdValue = normalizeUserId;
 
+const resolvePostIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolvePostIdValue(nested);
+  }
+  return "";
+};
+
 const resolvePostAuthorId = (post) => {
   if (!post) return "";
   const direct =
@@ -99,6 +142,8 @@ const resolvePostAuthorId = (post) => {
     post.created_by ||
     post.postedById ||
     post.creatorId ||
+    post.__localAuthorId ||
+    post.localAuthorId ||
     "";
   const directId = normalizeIdValue(direct);
   if (directId) return directId;
@@ -131,6 +176,34 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
+const resolvePostIdentity = (post) => {
+  if (!post) return "";
+  return resolvePostIdValue(post._id || post.id || post.postId || post.post_id || "");
+};
+
+const mergePostsByIdentity = (primary = [], secondary = []) => {
+  const combined = [];
+  const indexById = new Map();
+  const add = (post) => {
+    const id = resolvePostIdentity(post);
+    if (!id) {
+      combined.push(post);
+      return;
+    }
+    if (indexById.has(id)) {
+      const idx = indexById.get(id);
+      const current = combined[idx];
+      combined[idx] = current === post ? current : { ...current, ...post };
+      return;
+    }
+    indexById.set(id, combined.length);
+    combined.push(post);
+  };
+  (Array.isArray(primary) ? primary : []).forEach(add);
+  (Array.isArray(secondary) ? secondary : []).forEach(add);
+  return combined;
+};
+
 const isPostAnonymous = (post) => {
   return Boolean(
     post?.isAnonymous ||
@@ -161,6 +234,7 @@ const UserProfileModalContent = ({
 }) => {
   const {
     loadPosts,
+    posts,
     addBlockedUser,
     canChat,
     getUserFromCache,
@@ -171,6 +245,7 @@ const UserProfileModalContent = ({
     acceptFriend,
     requestChatOpen,
   } = useApp();
+  const { authToken, loading: authLoading } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [showReport, setShowReport] = useState(false);
@@ -195,6 +270,7 @@ const UserProfileModalContent = ({
   const cacheUserRef = useRef(cacheUser);
   const getUserFromCacheRef = useRef(getUserFromCache);
   const profileLoadMoreRef = useRef(null);
+  const profileAuthTokenRef = useRef("");
   const PROFILE_POSTS_LIMIT = 12;
 
   const routeUserId = useMemo(() => {
@@ -387,10 +463,25 @@ const UserProfileModalContent = ({
   }, [profileUser, user]);
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
   const resolvedUserIdValue = normalizeIdValue(resolvedUserId);
+  const resolvedCurrentUserId = normalizeIdValue(
+    currentUser?.id || currentUser?._id || currentUser?.userId
+  );
 
   const loadPublicPosts = useCallback(
     async ({ reset = false } = {}) => {
       if (!resolvedUserIdValue) return;
+      const isSelfView = Boolean(
+        resolvedCurrentUserId &&
+          String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+      );
+      if (isSelfView) {
+        const storedToken = readStoredAuthToken();
+        if (storedToken) {
+          profileAuthTokenRef.current = storedToken;
+        } else if (authLoading) {
+          return;
+        }
+      }
       if (profilePostsLoading) return;
       if (!profilePostsHasMore && !reset) return;
       setProfilePostsLoading(true);
@@ -398,6 +489,7 @@ const UserProfileModalContent = ({
         const params = {
           limit: PROFILE_POSTS_LIMIT,
           ...(reset || !profilePostsCursor ? {} : { cursor: profilePostsCursor }),
+          ...(isSelfView ? { includeAnonymous: true } : {}),
         };
         const data = await getUserPublicPosts(resolvedUserIdValue, params);
         const items = Array.isArray(data)
@@ -437,7 +529,15 @@ const UserProfileModalContent = ({
           data?.data?.publicPostCount ||
           profilePostsCount;
 
-        setProfilePosts((prev) => (reset ? items : [...prev, ...items]));
+        const enriched = isSelfView
+          ? items.map((post) => {
+              if (!post || typeof post !== "object") return post;
+              const ownerId = resolvePostAuthorId(post);
+              if (ownerId) return post;
+              return { ...post, __localAuthorId: resolvedUserIdValue };
+            })
+          : items;
+        setProfilePosts((prev) => (reset ? enriched : [...prev, ...enriched]));
         setVisiblePostsCount((prev) =>
           reset ? items.length : Math.max(prev, (reset ? 0 : prev) + items.length)
         );
@@ -462,6 +562,8 @@ const UserProfileModalContent = ({
       profilePostsLoading,
       PROFILE_POSTS_LIMIT,
       profilePostsCount,
+      authLoading,
+      resolvedCurrentUserId,
     ]
   );
 
@@ -470,6 +572,19 @@ const UserProfileModalContent = ({
     setProfileLoadMorePending(false);
     loadPublicPosts({ reset: true });
   }, [resolvedUserIdValue, profileHydrated, loadPublicPosts]);
+
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    if (!authToken) return;
+    if (profileAuthTokenRef.current === authToken) return;
+    profileAuthTokenRef.current = authToken;
+    loadPublicPosts({ reset: true });
+  }, [resolvedUserIdValue, resolvedCurrentUserId, authToken, loadPublicPosts]);
 
   const isVerified = Boolean(
     resolvedUser?.isVerified ||
@@ -484,18 +599,104 @@ const UserProfileModalContent = ({
     !resolvedUser?.displayName &&
     !resolvedUsername;
 
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    if (!shouldRunAnonRecovery(resolvedUserIdValue)) return;
+    let active = true;
+    const recover = async () => {
+      try {
+        const response = await fetchRankedFeedPage({
+          page: 1,
+          limit: ANON_RECOVERY_LIMIT,
+        });
+        const list = Array.isArray(response?.items)
+          ? response.items
+          : Array.isArray(response)
+            ? response
+            : [];
+        const recovered = list.filter((post) => {
+          if (!isPostAnonymous(post)) return false;
+          const authorId = resolvePostAuthorId(post);
+          return authorId && String(authorId) === String(resolvedUserIdValue);
+        });
+        if (!recovered.length) return;
+        recovered.forEach((post) => rememberAnonymousPost(resolvedUserIdValue, post));
+        if (!active) return;
+        setProfilePosts((prev) => mergePostsByIdentity(prev, recovered));
+      } catch {
+        // ignore recovery errors
+      }
+    };
+    recover();
+    return () => {
+      active = false;
+    };
+  }, [resolvedUserIdValue, resolvedCurrentUserId, fetchRankedFeedPage]);
+
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    const snapshot = readFeedSnapshotPosts();
+    if (!snapshot || !snapshot.length) return;
+    snapshot.forEach((post) => {
+      if (!isPostAnonymous(post)) return;
+      const authorId = resolvePostAuthorId(post);
+      if (authorId && String(authorId) === String(resolvedUserIdValue)) {
+        rememberAnonymousPost(resolvedUserIdValue, post);
+      }
+    });
+  }, [resolvedUserIdValue, resolvedCurrentUserId]);
+
   const publicPosts = useMemo(() => {
     if (!resolvedUserIdValue) return [];
-    return (Array.isArray(profilePosts) ? profilePosts : [])
-      .filter((post) => {
-        const authorId = resolvePostAuthorId(post);
-        if (authorId && String(authorId) !== String(resolvedUserIdValue)) return false;
-        if (isPostAnonymous(post)) return false;
-        if (!isPostPublic(post)) return false;
-        return true;
-      })
-      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [resolvedUserIdValue, profilePosts]);
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    const baseList = Array.isArray(profilePosts) ? profilePosts : [];
+    if (!isSelfView) {
+      return baseList
+        .filter((post) => {
+          const authorId = resolvePostAuthorId(post);
+          if (authorId && String(authorId) !== String(resolvedUserIdValue)) return false;
+          if (isPostAnonymous(post)) return false;
+          if (!isPostPublic(post)) return false;
+          return true;
+        })
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    }
+
+    const normalizedBase = baseList.map((post) => {
+      if (!post || typeof post !== "object") return post;
+      const ownerId = resolvePostAuthorId(post);
+      if (ownerId) return post;
+      return { ...post, __localAuthorId: resolvedCurrentUserId, __isLocalOwner: true };
+    });
+    const anonSnapshots = readAnonymousPosts(resolvedCurrentUserId);
+    const extrasSource = mergePostsByIdentity(posts || [], anonSnapshots || []);
+    const anonSet = new Set(readAnonymousPostIds(resolvedCurrentUserId));
+    const extras = extrasSource.filter((post) => {
+      const authorId = resolvePostAuthorId(post);
+      if (authorId && String(authorId) === String(resolvedUserIdValue)) return true;
+      if (!authorId) {
+        const postId = resolvePostIdentity(post);
+        return postId && anonSet.has(String(postId));
+      }
+      return false;
+    });
+    return mergePostsByIdentity(normalizedBase, extras).sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    );
+  }, [resolvedUserIdValue, profilePosts, posts, resolvedCurrentUserId]);
 
   useEffect(() => {
     setVisiblePostsCount((prev) => {
@@ -542,7 +743,9 @@ const UserProfileModalContent = ({
     return () => observer.disconnect();
   }, [hasMorePublicPosts, requestMorePublicPosts]);
 
-  const isSelf = String(resolvedUserId) === String(currentUser?.id);
+  const isSelf = Boolean(
+    resolvedCurrentUserId && String(resolvedUserId) === String(resolvedCurrentUserId)
+  );
   const userType = resolveUserType(resolvedUser);
   const isCommunity = userType === "community";
   const rawAccountType = String(
@@ -887,7 +1090,20 @@ const UserProfileModalContent = ({
                     <button
                       key={post._id || post.id || `public-post-${index}`}
                       type="button"
-                      onClick={() => setSelectedPost(post)}
+                      onClick={() => {
+                        if (
+                          resolvedCurrentUserId &&
+                          String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+                        ) {
+                          setSelectedPost({
+                            ...post,
+                            __isLocalOwner: true,
+                            __localAuthorId: resolvedCurrentUserId,
+                          });
+                        } else {
+                          setSelectedPost(post);
+                        }
+                      }}
                       className="relative aspect-square overflow-hidden rounded-xl border border-white/10 bg-white/5"
                     >
                       {mediaUrl ? (

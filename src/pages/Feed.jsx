@@ -54,9 +54,23 @@ const resolveBadge = (badgeKey) => {
   return null;
 };
 
+const resolveIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolveIdValue(nested);
+  }
+  return "";
+};
+
 const isLikelyId = (value) => {
-  if (value === null || value === undefined) return false;
-  const trimmed = String(value).trim();
+  const trimmed = resolveIdValue(value);
   if (!trimmed) return false;
   if (/^[a-f0-9]{24}$/i.test(trimmed)) return true;
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
@@ -76,18 +90,19 @@ const getAuthorId = (post) => {
     post.user_id ||
     post.author ||
     "";
-  return isLikelyId(candidate) ? String(candidate) : "";
+  const resolved = resolveIdValue(candidate);
+  return isLikelyId(resolved) ? resolved : "";
 };
 
 const resolvePostId = (post, index) => {
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   return `post-${index}`;
 };
 
 const resolvePostIdentity = (post) => {
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   const authorId = getAuthorId(post);
   const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
   if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
@@ -96,8 +111,8 @@ const resolvePostIdentity = (post) => {
 
 const resolveCursorValue = (post) => {
   if (!post) return "";
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
   if (createdAt) return String(createdAt);
   return "";

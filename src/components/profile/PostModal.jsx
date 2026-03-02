@@ -105,6 +105,57 @@ const resolvePostMediaUrl = (post) => {
   );
 };
 
+const normalizeIdValue = (value) => {
+  if (!value) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    return raw || "";
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return normalizeIdValue(value.$oid);
+    const nested = value._id || value.id || value.userId || value.user_id || "";
+    return normalizeIdValue(nested);
+  }
+  return "";
+};
+
+const resolvePostOwnerId = (post) => {
+  if (!post) return "";
+  const candidate =
+    post.__localAuthorId ||
+    post.localAuthorId ||
+    post.__localOwnerId ||
+    post.authorId ||
+    post.author ||
+    post.author?._id ||
+    post.author?.id ||
+    post.userId ||
+    post.user ||
+    post.user?._id ||
+    post.user?.id ||
+    post.ownerId ||
+    post.owner ||
+    post.owner?._id ||
+    post.owner?.id ||
+    post.createdById ||
+    post.createdBy ||
+    post.creatorId ||
+    post.creator ||
+    "";
+  return normalizeIdValue(candidate);
+};
+
+const isPostAnonymous = (post) =>
+  Boolean(
+    post?.isAnonymous ||
+      post?.is_anonymous ||
+      post?.anonymous ||
+      post?.isAnon ||
+      post?.isAnonymousPost ||
+      post?.author?.isAnonymous ||
+      post?.author?.anonymous
+  );
+
 export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const { currentUser } = useAuth();
   const { cacheUser, getUserFromCache, addBlockedUser, updatePost } = useApp();
@@ -164,12 +215,40 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     post.authorName ||
     "";
   const authorId = post.author?._id || post.authorId || post.author;
+  const currentUserId = currentUser?.id || currentUser?._id || currentUser?.userId;
+  const resolvedOwnerId = resolvePostOwnerId(post);
+  const isOwner =
+    Boolean(post?.__isLocalOwner) ||
+    (currentUserId &&
+      resolvedOwnerId &&
+      String(resolvedOwnerId) === String(currentUserId));
+  const ownerDisplayName =
+    currentUser?.displayName ||
+    currentUser?.fullName ||
+    currentUser?.username ||
+    "You";
+  const ownerAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
+  const anonymousPost = isPostAnonymous(post);
+  const headerName = anonymousPost
+    ? isOwner
+      ? `${ownerDisplayName} (Anonymous)`
+      : "Anonymous Student"
+    : isOwner
+      ? ownerDisplayName
+      : author?.displayName || "User";
+  const headerAvatar = anonymousPost
+    ? isOwner
+      ? ownerAvatar
+      : ANONYMOUS_AVATAR
+    : isOwner
+      ? ownerAvatar
+      : author?.profilePicUrl || ANONYMOUS_AVATAR;
 
   useEffect(() => {
     const loadAuthor = async () => {
       if (!post) return;
 
-      if (post.isAnonymous) {
+      if (anonymousPost) {
         setAuthor({ displayName: "Anonymous Student", profilePicUrl: ANONYMOUS_AVATAR });
         return;
       }
@@ -446,19 +525,13 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
             <div className="p-4 border-b border-white/10 flex justify-between items-center">
               <div className="flex items-center space-x-3">
                 <img
-                  src={
-                    post.isAnonymous
-                      ? ANONYMOUS_AVATAR
-                      : author?.profilePicUrl || ANONYMOUS_AVATAR
-                  }
-                  alt={author?.displayName}
+                  src={headerAvatar}
+                  alt={headerName}
                   className="w-10 h-10 rounded-full object-cover"
                 />
                 <div>
                   <p className="font-semibold text-[#faf0e6]">
-                    {post.isAnonymous
-                      ? "Anonymous Student"
-                      : author?.displayName || "User"}
+                    {headerName}
                   </p>
                   <small className="text-[#b9b4c7] flex flex-wrap items-center gap-2 text-xs">
                     <span>{formatTime(post.createdAt)}</span>
@@ -562,12 +635,12 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
                 </button>
               </div>
 
-              {String(post.author?._id || post.authorId) === String(currentUser?.id) && (
+              {isOwner && (
                 <div className="mt-4 pt-4 border-t border-white/10">
                   <button
                     onClick={() => {
                       if (confirm("Delete this post?")) {
-                        onDelete(post._id);
+                        onDelete(postId);
                         onClose();
                       }
                     }}
@@ -577,7 +650,7 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
                   </button>
                 </div>
               )}
-              {String(post.author?._id || post.authorId) !== String(currentUser?.id) && (
+              {!isOwner && (
                 <div className="mt-4 pt-4 border-t border-white/10">
                   <button
                     onClick={handleReport}
