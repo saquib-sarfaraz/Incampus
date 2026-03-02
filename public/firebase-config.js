@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 // Fill these values from your Firebase Web App config + VAPID key.
 // This file is read by both the main app and the service worker.
 self.__FIREBASE_CONFIG__ = {
