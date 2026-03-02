@@ -1,12 +1,12 @@
 // Fill these values from your Firebase Web App config + VAPID key.
 // This file is read by both the main app and the service worker.
 self.__FIREBASE_CONFIG__ = {
-  apiKey: "REPLACE_WITH_FIREBASE_API_KEY",
-  authDomain: "REPLACE_WITH_FIREBASE_AUTH_DOMAIN",
-  projectId: "REPLACE_WITH_FIREBASE_PROJECT_ID",
-  storageBucket: "REPLACE_WITH_FIREBASE_STORAGE_BUCKET",
-  messagingSenderId: "REPLACE_WITH_FIREBASE_MESSAGING_SENDER_ID",
-  appId: "REPLACE_WITH_FIREBASE_APP_ID",
-  measurementId: "REPLACE_WITH_FIREBASE_MEASUREMENT_ID",
+  apiKey: "AIzaSyB-X2g6indGmu7slQM5dTMl78OfCn-GI6I",
+  authDomain: "incampus-online.firebaseapp.com",
+  projectId: "incampus-online",
+  storageBucket: "incampus-online.firebasestorage.app",
+  messagingSenderId: "375765136817",
+  appId: "1:375765136817:web:b6e38c03fadbe601e7b990",
+  measurementId: "G-HGJ4DM4HTM",
   vapidKey: "REPLACE_WITH_FIREBASE_VAPID_KEY",
 };
