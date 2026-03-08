@@ -1,16 +1,50 @@
 import { useEffect, useState } from "react";
+import {
+  INSTALL_READY_EVENT,
+  hasDeferredPrompt,
+} from "../lib/pwaInstallManager";
 import { usePWAInstall } from "../hooks/usePWAInstall";
 
 const DISMISS_KEY = "installBannerDismissed";
 const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export default function InstallBanner() {
-  const { isInstallable, install } = usePWAInstall();
+  const { isInstallable, install, isInstalled } = usePWAInstall();
   const [visible, setVisible] = useState(false);
+  const [installReady, setInstallReady] = useState(() =>
+    typeof window !== "undefined" ? hasDeferredPrompt() : false
+  );
+  const [isMobile, setIsMobile] = useState(false);
+  const [isIOS, setIsIOS] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!isInstallable) {
+    const ua = navigator.userAgent || "";
+    setIsMobile(/Android|iPhone|iPad|iPod/i.test(ua));
+    setIsIOS(/iPhone|iPad|iPod/i.test(ua));
+    setIsStandalone(
+      window.matchMedia?.("(display-mode: standalone)")?.matches ||
+        window.navigator?.standalone === true
+    );
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handler = () => setInstallReady(true);
+    window.addEventListener(INSTALL_READY_EVENT, handler);
+    return () => {
+      window.removeEventListener(INSTALL_READY_EVENT, handler);
+    };
+  }, []);
+
+  const showIOSHelp = isMobile && isIOS && !isStandalone;
+  const shouldShowInstall = installReady && isInstallable && !isInstalled;
+  const shouldShow = shouldShowInstall || showIOSHelp;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!shouldShow) {
       setVisible(false);
       return;
     }
@@ -25,7 +59,7 @@ export default function InstallBanner() {
       return;
     }
     setVisible(true);
-  }, [isInstallable]);
+  }, [shouldShow]);
 
   const handleDismiss = () => {
     if (typeof window !== "undefined") {
@@ -45,7 +79,7 @@ export default function InstallBanner() {
     install();
   };
 
-  if (!isInstallable || !visible) return null;
+  if (!visible) return null;
 
   return (
     <div className="install-banner" role="dialog" aria-live="polite">
@@ -54,7 +88,11 @@ export default function InstallBanner() {
           <img src="/incampus-icon.svg" alt="InCampus" />
           <div>
             <p className="title">Install InCampus</p>
-            <p className="subtitle">Faster access - Works offline</p>
+            <p className="subtitle">
+              {showIOSHelp
+                ? "Tap Share and choose Add to Home Screen"
+                : "Faster access - Works offline"}
+            </p>
           </div>
         </div>
 
@@ -67,9 +105,11 @@ export default function InstallBanner() {
           >
             x
           </button>
-          <button onClick={handleInstall} className="install-btn" type="button">
-            Install
-          </button>
+          {shouldShowInstall && (
+            <button onClick={handleInstall} className="install-btn" type="button">
+              Install
+            </button>
+          )}
         </div>
       </div>
     </div>
