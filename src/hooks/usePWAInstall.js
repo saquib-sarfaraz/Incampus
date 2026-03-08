@@ -1,4 +1,10 @@
 import { useEffect, useState } from "react";
+import {
+  INSTALL_READY_EVENT,
+  clearDeferredPrompt,
+  getDeferredPrompt,
+  hasDeferredPrompt,
+} from "../lib/pwaInstallManager";
 
 const isStandaloneMode = () => {
   if (typeof window === "undefined") return false;
@@ -9,45 +15,44 @@ const isStandaloneMode = () => {
 };
 
 export function usePWAInstall() {
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [isInstallable, setIsInstallable] = useState(false);
+  const [isInstallable, setIsInstallable] = useState(() => hasDeferredPrompt());
   const [isInstalled, setIsInstalled] = useState(isStandaloneMode());
 
   useEffect(() => {
-    const handleBeforeInstallPrompt = (event) => {
-      event.preventDefault();
-      setDeferredPrompt(event);
+    const handleInstallReady = () => {
       setIsInstallable(true);
     };
 
     const handleAppInstalled = () => {
       setIsInstalled(true);
       setIsInstallable(false);
-      setDeferredPrompt(null);
+      clearDeferredPrompt();
     };
 
     if (typeof window !== "undefined") {
       setIsInstalled(isStandaloneMode());
-      window.addEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      if (hasDeferredPrompt()) setIsInstallable(true);
+      window.addEventListener(INSTALL_READY_EVENT, handleInstallReady);
       window.addEventListener("appinstalled", handleAppInstalled);
     }
 
     return () => {
       if (typeof window === "undefined") return;
-      window.removeEventListener("beforeinstallprompt", handleBeforeInstallPrompt);
+      window.removeEventListener(INSTALL_READY_EVENT, handleInstallReady);
       window.removeEventListener("appinstalled", handleAppInstalled);
     };
   }, []);
 
   const install = async () => {
-    if (!deferredPrompt) return;
-    deferredPrompt.prompt();
-    const choice = await deferredPrompt.userChoice;
+    const promptEvent = getDeferredPrompt();
+    if (!promptEvent) return;
+    promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
     if (choice?.outcome === "accepted") {
-      setIsInstallable(false);
       setIsInstalled(true);
     }
-    setDeferredPrompt(null);
+    setIsInstallable(false);
+    clearDeferredPrompt();
   };
 
   return { isInstallable: isInstallable && !isInstalled, install, isInstalled };
