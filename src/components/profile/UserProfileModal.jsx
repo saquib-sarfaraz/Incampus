@@ -40,8 +40,11 @@ import { readFeedSnapshotPosts } from "../../utils/feedSnapshot";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const relationshipCache = new Map();
-const PROFILE_CACHE_TTL = 5 * 60 * 1000;
-const PROFILE_CACHE_PREFIX = "incampus:profile:cache:";
+const PROFILE_CACHE_TTL = 30 * 60 * 1000;
+const PROFILE_CACHE_PREFIX = "incampus:profile:cache:v2:";
+const PROFILE_POSTS_CACHE_TTL = 10 * 60 * 1000;
+const PROFILE_POSTS_CACHE_PREFIX = "incampus:profile:posts:cache:v2:";
+const PROFILE_POSTS_CACHE_LIMIT = 36;
 const ANON_RECOVERY_LIMIT = 50;
 const ANON_RECOVERY_SESSION_PREFIX = "incampus:anon:recovery:";
 
@@ -79,10 +82,24 @@ const sanitizeDisplayName = (value) => {
   return trimmed;
 };
 
-const readProfileCache = (userId) => {
-  if (!userId || typeof window === "undefined") return null;
+const normalizeCacheKeyPart = (value) => (value ? String(value).trim() : "");
+
+const buildProfileCacheKey = ({ viewerId, profileId }) => {
+  const viewer = normalizeCacheKeyPart(viewerId) || "anon";
+  const profile = normalizeCacheKeyPart(profileId);
+  return `${PROFILE_CACHE_PREFIX}${viewer}:${profile}`;
+};
+
+const buildProfilePostsCacheKey = ({ viewerId, profileId }) => {
+  const viewer = normalizeCacheKeyPart(viewerId) || "anon";
+  const profile = normalizeCacheKeyPart(profileId);
+  return `${PROFILE_POSTS_CACHE_PREFIX}${viewer}:${profile}`;
+};
+
+const readProfileCache = ({ viewerId, profileId }) => {
+  if (!profileId || typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(`${PROFILE_CACHE_PREFIX}${userId}`);
+    const raw = localStorage.getItem(buildProfileCacheKey({ viewerId, profileId }));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_CACHE_TTL) return null;
@@ -100,12 +117,50 @@ const shouldRunAnonRecovery = (userId) => {
   return true;
 };
 
-const writeProfileCache = (userId, data) => {
-  if (!userId || !data || typeof window === "undefined") return;
+const writeProfileCache = ({ viewerId, profileId, data }) => {
+  if (!profileId || !data || typeof window === "undefined") return;
   try {
     localStorage.setItem(
-      `${PROFILE_CACHE_PREFIX}${userId}`,
+      buildProfileCacheKey({ viewerId, profileId }),
       JSON.stringify({ ts: Date.now(), data })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const readProfilePostsCache = ({ viewerId, profileId }) => {
+  if (!profileId || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(buildProfilePostsCacheKey({ viewerId, profileId }));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_POSTS_CACHE_TTL) return null;
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    return {
+      items,
+      nextCursor: parsed.nextCursor || "",
+      hasMore: typeof parsed.hasMore === "boolean" ? parsed.hasMore : undefined,
+      count: parsed.count ?? null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeProfilePostsCache = ({ viewerId, profileId, items, nextCursor, hasMore, count }) => {
+  if (!profileId || typeof window === "undefined") return;
+  try {
+    const list = Array.isArray(items) ? items.slice(0, PROFILE_POSTS_CACHE_LIMIT) : [];
+    localStorage.setItem(
+      buildProfilePostsCacheKey({ viewerId, profileId }),
+      JSON.stringify({
+        ts: Date.now(),
+        items: list,
+        nextCursor: nextCursor || "",
+        hasMore: typeof hasMore === "boolean" ? hasMore : undefined,
+        count: count ?? null,
+      })
     );
   } catch {
     // ignore storage errors
@@ -280,6 +335,9 @@ const UserProfileModalContent = ({
     return parts[1] || "";
   }, [location?.pathname]);
   const baseUserId = normalizeUserId(routeUserId || user);
+  const viewerIdValue = normalizeIdValue(
+    currentUser?.id || currentUser?._id || currentUser?.userId
+  );
 
   useEffect(() => {
     cacheUserRef.current = cacheUser;
@@ -328,22 +386,31 @@ const UserProfileModalContent = ({
 
   useEffect(() => {
     if (!baseUserId) return;
-    setProfilePosts([]);
-    setProfilePostsCount(null);
-    setProfilePostsCursor("");
-    setProfilePostsHasMore(true);
+    const cachedPosts = readProfilePostsCache({
+      viewerId: viewerIdValue,
+      profileId: baseUserId,
+    });
+    setProfilePosts(Array.isArray(cachedPosts?.items) ? cachedPosts.items : []);
+    setProfilePostsCount(cachedPosts?.count ?? null);
+    setProfilePostsCursor(cachedPosts?.nextCursor || "");
+    setProfilePostsHasMore(
+      typeof cachedPosts?.hasMore === "boolean" ? cachedPosts.hasMore : true
+    );
     setProfilePostsLoading(false);
-    setProfilePostsLoaded(false);
+    setProfilePostsLoaded(Boolean(cachedPosts?.items?.length));
     setProfileLoadMorePending(false);
     setProfileHydrated(false);
     setVisiblePostsCount(PROFILE_POSTS_LIMIT);
-  }, [baseUserId]);
+  }, [baseUserId, viewerIdValue]);
 
   useEffect(() => {
     let isActive = true;
     const loadProfile = async () => {
       if (!baseUserId) return;
-      const cachedProfile = readProfileCache(baseUserId);
+      const cachedProfile = readProfileCache({
+        viewerId: viewerIdValue,
+        profileId: baseUserId,
+      });
       if (cachedProfile && isActive) {
         setProfileUser((prev) => ({ ...cachedProfile, ...prev }));
         setProfileHydrated(true);
@@ -433,7 +500,7 @@ const UserProfileModalContent = ({
         }
         if (isActive && data) {
           setProfileUser(data);
-          writeProfileCache(baseUserId, data);
+          writeProfileCache({ viewerId: viewerIdValue, profileId: baseUserId, data });
         }
       } catch (_error) {
         void _error;
@@ -452,9 +519,10 @@ const UserProfileModalContent = ({
     baseUserId,
     user?.displayName,
     user?.fullName,
-    user?.username,
-    profilePostsCount,
-  ]);
+      user?.username,
+      profilePostsCount,
+      viewerIdValue,
+    ]);
 
   const resolvedUser = useMemo(() => {
     const preview = user && typeof user === "object" ? user : {};
@@ -537,6 +605,16 @@ const UserProfileModalContent = ({
               return { ...post, __localAuthorId: resolvedUserIdValue };
             })
           : items;
+        if (reset) {
+          writeProfilePostsCache({
+            viewerId: resolvedCurrentUserId,
+            profileId: resolvedUserIdValue,
+            items: enriched,
+            nextCursor,
+            hasMore,
+            count: nextCount,
+          });
+        }
         setProfilePosts((prev) => (reset ? enriched : [...prev, ...enriched]));
         setVisiblePostsCount((prev) =>
           reset ? items.length : Math.max(prev, (reset ? 0 : prev) + items.length)

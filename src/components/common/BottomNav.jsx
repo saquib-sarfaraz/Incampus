@@ -29,9 +29,10 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
   const navItems = [
     { path: "/feed", icon: "fa-house", label: "Home" },
     { path: "/trending", icon: "fa-compass", label: "Trending" },
-    { path: "/chat", icon: "fa-message", label: "Chat" },
+    { path: "/inbuzz", icon: "fa-circle-play", label: "InBuzz" },
     { path: profilePath, icon: "fa-user", label: "Profile" },
   ];
+  const showChatBadge = navItems[2]?.path === "/chat";
 
   const handleCreate = (event) => {
     if (event?.currentTarget) {
@@ -94,9 +95,9 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
 
         <Motion.button
           onClick={() => navigate(navItems[2].path, { replace: true })}
-          onMouseEnter={preloadChatPage}
-          onFocus={preloadChatPage}
-          onTouchStart={preloadChatPage}
+          onMouseEnter={showChatBadge ? preloadChatPage : undefined}
+          onFocus={showChatBadge ? preloadChatPage : undefined}
+          onTouchStart={showChatBadge ? preloadChatPage : undefined}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[2].path)
               ? "active-link text-[#faf0e6]"
@@ -106,7 +107,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         >
           <span className="relative">
             <i className={`fa-solid ${navItems[2].icon} text-base`} />
-            {chatUnreadTotal > 0 && (
+            {showChatBadge && chatUnreadTotal > 0 && (
               <span className="absolute -top-1 -right-2 block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
             )}
           </span>

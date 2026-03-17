@@ -29,12 +29,9 @@ export function usePWAInstall() {
       clearDeferredPrompt();
     };
 
-    if (typeof window !== "undefined") {
-      setIsInstalled(isStandaloneMode());
-      if (hasDeferredPrompt()) setIsInstallable(true);
-      window.addEventListener(INSTALL_READY_EVENT, handleInstallReady);
-      window.addEventListener("appinstalled", handleAppInstalled);
-    }
+    if (typeof window === "undefined") return;
+    window.addEventListener(INSTALL_READY_EVENT, handleInstallReady);
+    window.addEventListener("appinstalled", handleAppInstalled);
 
     return () => {
       if (typeof window === "undefined") return;

@@ -39,6 +39,8 @@ export default function ChatToastContainer() {
                   src={toast.avatar}
                   alt={toast.title}
                   className="h-6 w-6 rounded-full object-cover"
+                  loading="lazy"
+                  decoding="async"
                 />
               )}
               <div className="min-w-0">

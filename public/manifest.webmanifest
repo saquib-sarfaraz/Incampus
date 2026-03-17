@@ -1,13 +1,18 @@
 {
   "name": "InCampus",
   "short_name": "InCampus",
-  "start_url": "/",
+  "start_url": "/feed",
   "scope": "/",
   "display": "standalone",
   "background_color": "#1a120b",
   "theme_color": "#1a120b",
   "description": "Private campus network for verified students.",
   "icons": [
+    {
+      "src": "/incampus-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
     {
       "src": "/icons/icon-192.png",
       "sizes": "192x192",

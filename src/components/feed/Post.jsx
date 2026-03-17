@@ -418,8 +418,19 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   const authorPic = resolvePostAuthorPic(post, authorEntity);
   const isAnonymous = isPostAnonymous(post);
   const currentUserId = currentUser?.id || currentUser?._id || currentUser?.userId;
+  const serverIsOwnerFlag =
+    typeof post?.canDelete === "boolean"
+      ? post.canDelete
+      : typeof post?.can_delete === "boolean"
+        ? post.can_delete
+        : typeof post?.isOwner === "boolean"
+          ? post.isOwner
+          : typeof post?.is_owner === "boolean"
+            ? post.is_owner
+            : false;
   const isOwner =
     Boolean(post?.__isLocalOwner) ||
+    serverIsOwnerFlag ||
     (currentUserId &&
       authorId &&
       String(authorId) === String(currentUserId));
@@ -468,9 +479,11 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     currentUser?.username ||
     "You";
   const ownerAvatar = currentUser?.profilePicUrl || ANONYMOUS_AVATAR;
-  const resolvedAvatar = isAnonymous && isOwner
-    ? ownerAvatar
-    : resolveAvatarUrl(author, authorPic);
+  const resolvedAvatar = isAnonymous
+    ? ANONYMOUS_AVATAR
+    : isOwner
+      ? ownerAvatar
+      : resolveAvatarUrl(author, authorPic);
   const avatarUrl = getOptimizedMediaUrl(resolvedAvatar, { width: 80, height: 80 });
   const postPreviewText =
     post.content && post.content.length > 0
@@ -482,8 +495,8 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     !isAnonymous &&
     Boolean(author?.isVerified ?? resolvePostAuthorVerified(post, authorEntity));
   const authorDisplayName = isAnonymous
-    ? isOwner
-      ? `${ownerDisplayName} (Anonymous)`
+    ? isOwner && !previewMode
+      ? "You (Anonymous)"
       : "Anonymous Student"
     : sanitizeDisplayName(author?.displayName) ||
       sanitizeDisplayName(authorName) ||
@@ -539,15 +552,11 @@ function Post({ post, onOpen, badge, isPreview = false }) {
   useEffect(() => {
     const loadAuthor = async () => {
     if (isAnonymous) {
-      if (isOwner) {
-        setAuthor({
-          displayName: ownerDisplayName,
-          profilePicUrl: ownerAvatar,
-          isVerified: Boolean(currentUser?.isVerified),
-        });
-      } else {
-        setAuthor({ displayName: "Anonymous Student", profilePicUrl: ANONYMOUS_AVATAR });
-      }
+      setAuthor({
+        displayName: isOwner && !previewMode ? "You (Anonymous)" : "Anonymous Student",
+        profilePicUrl: ANONYMOUS_AVATAR,
+        isVerified: false,
+      });
       return;
     }
 
@@ -602,6 +611,7 @@ function Post({ post, onOpen, badge, isPreview = false }) {
     post,
     isAnonymous,
     isOwner,
+    previewMode,
     authorId,
     authorName,
     authorPic,

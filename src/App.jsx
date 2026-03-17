@@ -11,6 +11,7 @@ import Register from "./pages/Register";
 import Landing from "./pages/Landing";
 import AuthSuccess from "./pages/AuthSuccess";
 import CollegeSetup from "./pages/CollegeSetup";
+import CreateInBuzz from "./pages/CreateInBuzz";
 import InstallBanner from "./components/InstallBanner";
 
 export default function App() {
@@ -70,9 +71,20 @@ export default function App() {
                 <Route path="/chat" element={<div />} />
                 <Route path="/chat/:chatId" element={<div />} />
                 <Route path="/notifications" element={<div />} />
+                <Route path="/inbuzz" element={<div />} />
+                <Route path="/inbuzz/reel/:reelId" element={<div />} />
+                <Route path="/inbuzz/:reelId" element={<div />} />
                 <Route path="/profile" element={<div />} />
                 <Route path="/profile/:userId" element={<div />} />
               </Route>
+              <Route
+                path="/create/inbuzz"
+                element={
+                  <ProtectedRoute>
+                    <CreateInBuzz />
+                  </ProtectedRoute>
+                }
+              />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>

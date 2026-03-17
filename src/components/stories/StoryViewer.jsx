@@ -496,6 +496,24 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
     );
   }, [debugStories, currentStory, storyId, mediaUrl, mediaType]);
 
+  useEffect(() => {
+    const currentGroupSafe = stories[currentGroupIndex];
+    if (!currentGroupSafe) return;
+    let nextStory = null;
+    if (currentStoryIndex + 1 < currentGroupSafe.stories.length) {
+      nextStory = currentGroupSafe.stories[currentStoryIndex + 1];
+    } else if (currentGroupIndex + 1 < stories.length) {
+      nextStory = stories[currentGroupIndex + 1]?.stories?.[0] || null;
+    }
+    if (!nextStory) return;
+    const nextUrl = resolveStoryMediaUrl(nextStory);
+    if (!nextUrl) return;
+    const nextType = resolveStoryMediaType(nextStory, nextUrl);
+    if (nextType !== "image") return;
+    const preloader = new Image();
+    preloader.src = getOptimizedMediaUrl(nextUrl, { width: 1080 });
+  }, [currentGroupIndex, currentStoryIndex, stories]);
+
   if (!currentGroup || !currentStory) return null;
 
   const handleTouchStart = (event) => {
@@ -592,24 +610,6 @@ export default function StoryViewer({ stories, initialIndex, onClose }) {
     const ms = duration * 1000;
     durationRef.current = ms;
   };
-
-  useEffect(() => {
-    const currentGroupSafe = stories[currentGroupIndex];
-    if (!currentGroupSafe) return;
-    let nextStory = null;
-    if (currentStoryIndex + 1 < currentGroupSafe.stories.length) {
-      nextStory = currentGroupSafe.stories[currentStoryIndex + 1];
-    } else if (currentGroupIndex + 1 < stories.length) {
-      nextStory = stories[currentGroupIndex + 1]?.stories?.[0] || null;
-    }
-    if (!nextStory) return;
-    const nextUrl = resolveStoryMediaUrl(nextStory);
-    if (!nextUrl) return;
-    const nextType = resolveStoryMediaType(nextStory, nextUrl);
-    if (nextType !== "image") return;
-    const preloader = new Image();
-    preloader.src = getOptimizedMediaUrl(nextUrl, { width: 1080 });
-  }, [currentGroupIndex, currentStoryIndex, stories]);
 
   const overlay = (
     <AnimatePresence>

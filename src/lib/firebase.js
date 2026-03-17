@@ -20,26 +20,10 @@ const buildEnvConfig = () => ({
   vapidKey: import.meta.env.VITE_FIREBASE_VAPID_KEY || "",
 });
 
-const resolveRuntimeConfig = () => {
-  if (typeof window === "undefined") return null;
-  return window.__FIREBASE_CONFIG__ || null;
-};
-
-const resolveConfig = () => {
-  const runtime = resolveRuntimeConfig();
-  if (
-    runtime &&
-    isValidValue(runtime.apiKey) &&
-    isValidValue(runtime.projectId) &&
-    isValidValue(runtime.messagingSenderId) &&
-    isValidValue(runtime.appId)
-  ) {
-    return runtime;
-  }
-  return buildEnvConfig();
-};
-
-const firebaseConfig = resolveConfig();
+// Single source of truth: Vite environment variables.
+// Avoid loading runtime fallback configs (e.g. `public/firebase-config.js`) because
+// they can drift in production and cause missing VAPID key / sender id issues.
+const firebaseConfig = buildEnvConfig();
 
 const hasFirebaseConfig = () => {
   return Boolean(

@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { motion as Motion } from "framer-motion";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
 import StoryBar from "../components/stories/StoryBar";
@@ -8,11 +8,17 @@ import Post from "../components/feed/Post";
 import PostCreator from "../components/feed/PostCreator";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import CreateMenu from "../components/common/CreateMenu";
 import CreatePostModal from "../components/feed/CreatePostModal";
+import FeedInBuzzStrip from "../components/inbuzz/FeedInBuzzStrip";
 import PostModal from "../components/profile/PostModal";
 import TrendingSidebar from "../components/feed/TrendingSidebar";
 import ChatSidebar from "../components/chat/ChatSidebar";
-import { fetchRankedFeedPage } from "../services/api";
+import { fetchInBuzzTrending, fetchRankedFeedPage } from "../services/api";
+import {
+  readInBuzzTrendingSnapshot,
+  writeInBuzzTrendingSnapshot,
+} from "../utils/inbuzzCache";
 import {
   getLikeCount,
   getCommentCount,
@@ -333,9 +339,15 @@ export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
     useApp();
   const { currentUser } = useAuth();
+  const currentUserId = useMemo(
+    () => currentUser?.id || currentUser?._id || "",
+    [currentUser?.id, currentUser?._id]
+  );
+  const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [rankedPosts, setRankedPosts] = useState([]);
   const [rankedPage, setRankedPage] = useState(1);
@@ -360,6 +372,8 @@ export default function Feed() {
   const latestPostRef = useRef("");
   const sharedPostRef = useRef(null);
   const openedPostRef = useRef("");
+  const [inBuzzReels, setInBuzzReels] = useState([]);
+  const [inBuzzLoading, setInBuzzLoading] = useState(false);
 
   const campusLabel = resolveUserCampus(currentUser);
   const campusId = resolveUserCollegeId(currentUser);
@@ -368,6 +382,50 @@ export default function Feed() {
     () => `${feedScope}-${campusLabel || ""}-${campusId || ""}`,
     [feedScope, campusLabel, campusId]
   );
+  const canPrefetchRanked = useMemo(() => {
+    if (typeof navigator === "undefined") return true;
+    const connection =
+      navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!connection) return true;
+    if (connection.saveData) return false;
+    const type = String(connection.effectiveType || "").toLowerCase();
+    if (type.includes("2g") || type.includes("slow-2g")) return false;
+    return true;
+  }, []);
+
+  const visibleInBuzzReels = useMemo(() => {
+    const list = Array.isArray(inBuzzReels) ? inBuzzReels : [];
+    return list.filter((reel) => {
+      const reelUserId = reel?.userId || reel?.user_id || reel?.authorId;
+      if (!reelUserId) return true;
+      return !isUserBlocked?.(reelUserId);
+    });
+  }, [inBuzzReels, isUserBlocked]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const cached = readInBuzzTrendingSnapshot({ userId: currentUserId });
+    const hadCached = Array.isArray(cached) && cached.length > 0;
+    if (hadCached) setInBuzzReels(cached);
+    setInBuzzLoading(!hadCached);
+    fetchInBuzzTrending({ limit: 12 })
+      .then((items) => {
+        if (!isMounted) return;
+        const list = Array.isArray(items) ? items : [];
+        setInBuzzReels(list);
+        writeInBuzzTrendingSnapshot({ userId: currentUserId, items: list });
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        if (!hadCached) setInBuzzReels([]);
+      })
+      .finally(() => {
+        if (isMounted) setInBuzzLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId]);
 
   useEffect(() => {
     setFeedBooting(true);
@@ -408,6 +466,7 @@ export default function Feed() {
   }, []);
 
   const prefetchPage = useCallback(async (cursor) => {
+    if (!canPrefetchRanked) return;
     if (!cursor || prefetchRef.current.cursor === cursor) return;
     prefetchRef.current = { cursor, data: null, promise: null };
     try {
@@ -421,7 +480,7 @@ export default function Feed() {
         prefetchRef.current = { cursor: "", data: null, promise: null };
       }
     }
-  }, []);
+  }, [canPrefetchRanked]);
 
   const loadRankedPage = useCallback(
     async (page, { replace = false } = {}) => {
@@ -1013,7 +1072,7 @@ export default function Feed() {
             : null;
         const metrics = getScrollMetrics(target);
         if (!metrics) return;
-        const { scrollTop, scrollHeight, clientHeight } = metrics;
+        const { scrollTop } = metrics;
         const approxIndex = Math.floor(
           scrollTop / Math.max(estimatedItemHeight, 1)
         );
@@ -1120,11 +1179,21 @@ export default function Feed() {
                 <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
                   {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
                 </p>
-                {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
-                  <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
-                    🔥 Trending
-                  </span>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
+                    <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
+                      🔥 Trending
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => navigate("/inbuzz")}
+                    className="inline-flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-[#faf0e6] hover:bg-white/10"
+                  >
+                    <span>🎬</span>
+                    <span>InBuzz</span>
+                  </button>
+                </div>
                 {feedScope === "college" && !campusLabel && (
                   <p className="text-sm text-[#b9b4c7]">
                     Set your university to filter your feed. Showing all posts for now.
@@ -1147,6 +1216,7 @@ export default function Feed() {
                 <PostCreator />
               </div>
               <StoryBar />
+              <FeedInBuzzStrip reels={visibleInBuzzReels} loading={inBuzzLoading} />
 
       {showSkeletons ? (
         <div className="space-y-4 lg:space-y-2">
@@ -1222,13 +1292,13 @@ export default function Feed() {
       </main>
       <Motion.button
         type="button"
-        onClick={() => setShowCreateModal(true)}
+        onClick={() => setShowCreateMenu(true)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         className={`hidden sm:flex fixed bottom-6 right-6 z-40 create-fab liquid-button h-14 w-14 items-center justify-center text-[#faf0e6] ${
-          showCreateModal ? "opacity-0 pointer-events-none" : ""
+          showCreateModal || showCreateMenu ? "opacity-0 pointer-events-none" : ""
         }`}
-        aria-label="Create post"
+        aria-label="Create"
       >
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
@@ -1241,7 +1311,28 @@ export default function Feed() {
         />
       )}
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
-      <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
+      <CreateMenu
+        isOpen={showCreateMenu}
+        onClose={() => setShowCreateMenu(false)}
+        onCreatePost={() => {
+          setShowCreateMenu(false);
+          setShowCreateModal(true);
+        }}
+        onCreateStory={() => {
+          setShowCreateMenu(false);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new Event("incampus:createStory"));
+          }
+        }}
+        onCreateInBuzz={() => {
+          setShowCreateMenu(false);
+          navigate("/create/inbuzz");
+        }}
+      />
+      <BottomNav
+        onCreate={() => setShowCreateMenu(true)}
+        overlay={showCreateModal || showCreateMenu}
+      />
     </div>
   );
 }

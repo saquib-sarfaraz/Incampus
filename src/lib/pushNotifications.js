@@ -42,6 +42,10 @@ export const initPushNotifications = async ({ currentUser }) => {
   if (initialized && lastUserId === userId) return;
 
   debugLog("init push notifications", userId);
+  if (typeof window === "undefined" || typeof Notification === "undefined") {
+    debugLog("notifications API not available");
+    return;
+  }
   const messaging = await getFirebaseMessaging();
   if (!messaging) {
     debugLog("messaging not available or unsupported");
@@ -54,21 +58,23 @@ export const initPushNotifications = async ({ currentUser }) => {
   if (permission !== "granted") return;
 
   try {
-    const envKey = import.meta.env.VITE_FIREBASE_VAPID_KEY || "";
-    const vapidKey = getFirebaseVapidKey() || envKey;
+    const vapidKey = getFirebaseVapidKey();
     if (!vapidKey) {
-      debugLog("missing VAPID key");
+      console.error(
+        "[push] VAPID key missing. Set VITE_FIREBASE_VAPID_KEY in your environment and rebuild/redeploy."
+      );
+      throw new Error("VAPID key missing. Check VITE_FIREBASE_VAPID_KEY.");
     }
     const token = await getToken(messaging, {
-      vapidKey: vapidKey || undefined,
+      vapidKey,
       serviceWorkerRegistration: swRegistration || undefined,
     });
     debugLog("fcm token", token);
     if (token) {
-      await registerPushToken(token);
+      await registerPushToken(token, { deviceType: "web", platform: "web" });
     }
-  } catch {
-    debugLog("failed to get FCM token");
+  } catch (error) {
+    debugLog("failed to get FCM token", error);
     // Silent fail to avoid blocking UX.
   }
 

@@ -5,6 +5,7 @@ import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 import { preloadChatPage } from "../../utils/preloadRoutes";
+import { usePWAInstall } from "../../hooks/usePWAInstall";
 import BlueTick from "./BlueTick";
 import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
@@ -168,6 +169,7 @@ export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const { logout, currentUser } = useAuth();
+  const { isInstallable, install: triggerInstall, isInstalled } = usePWAInstall();
   const {
     notifications,
     setNotifications,
@@ -181,6 +183,16 @@ export default function Header() {
   const [showFeedSwitcher, setShowFeedSwitcher] = useState(false);
   const feedSwitcherRef = useRef(null);
 
+  const shouldOpenNotificationsByPath = location.pathname.startsWith("/notifications");
+  const shouldOpenNotificationsByFlag = useMemo(() => {
+    try {
+      return sessionStorage.getItem("incampus:openNotifications") === "1";
+    } catch {
+      return false;
+    }
+  }, [location.pathname]);
+  const notificationsOpen = showNotifications || shouldOpenNotificationsByPath || shouldOpenNotificationsByFlag;
+
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (feedSwitcherRef.current && !feedSwitcherRef.current.contains(event.target)) {
@@ -191,28 +203,6 @@ export default function Header() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  useEffect(() => {
-    const shouldOpenByPath = location.pathname.startsWith("/notifications");
-    let shouldOpenByFlag = false;
-    try {
-      shouldOpenByFlag = sessionStorage.getItem("incampus:openNotifications") === "1";
-    } catch {
-      // ignore storage errors
-    }
-    if (!shouldOpenByPath && !shouldOpenByFlag) return;
-    if (shouldOpenByFlag) {
-      try {
-        sessionStorage.removeItem("incampus:openNotifications");
-      } catch {
-        // ignore storage errors
-      }
-    }
-    setShowNotifications(true);
-    if (shouldOpenByPath) {
-      navigate("/feed", { replace: true });
-    }
-  }, [location.pathname, navigate]);
 
   const unreadCount = notifications.filter((n) => !resolveIsRead(n)).length;
   const notificationItems = useMemo(
@@ -256,8 +246,20 @@ export default function Header() {
   };
 
   const handleToggleNotifications = async () => {
-    const nextOpen = !showNotifications;
+    const nextOpen = !notificationsOpen;
     setShowNotifications(nextOpen);
+    if (!nextOpen) {
+      if (shouldOpenNotificationsByFlag) {
+        try {
+          sessionStorage.removeItem("incampus:openNotifications");
+        } catch {
+          // ignore storage errors
+        }
+      }
+      if (shouldOpenNotificationsByPath) {
+        navigate("/feed", { replace: true });
+      }
+    }
     if (nextOpen && unreadCount > 0) {
       markAllReadOptimistic();
       try {
@@ -347,6 +349,19 @@ export default function Header() {
           </div>
 
           <div className="flex items-center space-x-3">
+            {isInstallable && !isInstalled && (
+              <Motion.button
+                type="button"
+                onClick={() => triggerInstall()}
+                className="rounded-full px-3 py-2 text-sm text-[#b9b4c7] transition-all duration-300 ease-out hover:bg-white/5 hover:text-[#faf0e6]"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.96 }}
+                aria-label="Install app"
+                title="Install app"
+              >
+                <i className="fa-solid fa-download text-base"></i>
+              </Motion.button>
+            )}
             <Motion.button
               onClick={() => navigate("/trending")}
               className={`hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
@@ -365,7 +380,7 @@ export default function Header() {
               onMouseEnter={preloadChatPage}
               onFocus={preloadChatPage}
               onTouchStart={preloadChatPage}
-              className={`relative hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
+              className={`relative rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/chat")
                   ? "bg-white/10 text-[#faf0e6]"
                   : "text-[#b9b4c7] hover:bg-white/5 hover:text-[#faf0e6]"
@@ -393,7 +408,7 @@ export default function Header() {
               </Motion.button>
 
               <AnimatePresence>
-                {showNotifications && (
+                {notificationsOpen && (
                   <Motion.div
                     id="notifications-panel"
                     initial={{ opacity: 0, y: -10 }}

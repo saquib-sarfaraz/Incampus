@@ -195,6 +195,19 @@ export default function StoryBar() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const openPicker = () => requestAnimationFrame(() => fileInputRef.current?.click());
+    const handleStoryCreate = () => openPicker();
+    window.addEventListener("incampus:createStory", handleStoryCreate);
+    const shouldOpen = sessionStorage.getItem("incampus:createStory") === "1";
+    if (shouldOpen) {
+      sessionStorage.removeItem("incampus:createStory");
+      openPicker();
+    }
+    return () => window.removeEventListener("incampus:createStory", handleStoryCreate);
+  }, []);
+
+  useEffect(() => {
     const fetchMissingAuthors = async () => {
       const missing = new Set();
       stories.forEach((story) => {
