@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo, memo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import { useAuth } from "../context/authContext";
 import { useApp } from "../context/useApp";
@@ -19,10 +19,13 @@ import {
   approveGroupJoin,
   rejectGroupJoin,
   deleteChatMessage,
+  fetchInBuzzFeed,
+  fetchInBuzzReel,
 } from "../services/api";
 import { getSocket, ensureSocketConnected, joinSocket } from "../services/socket";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import CreateMenu from "../components/common/CreateMenu";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import ReportModal from "../components/moderation/ReportModal";
 import PostModal from "../components/profile/PostModal";
@@ -30,6 +33,14 @@ import UserProfileModal from "../components/profile/UserProfileModal";
 import BlueTick from "../components/common/BlueTick";
 import CreateGroupModal from "../components/chat/CreateGroupModal";
 import GroupProfileModal from "../components/chat/GroupProfileModal";
+import {
+  cacheInBuzzReels,
+  extractInBuzzId,
+  getCachedInBuzzReel,
+  getInBuzzShareUrl,
+} from "../utils/inbuzz";
+import { readInBuzzFeedSnapshot, writeInBuzzFeedSnapshot } from "../utils/inbuzzCache";
+import { InBuzzGridSkeleton } from "../components/inbuzz/InBuzzSkeleton";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const DEFAULT_GROUP_AVATAR = "/incampus-icon.svg";
@@ -474,10 +485,35 @@ const ChatMessage = memo(function ChatMessage({
   resolveMessageSender,
   onOpenProfile,
 }) {
+  const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [linkedReel, setLinkedReel] = useState(null);
   const isSharedPost = msg.messageType === "shared_post" || msg.type === "shared_post";
+  const isSharedReel =
+    msg.messageType === "inbuzz_reel" ||
+    msg.type === "inbuzz_reel" ||
+    Boolean(msg.reelId || msg.reel_id || msg.reelUrl || msg.reel_url);
+  const sharedReelId = String(msg.reelId || msg.reel_id || "");
+  const linkInBuzzId = extractInBuzzId(msg.text);
+  const inbuzzId = !isSharedPost && !isSharedReel ? linkInBuzzId : "";
   const previewText = resolveMessagePreview(msg);
   const previewThumb = msg.postThumbnail;
+  const reelThumb = msg.reelThumbnail || msg.reel_thumbnail || "";
+  const reelCaption = msg.reelCaption || msg.reelPreviewText || "";
+  const reelAuthorName = msg.reelAuthorName || msg.reel_author_name || "";
+  const cachedLinkedReel = useMemo(() => {
+    if (!inbuzzId) return null;
+    return getCachedInBuzzReel(inbuzzId);
+  }, [inbuzzId]);
+  const effectiveLinkedReel = cachedLinkedReel || (linkedReel?.id === inbuzzId ? linkedReel : null);
+  const linkedReelThumb =
+    effectiveLinkedReel?.thumbnailUrl || effectiveLinkedReel?.thumbnail || "";
+  const linkedReelCaption = effectiveLinkedReel?.caption || "";
+  const linkedReelAuthor =
+    effectiveLinkedReel?.displayName ||
+    effectiveLinkedReel?.author?.fullName ||
+    effectiveLinkedReel?.author?.displayName ||
+    (effectiveLinkedReel?.author?.username ? `@${effectiveLinkedReel.author.username}` : "");
   const senderInfo = !isMine && isActiveGroupChat ? resolveMessageSender(msg) : null;
   const senderProfileId = senderInfo?.id || resolveMessageSenderId(msg);
   const isDeleted = Boolean(
@@ -490,6 +526,25 @@ const ChatMessage = memo(function ChatMessage({
   );
   const canReport = !isMine && !isDeleted;
   const showMenu = (canDelete && !isDeleted) || canReport;
+
+  useEffect(() => {
+    if (!inbuzzId) return;
+    if (cachedLinkedReel) return;
+
+    let active = true;
+    fetchInBuzzReel(inbuzzId)
+      .then((reel) => {
+        if (!active || !reel) return;
+        cacheInBuzzReels([reel]);
+        setLinkedReel(reel);
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [inbuzzId, cachedLinkedReel]);
+
   return (
     <Motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -544,6 +599,76 @@ const ChatMessage = memo(function ChatMessage({
                 </p>
                 <p className="text-sm text-[#faf0e6] line-clamp-2">
                   {previewText}
+                </p>
+              </div>
+            </div>
+          </button>
+        ) : isSharedReel && (sharedReelId || linkInBuzzId) ? (
+          <button
+            type="button"
+            onClick={() => navigate(`/inbuzz/${sharedReelId || linkInBuzzId}`)}
+            className="w-full text-left space-y-2"
+          >
+            <div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
+              {reelThumb ? (
+                <img
+                  src={reelThumb}
+                  alt="Shared reel"
+                  className="w-full h-32 object-cover"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <div className="h-24 w-full bg-white/5 flex items-center justify-center text-xs text-[#b9b4c7]">
+                  Reel preview
+                </div>
+              )}
+              <div className="p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                  Shared reel
+                </p>
+                {reelAuthorName && (
+                  <p className="mt-1 text-[11px] text-[#b9b4c7] truncate">
+                    {reelAuthorName}
+                  </p>
+                )}
+                <p className="text-sm text-[#faf0e6] line-clamp-2">
+                  {reelCaption || "Tap to watch this InBuzz"}
+                </p>
+              </div>
+            </div>
+          </button>
+        ) : inbuzzId ? (
+          <button
+            type="button"
+            onClick={() => navigate(`/inbuzz/${inbuzzId}`)}
+            className="w-full text-left space-y-2"
+          >
+            <div className="rounded-xl overflow-hidden border border-white/10 bg-black/30">
+              {linkedReelThumb ? (
+                <img
+                  src={linkedReelThumb}
+                  alt="Shared InBuzz"
+                  className="w-full h-32 object-cover"
+                  loading="lazy"
+                  decoding="async"
+                />
+              ) : (
+                <div className="h-24 w-full bg-white/5 flex items-center justify-center text-xs text-[#b9b4c7]">
+                  InBuzz preview
+                </div>
+              )}
+              <div className="p-3">
+                <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                  Shared InBuzz
+                </p>
+                {linkedReelAuthor && (
+                  <p className="mt-1 text-[11px] text-[#b9b4c7] truncate">
+                    {linkedReelAuthor}
+                  </p>
+                )}
+                <p className="text-sm text-[#faf0e6] line-clamp-2">
+                  {linkedReelCaption || "Tap to open this reel"}
                 </p>
               </div>
             </div>
@@ -895,6 +1020,16 @@ const resolveMessagePreview = (msg) => {
   if (msg.messageType === "shared_post" || msg.type === "shared_post") {
     return msg.postPreviewText || msg.postTitle || "Shared a post";
   }
+  if (
+    msg.messageType === "inbuzz_reel" ||
+    msg.type === "inbuzz_reel" ||
+    msg.reelId ||
+    msg.reel_id
+  ) {
+    return msg.reelCaption || msg.reelPreviewText || "Shared an InBuzz";
+  }
+  const inbuzzId = extractInBuzzId(msg.text);
+  if (inbuzzId) return "Shared an InBuzz";
   return msg.text || "";
 };
 
@@ -950,6 +1085,7 @@ const normalizeMessageStatus = (msg) => {
 export default function Chat() {
   const { currentUser } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const {
     cacheUser,
     getUserFromCache,
@@ -1029,6 +1165,13 @@ export default function Chat() {
   const [presenceMap, setPresenceMap] = useState({});
   const [typingMap, setTypingMap] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [pendingAttachment, setPendingAttachment] = useState(null);
+  const [pendingInBuzz, setPendingInBuzz] = useState(null);
+  const [showInBuzzPicker, setShowInBuzzPicker] = useState(false);
+  const [inbuzzPickerReels, setInbuzzPickerReels] = useState([]);
+  const [inbuzzPickerLoading, setInbuzzPickerLoading] = useState(false);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [showGroupProfile, setShowGroupProfile] = useState(false);
   const [serverGroups, setServerGroups] = useState([]);
@@ -1051,9 +1194,60 @@ export default function Chat() {
   const [groupJoinLoadingId, setGroupJoinLoadingId] = useState(null);
   const messagesEndRef = useRef(null);
   const messagesContainerRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const shouldAutoScrollRef = useRef(true);
   const activeChatRef = useRef(activeChatId);
   const messageIndexRef = useRef({});
+
+  useEffect(() => {
+    const shareLink = location.state?.shareLink;
+    if (!shareLink) return;
+    setMessageText((prev) => (prev ? `${prev} ${shareLink}` : shareLink));
+    const inbuzzId = extractInBuzzId(shareLink);
+    if (inbuzzId) {
+      fetchInBuzzReel(inbuzzId)
+        .then((reel) => {
+          if (reel) setPendingInBuzz(reel);
+        })
+        .catch(() => {});
+    }
+    navigate(location.pathname, { replace: true, state: {} });
+  }, [location.state, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (!showInBuzzPicker) return;
+    let active = true;
+    const currentUserId =
+      currentUser?.id || currentUser?._id || localStorage.getItem("currentUserId") || "";
+    const cached = readInBuzzFeedSnapshot({ userId: currentUserId, scope: "universal" });
+    const cachedItems = Array.isArray(cached?.items) ? cached.items.slice(0, 9) : [];
+    const hadCached = cachedItems.length > 0;
+    if (hadCached) setInbuzzPickerReels(cachedItems);
+    setInbuzzPickerLoading(!hadCached);
+    fetchInBuzzFeed({ limit: 9 })
+      .then((res) => {
+        const items = Array.isArray(res?.items) ? res.items : [];
+        if (active) setInbuzzPickerReels(items);
+        cacheInBuzzReels(items);
+        writeInBuzzFeedSnapshot({
+          userId: currentUserId,
+          scope: "universal",
+          items,
+          nextCursor: res?.nextCursor || "",
+          hasMore: typeof res?.hasMore === "boolean" ? res.hasMore : undefined,
+        });
+      })
+      .catch(() => {
+        if (active && !hadCached) setInbuzzPickerReels([]);
+      })
+      .finally(() => {
+        if (active) setInbuzzPickerLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [showInBuzzPicker, currentUser?.id, currentUser?._id]);
   const loadedChatsRef = useRef(new Set());
   const lastSeenSentRef = useRef(new Map());
   const missingGroupSenderRef = useRef(new Set());
@@ -2359,6 +2553,12 @@ export default function Chat() {
     };
   }, [activeChatId, refreshChatMessages, markChatRead, markMessagesSeen, serverGroups]);
 
+  useEffect(() => {
+    setPendingAttachment(null);
+    setPendingInBuzz(null);
+    setShowAttachMenu(false);
+  }, [activeChatId]);
+
   const handleSendMessage = async (e) => {
     e.preventDefault();
     const text = messageText.trim();
@@ -2424,8 +2624,54 @@ export default function Chat() {
         .catch(() => {});
     }
     setMessageText("");
+    setPendingAttachment(null);
+    setPendingInBuzz(null);
+    setShowAttachMenu(false);
     scrollToBottom();
   };
+
+  const appendMessageText = useCallback((snippet) => {
+    if (!snippet) return;
+    setMessageText((prev) => (prev ? `${prev} ${snippet}` : snippet));
+  }, []);
+
+  const handleImageSelected = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setPendingAttachment({ type: "image", name: file.name });
+    appendMessageText(`[Image: ${file.name}]`);
+    if (event.target) event.target.value = "";
+  };
+
+  const handleFileSelected = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setPendingAttachment({ type: "file", name: file.name });
+    appendMessageText(`[File: ${file.name}]`);
+    if (event.target) event.target.value = "";
+  };
+
+  const handleAttachInBuzz = (reel) => {
+    if (!reel) return;
+    const link = getInBuzzShareUrl(reel.id);
+    setPendingInBuzz(reel);
+    appendMessageText(link);
+  };
+
+  useEffect(() => {
+    if (!showAttachMenu) return;
+    const handleClickOutside = (event) => {
+      const target = event.target;
+      if (!target) return;
+      const menu = document.getElementById("chat-attach-menu");
+      const button = document.getElementById("chat-attach-button");
+      if (menu && menu.contains(target)) return;
+      if (button && button.contains(target)) return;
+      setShowAttachMenu(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showAttachMenu]);
 
   const handleAcceptRequest = async (request) => {
     const requesterId =
@@ -4369,11 +4615,93 @@ export default function Chat() {
                       ) : null}
                     </div>
                   )}
+                  {(pendingAttachment || pendingInBuzz) && (
+                    <div className="mb-3 flex flex-wrap gap-2 text-xs text-[#b9b4c7]">
+                      {pendingAttachment && (
+                        <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                          <i className={`fa-solid ${pendingAttachment.type === "image" ? "fa-image" : "fa-file"}`}></i>
+                          {pendingAttachment.name}
+                          <button
+                            type="button"
+                            onClick={() => setPendingAttachment(null)}
+                            className="text-[#b9b4c7] hover:text-[#faf0e6]"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      )}
+                      {pendingInBuzz && (
+                        <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1">
+                          <i className="fa-solid fa-circle-play"></i>
+                          {pendingInBuzz.caption?.slice(0, 24) || "InBuzz reel"}
+                          <button
+                            type="button"
+                            onClick={() => setPendingInBuzz(null)}
+                            className="text-[#b9b4c7] hover:text-[#faf0e6]"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  )}
                   <form
                     id="chat-input-row"
                     onSubmit={handleSendMessage}
                     className="flex items-center space-x-3"
                   >
+                    <div className="relative">
+                      <button
+                        id="chat-attach-button"
+                        type="button"
+                        onClick={() => setShowAttachMenu((prev) => !prev)}
+                        className="h-10 w-10 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] flex items-center justify-center hover:bg-white/10"
+                        aria-label="Attach"
+                        disabled={!canChatActive}
+                      >
+                        <i className="fa-solid fa-paperclip"></i>
+                      </button>
+                      {showAttachMenu && (
+                        <div
+                          id="chat-attach-menu"
+                          className="absolute bottom-12 left-0 w-40 rounded-2xl border border-white/10 bg-[#1a120b]/95 backdrop-blur-md shadow-lg p-2 space-y-1 z-40"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAttachMenu(false);
+                              imageInputRef.current?.click();
+                            }}
+                            className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-[#faf0e6] hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-image"></i>
+                            Attach image
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAttachMenu(false);
+                              fileInputRef.current?.click();
+                            }}
+                            className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-[#faf0e6] hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-file"></i>
+                            Attach file
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowAttachMenu(false);
+                              setShowInBuzzPicker(true);
+                            }}
+                            className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-xs text-[#faf0e6] hover:bg-white/10"
+                          >
+                            <i className="fa-solid fa-circle-play"></i>
+                            Attach InBuzz
+                          </button>
+                        </div>
+                      )}
+                    </div>
                     <input
                       id="chat-input-field"
                       type="text"
@@ -4390,6 +4718,19 @@ export default function Chat() {
                       className={`flex-grow px-4 py-2 rounded-full glass-input text-sm ${
                         canChatActive ? "" : "opacity-60 cursor-not-allowed"
                       }`}
+                    />
+                    <input
+                      ref={imageInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleImageSelected}
+                    />
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      onChange={handleFileSelected}
                     />
                     <Motion.button
                       type="submit"
@@ -4418,16 +4759,36 @@ export default function Chat() {
 
       <Motion.button
         type="button"
-        onClick={() => setShowCreateModal(true)}
+        onClick={() => setShowCreateMenu(true)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         className={`hidden sm:flex fixed bottom-6 right-6 z-40 create-fab liquid-button h-14 w-14 items-center justify-center text-[#faf0e6] ${
-          showCreateModal ? "opacity-0 pointer-events-none" : ""
+          showCreateModal || showCreateMenu ? "opacity-0 pointer-events-none" : ""
         }`}
-        aria-label="Create post"
+        aria-label="Create"
       >
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
+      <CreateMenu
+        isOpen={showCreateMenu}
+        onClose={() => setShowCreateMenu(false)}
+        onCreatePost={() => {
+          setShowCreateMenu(false);
+          setShowCreateModal(true);
+        }}
+        onCreateStory={() => {
+          setShowCreateMenu(false);
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("incampus:createStory", "1");
+            window.dispatchEvent(new Event("incampus:createStory"));
+          }
+          navigate("/feed");
+        }}
+        onCreateInBuzz={() => {
+          setShowCreateMenu(false);
+          navigate("/create/inbuzz");
+        }}
+      />
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
       <CreateGroupModal
         isOpen={showGroupModal}
@@ -4445,6 +4806,74 @@ export default function Chat() {
           setShowGroupProfile(false);
         }}
       />
+      {showInBuzzPicker && (
+        <Motion.div
+          className="fixed inset-0 z-[80] flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          onClick={() => setShowInBuzzPicker(false)}
+        >
+          <Motion.div
+            initial={{ y: 30, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 30, opacity: 0 }}
+            transition={{ type: "spring", damping: 22, stiffness: 220 }}
+            className="w-full max-w-md rounded-t-3xl sm:rounded-3xl glass-card p-5"
+            onClick={(event) => event.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-[#faf0e6]">Attach InBuzz</p>
+                  <p className="text-[11px] text-[#b9b4c7]">Pick a reel to share</p>
+                </div>
+              <button
+                type="button"
+                onClick={() => setShowInBuzzPicker(false)}
+                className="h-8 w-8 rounded-full text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/10"
+                aria-label="Close"
+              >
+                <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+            <div className="mt-4">
+              {inbuzzPickerLoading ? (
+                <InBuzzGridSkeleton count={6} />
+              ) : (
+                <div className="grid grid-cols-3 gap-3">
+                  {(inbuzzPickerReels || []).slice(0, 6).map((reel) => (
+                  <button
+                    key={reel.id}
+                    type="button"
+                    onClick={() => {
+                      handleAttachInBuzz(reel);
+                      setShowInBuzzPicker(false);
+                    }}
+                    className="relative aspect-[9/16] rounded-2xl overflow-hidden border border-white/10 bg-white/5"
+                  >
+                    {reel.thumbnail ? (
+                      <img
+                        src={reel.thumbnail}
+                        alt="InBuzz"
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    ) : (
+                      <div className="h-full w-full bg-white/5" />
+                    )}
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <i className="fa-solid fa-play text-white"></i>
+                    </div>
+                  </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </Motion.div>
+        </Motion.div>
+      )}
       {sharedPost && (
         <PostModal
           post={sharedPost}
@@ -4461,8 +4890,8 @@ export default function Chat() {
       />
       <BottomNav
         hidden={false}
-        onCreate={() => setShowCreateModal(true)}
-        overlay={showCreateModal}
+        onCreate={() => setShowCreateMenu(true)}
+        overlay={showCreateModal || showCreateMenu}
       />
     </div>
   );

@@ -4,10 +4,12 @@ import { motion as Motion, AnimatePresence } from "framer-motion";
 
 const DEFAULT_REASONS = [
   "Spam",
-  "Abuse",
-  "Hate Speech",
-  "Fake Account",
   "Harassment",
+  "Hate Speech",
+  "Violence",
+  "Adult Content",
+  "Misinformation",
+  "Other",
 ];
 
 const buildReasonsKey = (reasons = []) => reasons.join("|");
@@ -34,7 +36,7 @@ const ReportModalContent = ({ onClose, onSubmit, title, reasons }) => {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-[80] flex items-end sm:items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center bg-black/70 p-4"
       onClick={onClose}
     >
       <Motion.div

@@ -3,15 +3,23 @@ import { motion as Motion } from "framer-motion";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
-import { searchAll, searchUsers, likePost, fetchRankedFeedPage } from "../services/api";
+import {
+  searchAll,
+  searchUsers,
+  likePost,
+  fetchRankedFeedPage,
+  fetchInBuzzTrending,
+} from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import CreateMenu from "../components/common/CreateMenu";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import CommentModal from "../components/feed/CommentModal";
 import PostModal from "../components/profile/PostModal";
 import ShareSheet from "../components/common/ShareSheet";
 import ShareToChatModal from "../components/common/ShareToChatModal";
 import StoryViewer from "../components/stories/StoryViewer";
+import TrendingInBuzz from "../components/inbuzz/TrendingInBuzz";
 import BlueTick from "../components/common/BlueTick";
 import Post from "../components/feed/Post";
 import {
@@ -676,6 +684,7 @@ export default function Trending() {
   const [trendingPostsLoading, setTrendingPostsLoading] = useState(false);
   const [friendActionLoading, setFriendActionLoading] = useState({});
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
   const [commentPost, setCommentPost] = useState(null);
   const [sharePost, setSharePost] = useState(null);
@@ -692,6 +701,38 @@ export default function Trending() {
   const trendingBuiltAtRef = useRef(0);
   const trendingCursorRef = useRef("");
   const trendingPostsLoadingRef = useRef(false);
+
+  const [inBuzzReels, setInBuzzReels] = useState([]);
+  const [inBuzzLoading, setInBuzzLoading] = useState(false);
+
+  const visibleInBuzzReels = useMemo(() => {
+    const list = Array.isArray(inBuzzReels) ? inBuzzReels : [];
+    return list.filter((reel) => {
+      const reelUserId = reel?.userId || reel?.user_id || reel?.authorId;
+      if (!reelUserId) return true;
+      return !isUserBlocked?.(reelUserId);
+    });
+  }, [inBuzzReels, isUserBlocked]);
+
+  useEffect(() => {
+    let isMounted = true;
+    setInBuzzLoading(true);
+    fetchInBuzzTrending({ limit: 12 })
+      .then((items) => {
+        if (!isMounted) return;
+        setInBuzzReels(Array.isArray(items) ? items : []);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setInBuzzReels([]);
+      })
+      .finally(() => {
+        if (isMounted) setInBuzzLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search || "");
@@ -2696,6 +2737,8 @@ export default function Trending() {
           )}
         </div>
 
+        <TrendingInBuzz reels={visibleInBuzzReels} loading={inBuzzLoading} />
+
         <section className="space-y-5">
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2736,6 +2779,13 @@ export default function Trending() {
                   {tab.label}
                 </button>
               ))}
+              <button
+                type="button"
+                onClick={() => navigate("/inbuzz")}
+                className="rounded-full px-4 py-1 text-xs font-semibold transition-colors bg-white/5 text-[#b9b4c7] hover:text-[#faf0e6] hover:bg-white/10"
+              >
+                🎬 InBuzz
+              </button>
             </div>
             <div className="flex flex-wrap gap-2">
               {TRENDING_VIEWS.map((view) => (
@@ -2850,9 +2900,31 @@ export default function Trending() {
         />
       )}
 
-
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
-      <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
+      <CreateMenu
+        isOpen={showCreateMenu}
+        onClose={() => setShowCreateMenu(false)}
+        onCreatePost={() => {
+          setShowCreateMenu(false);
+          setShowCreateModal(true);
+        }}
+        onCreateStory={() => {
+          setShowCreateMenu(false);
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("incampus:createStory", "1");
+            window.dispatchEvent(new Event("incampus:createStory"));
+          }
+          navigate("/feed");
+        }}
+        onCreateInBuzz={() => {
+          setShowCreateMenu(false);
+          navigate("/create/inbuzz");
+        }}
+      />
+      <BottomNav
+        onCreate={() => setShowCreateMenu(true)}
+        overlay={showCreateModal || showCreateMenu}
+      />
     </div>
   );
 }

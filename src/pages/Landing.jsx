@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import { motion as Motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { usePWAInstall } from "../hooks/usePWAInstall";
+import { useAuth } from "../context/authContext";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 18 },
@@ -33,7 +35,16 @@ const valueItems = [
 const experienceStrip = ["Private", "Verified", "Campus Only", "Real Conversations"];
 
 export default function Landing() {
+  const navigate = useNavigate();
   const { isInstallable, install } = usePWAInstall();
+  const { authToken, loading } = useAuth();
+
+  useEffect(() => {
+    if (loading) return;
+    if (authToken) {
+      navigate("/feed", { replace: true });
+    }
+  }, [authToken, loading, navigate]);
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#1a120b] text-[#faf0e6]">

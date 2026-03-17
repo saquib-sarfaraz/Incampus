@@ -10,6 +10,7 @@ import { normalizeUserId } from "../../utils/userProfile";
 const Chat = lazy(preloadChatPage);
 const Profile = lazy(() => import("../../pages/Profile"));
 const Trending = lazy(() => import("../../pages/Trending"));
+const InBuzz = lazy(() => import("../../pages/InBuzz"));
 
 const SCROLL_KEY_PREFIX = "incampus:scroll:";
 
@@ -21,6 +22,7 @@ const resolveTabKey = (pathname = "") => {
   if (normalized.startsWith("/notifications")) return "feed";
   if (normalized.startsWith("/trending")) return "trending";
   if (normalized.startsWith("/chat")) return "chat";
+  if (normalized.startsWith("/inbuzz")) return "inbuzz";
   if (normalized === "/profile") return "profile";
   return "";
 };
@@ -57,6 +59,9 @@ export default function RootTabs() {
   const isSelfProfile =
     profileRouteId && currentUserId && String(profileRouteId) === String(currentUserId);
   const rootKey = resolveTabKey(location.pathname) || (isSelfProfile ? "profile" : "");
+  const [baseTabKey, setBaseTabKey] = useState(() => {
+    return rootKey || (profileRouteId ? "profile" : "") || lastTab || "feed";
+  });
   const prevTabRef = useRef(
     rootKey || (profileRouteId ? "profile" : "") || lastTab || "feed"
   );
@@ -64,11 +69,11 @@ export default function RootTabs() {
   const shouldOverlayProfile = Boolean(
     profileRouteId &&
       (modalProfileRequested ||
-        (!isSelfProfile && prevTabRef.current && prevTabRef.current !== "profile"))
+        (!isSelfProfile && baseTabKey && baseTabKey !== "profile"))
   );
   const activeKey = shouldOverlayProfile
-    ? prevTabRef.current || "profile"
-    : rootKey || prevTabRef.current || "feed";
+    ? baseTabKey || "profile"
+    : rootKey || baseTabKey || "feed";
   const [mountedTabs, setMountedTabs] = useState(() =>
     activeKey ? [activeKey] : []
   );
@@ -83,6 +88,13 @@ export default function RootTabs() {
 
   useEffect(() => {
     if (!rootKey) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBaseTabKey((prev) => (prev === rootKey ? prev : rootKey));
+  }, [rootKey]);
+
+  useEffect(() => {
+    if (!rootKey) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMountedTabs((prev) => (prev.includes(rootKey) ? prev : [...prev, rootKey]));
   }, [rootKey]);
 
@@ -207,6 +219,7 @@ export default function RootTabs() {
       { key: "feed", element: <Feed /> },
       { key: "trending", element: <Trending /> },
       { key: "chat", element: <Chat /> },
+      { key: "inbuzz", element: <InBuzz /> },
       { key: "profile", element: <Profile /> },
     ],
     []

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1f5ea8" />
+      <stop offset="1" stop-color="#0b1f3a" />
+    </linearGradient>
+    <clipPath id="shield-clip">
+      <path d="M512 160 L780 270 L780 520 C780 700 655 840 512 900 C369 840 244 700 244 520 L244 270 Z" />
+    </clipPath>
+  </defs>
+
+  <rect width="1024" height="1024" rx="200" fill="url(#bg)" />
+
+  <path
+    d="M512 160 L780 270 L780 520 C780 700 655 840 512 900 C369 840 244 700 244 520 L244 270 Z"
+    fill="#ffffff"
+  />
+
+  <g clip-path="url(#shield-clip)" fill="#12325a">
+    <rect x="470" y="300" width="84" height="34" rx="16" />
+    <path d="M512 340 C420 340 350 410 342 500 H682 C674 410 604 340 512 340 Z" />
+    <rect x="340" y="500" width="344" height="44" rx="14" />
+
+    <rect x="380" y="544" width="52" height="150" rx="16" />
+    <rect x="450" y="544" width="52" height="150" rx="16" />
+    <rect x="522" y="544" width="52" height="150" rx="16" />
+    <rect x="592" y="544" width="52" height="150" rx="16" />
+
+    <circle cx="512" cy="430" r="10" />
+  </g>
+
+  <g clip-path="url(#shield-clip)" stroke="#12325a" stroke-width="18" stroke-linecap="round">
+    <line x1="512" y1="694" x2="512" y2="760" />
+    <line x1="452" y1="694" x2="404" y2="760" />
+    <line x1="572" y1="694" x2="620" y2="760" />
+  </g>
+
+  <g clip-path="url(#shield-clip)" fill="#12325a">
+    <circle cx="512" cy="790" r="20" />
+    <circle cx="388" cy="786" r="18" />
+    <circle cx="636" cy="786" r="18" />
+  </g>
+</svg>

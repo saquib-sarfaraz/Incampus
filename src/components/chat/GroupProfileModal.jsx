@@ -556,6 +556,8 @@ export default function GroupProfileModal({
                                             src={avatar}
                                             alt={displayName}
                                             className="h-6 w-6 rounded-full object-cover"
+                                            loading="lazy"
+                                            decoding="async"
                                           />
                                           <div className="min-w-0 flex-1">
                                             <p className="truncate">{displayName}</p>
@@ -640,6 +642,8 @@ export default function GroupProfileModal({
                                 src={user.profilePicUrl || ANONYMOUS_AVATAR}
                                 alt={user.displayName}
                                 className="h-9 w-9 rounded-full object-cover"
+                                loading="lazy"
+                                decoding="async"
                               />
                               <div className="text-sm text-[#faf0e6] flex items-center gap-1">
                                 {user.displayName}

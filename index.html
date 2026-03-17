@@ -4,7 +4,11 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/incampus-icon.svg" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="InCampus" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#1a120b" />
 
@@ -33,21 +37,51 @@
     <script>
       (function () {
         try {
-          const savedTheme = localStorage.getItem("incampus-theme");
+          const savedTheme = localStorage.getItem("incampus-theme") || "current";
+          const allowedThemes = new Set([
+            "current",
+            "dark",
+            "light",
+            "ocean",
+            "sky",
+            "midnight",
+            "graphite",
+          ]);
+          const resolvedTheme = allowedThemes.has(savedTheme)
+            ? savedTheme
+            : "current";
           const lightThemes = new Set(["light", "sky"]);
-          if (savedTheme && savedTheme !== "current") {
-            document.documentElement.setAttribute("data-theme", savedTheme);
+
+          if (resolvedTheme && resolvedTheme !== "current") {
+            document.documentElement.setAttribute("data-theme", resolvedTheme);
           } else {
             document.documentElement.removeAttribute("data-theme");
           }
-          const scheme = lightThemes.has(savedTheme) ? "light" : "dark";
+
+          const themeColors = {
+            current: "#1a120b",
+            dark: "#1a120b",
+            light: "#f7f2eb",
+            ocean: "#355872",
+            sky: "#f7f8f0",
+            midnight: "#1f2f3d",
+            graphite: "#202124",
+          };
+          const meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) {
+            meta.setAttribute(
+              "content",
+              themeColors[resolvedTheme] || themeColors.current
+            );
+          }
+
+          const scheme = lightThemes.has(resolvedTheme) ? "light" : "dark";
           document.documentElement.style.colorScheme = scheme;
         } catch (error) {
           void error;
         }
       })();
     </script>
-    <script src="/firebase-config.js"></script>
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",

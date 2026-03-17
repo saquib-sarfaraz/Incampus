@@ -795,6 +795,14 @@ export const AppProvider = ({ children }) => {
 
   const cacheUser = useCallback((userData) => {
     if (!userData || !userData._id) return;
+    const resolvedFullName =
+      userData?.fullName ||
+      userData?.full_name ||
+      userData?.displayName ||
+      userData?.display_name ||
+      userData?.name ||
+      [userData?.firstName, userData?.lastName].filter(Boolean).join(" ") ||
+      "";
     const resolvedAccountType =
       userData?.accountType ||
       userData?.account_type ||
@@ -820,10 +828,14 @@ export const AppProvider = ({ children }) => {
     const resolvedAvatar =
       userData?.profilePicUrl ||
       userData?.profilePic ||
+      userData?.profile_picture ||
+      userData?.profile_pic ||
       userData?.avatarUrl ||
       userData?.avatar ||
+      userData?.photoURL ||
       userData?.photoUrl ||
       userData?.photo ||
+      userData?.picture ||
       userData?.imageUrl ||
       userData?.image ||
       "";
@@ -846,8 +858,12 @@ export const AppProvider = ({ children }) => {
       ...prev,
       [userData._id]: {
         id: userData._id,
-        name: userData.fullName,
-        displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
+        name: resolvedFullName || userData.username || "User",
+        displayName:
+          String(resolvedFullName || userData.username || "User").replace(
+            / \[DEV\]| \[ANON TEST\]/g,
+            ""
+          ) || "User",
         profilePicUrl: resolvedAvatar,
         username: userData.username,
         accountType: resolvedAccountType,

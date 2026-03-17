@@ -7,26 +7,41 @@ import { usePWAInstall } from "../hooks/usePWAInstall";
 
 const DISMISS_KEY = "installBannerDismissed";
 const DISMISS_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
+const STANDALONE_QUERY = "(display-mode: standalone)";
 
 export default function InstallBanner() {
   const { isInstallable, install, isInstalled } = usePWAInstall();
-  const [visible, setVisible] = useState(false);
   const [installReady, setInstallReady] = useState(() =>
     typeof window !== "undefined" ? hasDeferredPrompt() : false
   );
-  const [isMobile, setIsMobile] = useState(false);
-  const [isIOS, setIsIOS] = useState(false);
-  const [isStandalone, setIsStandalone] = useState(false);
+  const [dismissedUntil, setDismissedUntil] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    try {
+      return Number(localStorage.getItem(DISMISS_KEY) || 0);
+    } catch {
+      return 0;
+    }
+  });
+  const [isStandalone, setIsStandalone] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return (
+      window.matchMedia?.(STANDALONE_QUERY)?.matches ||
+      window.navigator?.standalone === true
+    );
+  });
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const ua = navigator.userAgent || "";
-    setIsMobile(/Android|iPhone|iPad|iPod/i.test(ua));
-    setIsIOS(/iPhone|iPad|iPod/i.test(ua));
-    setIsStandalone(
-      window.matchMedia?.("(display-mode: standalone)")?.matches ||
-        window.navigator?.standalone === true
-    );
+    if (typeof window === "undefined") return undefined;
+    const mql = window.matchMedia?.(STANDALONE_QUERY);
+    const update = () => {
+      setIsStandalone(Boolean(mql?.matches || window.navigator?.standalone === true));
+    };
+    mql?.addEventListener?.("change", update);
+    window.addEventListener("appinstalled", update);
+    return () => {
+      mql?.removeEventListener?.("change", update);
+      window.removeEventListener("appinstalled", update);
+    };
   }, []);
 
   useEffect(() => {
@@ -38,41 +53,29 @@ export default function InstallBanner() {
     };
   }, []);
 
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(ua);
+  const isIOS = /iPhone|iPad|iPod/i.test(ua);
   const showIOSHelp = isMobile && isIOS && !isStandalone;
   const shouldShowInstall = installReady && isInstallable && !isInstalled;
   const shouldShow = shouldShowInstall || showIOSHelp;
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!shouldShow) {
-      setVisible(false);
-      return;
-    }
-    let dismissedUntil = 0;
-    try {
-      dismissedUntil = Number(localStorage.getItem(DISMISS_KEY) || 0);
-    } catch {
-      dismissedUntil = 0;
-    }
-    if (dismissedUntil && Date.now() < dismissedUntil) {
-      setVisible(false);
-      return;
-    }
-    setVisible(true);
-  }, [shouldShow]);
+  // eslint-disable-next-line react-hooks/purity
+  const isDismissed = dismissedUntil && Date.now() < dismissedUntil;
+  const visible = Boolean(shouldShow && !isDismissed);
 
   const handleDismiss = () => {
+    const nextUntil = Date.now() + DISMISS_DURATION_MS;
     if (typeof window !== "undefined") {
       try {
         localStorage.setItem(
           DISMISS_KEY,
-          String(Date.now() + DISMISS_DURATION_MS)
+          String(nextUntil)
         );
       } catch {
         // ignore storage errors
       }
     }
-    setVisible(false);
+    setDismissedUntil(nextUntil);
   };
 
   const handleInstall = () => {
@@ -91,7 +94,7 @@ export default function InstallBanner() {
             <p className="subtitle">
               {showIOSHelp
                 ? "Tap Share and choose Add to Home Screen"
-                : "Faster access - Works offline"}
+                : "Get faster access to campus updates, reels, and events."}
             </p>
           </div>
         </div>

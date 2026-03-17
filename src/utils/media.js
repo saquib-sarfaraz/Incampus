@@ -75,6 +75,17 @@ const isCloudinaryUrl = (url = "") =>
 const hasCloudinaryTransform = (url = "") =>
   /\/upload\/[^/]*(?:f_|q_|w_|h_|c_|vc_)/.test(url);
 
+const stripCloudinaryFormatExtension = (url = "") => {
+  if (!url || typeof url !== "string") return url;
+  if (!isCloudinaryUrl(url)) return url;
+  // When we use `f_auto`, keeping an explicit format extension (e.g. `.webp`) can
+  // force an incompatible format on older iOS/Safari. Stripping the extension
+  // lets Cloudinary negotiate the best format based on the request.
+  const [base, suffix = ""] = url.split(/([?#].*)/);
+  const stripped = base.replace(/\.(avif|webp|jpe?g|png|gif|bmp)$/i, "");
+  return `${stripped}${suffix}`;
+};
+
 const buildCloudinaryTransform = ({ width = 600, height, quality = "auto", format = "auto" } = {}) => {
   const parts = [];
   if (format) parts.push(`f_${format}`);
@@ -88,10 +99,20 @@ const buildCloudinaryTransform = ({ width = 600, height, quality = "auto", forma
 const buildCloudinaryVideoTransform = () => "q_auto:good,vc_auto";
 
 export const getOptimizedMediaUrl = (url, options = {}) => {
-  if (!url || !isCloudinaryUrl(url) || hasCloudinaryTransform(url)) return url;
+  if (!url || !isCloudinaryUrl(url)) return url;
+  // If a Cloudinary URL already includes f_auto, make sure we don't force an
+  // extension like `.webp` that can break on some devices.
+  if (hasCloudinaryTransform(url) && /\/upload\/[^/]*\bf_auto\b/.test(url)) {
+    return stripCloudinaryFormatExtension(url);
+  }
+  if (hasCloudinaryTransform(url)) return url;
   const transform = buildCloudinaryTransform(options);
   if (!transform) return url;
-  return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
+  const next = url.replace(
+    CLOUDINARY_UPLOAD_SEGMENT,
+    `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`
+  );
+  return stripCloudinaryFormatExtension(next);
 };
 
 export const getOptimizedVideoUrl = (url) => {
@@ -223,5 +244,9 @@ export const getOptimizedFillUrl = (url, options = {}) => {
   if (height) parts.push(`h_${height}`);
   parts.push("c_fill");
   const transform = parts.join(",");
-  return url.replace(CLOUDINARY_UPLOAD_SEGMENT, `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`);
+  const next = url.replace(
+    CLOUDINARY_UPLOAD_SEGMENT,
+    `${CLOUDINARY_UPLOAD_SEGMENT}${transform}/`
+  );
+  return stripCloudinaryFormatExtension(next);
 };

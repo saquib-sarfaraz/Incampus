@@ -17,13 +17,17 @@ import {
   getFriendsList,
   getFriendCount,
   searchColleges,
+  fetchInBuzzByUser,
+  fetchInBuzzFeed,
 } from "../services/api";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import CreateMenu from "../components/common/CreateMenu";
 import BlueTick from "../components/common/BlueTick";
 import PostModal from "../components/profile/PostModal";
 import CreatePostModal from "../components/feed/CreatePostModal";
 import UserProfileModal from "../components/profile/UserProfileModal";
+import ProfileReelGrid from "../components/inbuzz/ProfileReelGrid";
 import { joinSocket, leaveSocket, getSocket } from "../services/socket";
 import {
   resolveUserType,
@@ -46,6 +50,11 @@ import {
   forgetAnonymousPost,
 } from "../utils/anonymousPosts";
 import { readFeedSnapshotPosts } from "../utils/feedSnapshot";
+import {
+  clearExpiredPendingInBuzzUploads,
+  readPendingInBuzzUploads,
+  subscribePendingInBuzzUploads,
+} from "../utils/inbuzzUploads";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const HELP_CENTER_URL = "https://incampus-help.online";
@@ -62,7 +71,7 @@ const PROFILE_POSTS_CACHE_PREFIX = "incampus:profile:posts:cache:";
 const PROFILE_POSTS_CACHE_TTL = 5 * 60 * 1000;
 const THEME_STORAGE_KEY = "incampus-theme";
 const THEME_ANIM_CLASS = "theme-transition";
-const THEME_ANIM_DURATION = 400;
+const THEME_ANIM_DURATION = 650;
 const readAnonSet = (userId) =>
   new Set(readAnonymousPostIds(userId).map((id) => String(id)));
 
@@ -76,7 +85,8 @@ const resolveStoredTheme = () => {
       stored === "light" ||
       stored === "ocean" ||
       stored === "sky" ||
-      stored === "midnight"
+      stored === "midnight" ||
+      stored === "graphite"
     ) {
       return stored;
     }
@@ -366,6 +376,9 @@ export default function Profile() {
   const [privacyPublic, setPrivacyPublic] = useState(true);
   const [friendsList, setFriendsList] = useState([]);
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [inBuzzReels, setInBuzzReels] = useState([]);
+  const [inBuzzLoading, setInBuzzLoading] = useState(false);
+  const [pendingInBuzzUploads, setPendingInBuzzUploads] = useState(() => []);
   const friendsLoadedRef = useRef(false);
   const friendsLoadRequestRef = useRef(0);
   const friendsCountsLoadedRef = useRef(false);
@@ -389,8 +402,31 @@ export default function Profile() {
   const isViewingOtherUser = Boolean(
     userId && (!resolvedCurrentUserId || String(userId) !== String(resolvedCurrentUserId))
   );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return () => {};
+    clearExpiredPendingInBuzzUploads();
+
+    const refresh = () => {
+      if (!resolvedCurrentUserId || isViewingOtherUser) {
+        setPendingInBuzzUploads([]);
+        return;
+      }
+      const uploads = readPendingInBuzzUploads().filter((item) => {
+        const owner = item?.userId || item?.user_id || "";
+        if (!owner) return true;
+        return String(owner) === String(resolvedCurrentUserId);
+      });
+      setPendingInBuzzUploads(uploads);
+    };
+
+    refresh();
+    return subscribePendingInBuzzUploads(refresh);
+  }, [resolvedCurrentUserId, isViewingOtherUser]);
+
   const [toast, setToast] = useState(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showMobileSettings, setShowMobileSettings] = useState(false);
   const [isMobileView, setIsMobileView] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -444,38 +480,97 @@ export default function Profile() {
       { id: "ocean", label: "Ocean", caption: "Brand" },
       { id: "sky", label: "Sky", caption: "Light" },
       { id: "midnight", label: "Midnight", caption: "Dark" },
+      { id: "graphite", label: "Graphite", caption: "#202124" },
     ],
     []
   );
-  const applyTheme = useCallback((theme) => {
+  const applyTheme = useCallback((theme, origin = null) => {
     if (typeof document === "undefined") return;
+    const prefersReducedMotion = (() => {
+      try {
+        return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      } catch {
+        return false;
+      }
+    })();
     const root = document.documentElement;
+
+    const point = (() => {
+      if (
+        origin &&
+        typeof origin.clientX === "number" &&
+        typeof origin.clientY === "number"
+      ) {
+        return { x: origin.clientX, y: origin.clientY };
+      }
+      return { x: window.innerWidth / 2, y: window.innerHeight * 0.33 };
+    })();
+
+    root.style.setProperty("--theme-switch-x", `${Math.round(point.x)}px`);
+    root.style.setProperty("--theme-switch-y", `${Math.round(point.y)}px`);
+
+    const themeColorMap = {
+      current: "#1a120b",
+      dark: "#1a120b",
+      light: "#f7f2eb",
+      ocean: "#355872",
+      sky: "#f7f8f0",
+      midnight: "#1f2f3d",
+      graphite: "#202124",
+    };
+
+    const applyNow = () => {
+      if (theme && theme !== "current") {
+        root.setAttribute("data-theme", theme);
+      } else {
+        root.removeAttribute("data-theme");
+      }
+      const scheme = theme === "light" || theme === "sky" ? "light" : "dark";
+      root.style.colorScheme = scheme;
+      try {
+        localStorage.setItem(THEME_STORAGE_KEY, theme);
+      } catch {
+        // ignore storage errors
+      }
+      try {
+        const meta = document.querySelector('meta[name="theme-color"]');
+        const color = themeColorMap[theme] || themeColorMap.current;
+        if (meta && color) meta.setAttribute("content", color);
+      } catch {
+        // ignore meta tag errors
+      }
+    };
+
+    const startViewTransition = document.startViewTransition;
+    if (!prefersReducedMotion && typeof startViewTransition === "function") {
+      try {
+        startViewTransition(() => {
+          applyNow();
+        });
+        return;
+      } catch {
+        // fall back to CSS class animation
+      }
+    }
+
     root.classList.add(THEME_ANIM_CLASS);
-    if (theme && theme !== "current") {
-      root.setAttribute("data-theme", theme);
-    } else {
-      root.removeAttribute("data-theme");
-    }
-    const scheme = theme === "light" || theme === "sky" ? "light" : "dark";
-    root.style.colorScheme = scheme;
-    try {
-      localStorage.setItem(THEME_STORAGE_KEY, theme);
-    } catch {
-      // ignore storage errors
-    }
+    applyNow();
     window.setTimeout(() => {
       root.classList.remove(THEME_ANIM_CLASS);
     }, THEME_ANIM_DURATION);
   }, []);
-  const handleToggleTheme = useCallback(() => {
+  const handleToggleTheme = useCallback(
+    (event) => {
     const nextTheme = isDarkTheme ? "light" : "dark";
     setSelectedTheme(nextTheme);
-    applyTheme(nextTheme);
-  }, [applyTheme, isDarkTheme]);
+      applyTheme(nextTheme, event);
+    },
+    [applyTheme, isDarkTheme]
+  );
   const handleSelectTheme = useCallback(
-    (theme) => {
+    (theme, event) => {
       setSelectedTheme(theme);
-      applyTheme(theme);
+      applyTheme(theme, event);
     },
     [applyTheme]
   );
@@ -1940,6 +2035,47 @@ export default function Profile() {
     }
   }, [isCommunity, activeTab]);
 
+  useEffect(() => {
+    if (activeTab !== "inbuzz") return;
+    const targetUserId = userId || resolvedCurrentUserId;
+    if (!targetUserId) return;
+    let active = true;
+    setInBuzzLoading(true);
+    (async () => {
+      try {
+        const limit = 20;
+        let byUser = [];
+        try {
+          byUser = await fetchInBuzzByUser(targetUserId, { limit });
+        } catch {
+          byUser = [];
+        }
+        if (!active) return;
+        if (Array.isArray(byUser) && byUser.length) {
+          setInBuzzReels(byUser);
+          return;
+        }
+
+        const response = await fetchInBuzzFeed({ limit });
+        const items = Array.isArray(response?.items) ? response.items : [];
+        const filtered = items.filter((reel) => {
+          const reelUserId =
+            reel?.userId || reel?.user_id || reel?.authorId || reel?.author?.id;
+          return reelUserId && String(reelUserId) === String(targetUserId);
+        });
+        if (!active) return;
+        setInBuzzReels(filtered);
+      } catch {
+        if (active) setInBuzzReels([]);
+      } finally {
+        if (active) setInBuzzLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [activeTab, userId, resolvedCurrentUserId]);
+
 
   if (isViewingOtherUser) {
     return (
@@ -2050,7 +2186,8 @@ export default function Profile() {
 
             <div className="flex gap-2 mb-6">
               {[
-                { key: "overview", label: "Overview" },
+                { key: "overview", label: "Posts" },
+                { key: "inbuzz", label: "InBuzz" },
                 ...(isCommunity ? [] : [{ key: "friends", label: "Friends" }]),
                 { key: "settings", label: "Settings" },
               ].map((tab) => (
@@ -2221,6 +2358,26 @@ export default function Profile() {
           </div>
         )}
 
+        {resolvedActiveTab === "inbuzz" && (
+          <div className="space-y-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xl font-semibold text-[#faf0e6]">Your InBuzz</h3>
+              <button
+                type="button"
+                onClick={() => navigate("/create/inbuzz")}
+                className="rounded-full px-4 py-2 text-xs font-semibold liquid-button"
+              >
+                + Upload InBuzz
+              </button>
+            </div>
+            <ProfileReelGrid
+              initialReels={inBuzzReels}
+              loading={inBuzzLoading}
+              pendingUploads={isViewingOtherUser ? [] : pendingInBuzzUploads}
+            />
+          </div>
+        )}
+
         {resolvedActiveTab === "friends" && (
           <div className="glass-card glass-hover rounded-3xl p-6 transition-all duration-300 ease-out">
             <div className="flex items-center justify-between mb-4">
@@ -2330,7 +2487,7 @@ export default function Profile() {
                     <button
                       key={theme.id}
                       type="button"
-                      onClick={() => handleSelectTheme(theme.id)}
+                      onClick={(event) => handleSelectTheme(theme.id, event)}
                       className={`theme-card ${isActive ? "active" : ""}`}
                     >
                       {isActive && (
@@ -2934,18 +3091,41 @@ export default function Profile() {
       )}
       <Motion.button
         type="button"
-        onClick={() => setShowCreateModal(true)}
+        onClick={() => setShowCreateMenu(true)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         className={`hidden sm:flex fixed bottom-6 right-6 z-40 create-fab liquid-button h-14 w-14 items-center justify-center text-[#faf0e6] ${
-          showCreateModal ? "opacity-0 pointer-events-none" : ""
+          showCreateModal || showCreateMenu ? "opacity-0 pointer-events-none" : ""
         }`}
-        aria-label="Create post"
+        aria-label="Create"
       >
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
-      <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
+      <CreateMenu
+        isOpen={showCreateMenu}
+        onClose={() => setShowCreateMenu(false)}
+        onCreatePost={() => {
+          setShowCreateMenu(false);
+          setShowCreateModal(true);
+        }}
+        onCreateStory={() => {
+          setShowCreateMenu(false);
+          if (typeof window !== "undefined") {
+            sessionStorage.setItem("incampus:createStory", "1");
+            window.dispatchEvent(new Event("incampus:createStory"));
+          }
+          navigate("/feed");
+        }}
+        onCreateInBuzz={() => {
+          setShowCreateMenu(false);
+          navigate("/create/inbuzz");
+        }}
+      />
+      <BottomNav
+        onCreate={() => setShowCreateMenu(true)}
+        overlay={showCreateModal || showCreateMenu}
+      />
     </div>
   );
 }

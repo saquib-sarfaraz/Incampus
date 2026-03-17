@@ -217,8 +217,19 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const authorId = post.author?._id || post.authorId || post.author;
   const currentUserId = currentUser?.id || currentUser?._id || currentUser?.userId;
   const resolvedOwnerId = resolvePostOwnerId(post);
+  const serverIsOwnerFlag =
+    typeof post?.canDelete === "boolean"
+      ? post.canDelete
+      : typeof post?.can_delete === "boolean"
+        ? post.can_delete
+        : typeof post?.isOwner === "boolean"
+          ? post.isOwner
+          : typeof post?.is_owner === "boolean"
+            ? post.is_owner
+            : false;
   const isOwner =
     Boolean(post?.__isLocalOwner) ||
+    serverIsOwnerFlag ||
     (currentUserId &&
       resolvedOwnerId &&
       String(resolvedOwnerId) === String(currentUserId));
@@ -231,15 +242,13 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
   const anonymousPost = isPostAnonymous(post);
   const headerName = anonymousPost
     ? isOwner
-      ? `${ownerDisplayName} (Anonymous)`
+      ? "You (Anonymous)"
       : "Anonymous Student"
     : isOwner
       ? ownerDisplayName
       : author?.displayName || "User";
   const headerAvatar = anonymousPost
-    ? isOwner
-      ? ownerAvatar
-      : ANONYMOUS_AVATAR
+    ? ANONYMOUS_AVATAR
     : isOwner
       ? ownerAvatar
       : author?.profilePicUrl || ANONYMOUS_AVATAR;
@@ -301,7 +310,7 @@ export default function PostModal({ post, isOpen, onClose, onDelete }) {
     };
 
     loadAuthor();
-  }, [post, cacheUser, getUserFromCache]);
+  }, [post, anonymousPost, cacheUser, getUserFromCache]);
 
   useEffect(() => {
     setLocalIsLiked(baseIsLiked);
