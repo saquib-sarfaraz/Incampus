@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import ReelViewer from "../components/inbuzz/ReelViewer";
 import ReelShareSheet from "../components/inbuzz/ReelShareSheet";
 import ReelInfoSheet from "../components/inbuzz/ReelInfoSheet";
@@ -46,6 +46,8 @@ const INBUZZ_REPORT_REASONS = [
 
 export default function InBuzz() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const isRouteActive = location.pathname.startsWith("/inbuzz");
   const { reelId } = useParams();
   const { currentUser } = useAuth();
   const { blockedUsers, addBlockedUser, isUserBlocked } = useApp();
@@ -70,14 +72,22 @@ export default function InBuzz() {
   const loadMoreBusyRef = useRef(false);
   const lastCursorRequestedRef = useRef("");
   const loadedIdsRef = useRef(new Set());
-  const reelsRef = useRef([]);
-  const nextCursorRef = useRef("");
-  const hasMoreRef = useRef(true);
-  const pendingPollersRef = useRef(new Map());
+	  const reelsRef = useRef([]);
+	  const nextCursorRef = useRef("");
+	  const hasMoreRef = useRef(true);
+	  const pendingPollersRef = useRef(new Map());
+	  const pendingUploadsRef = useRef([]);
+	  const pendingRefreshTimersRef = useRef(new Map());
+	  const pendingNoticeRef = useRef(new Set());
+	  const pendingResolvedRef = useRef(new Set());
 
-  useEffect(() => {
-    reelsRef.current = reels;
-  }, [reels]);
+	  useEffect(() => {
+	    reelsRef.current = reels;
+	  }, [reels]);
+
+	  useEffect(() => {
+	    pendingUploadsRef.current = pendingUploads;
+	  }, [pendingUploads]);
 
   useEffect(() => {
     nextCursorRef.current = nextCursor || "";
@@ -115,30 +125,130 @@ export default function InBuzz() {
     );
   }, [infoReel]);
 
-  const isInfoOwner = useMemo(() => {
-    if (!currentUserId || !infoReelOwnerId) return false;
-    return String(currentUserId) === String(infoReelOwnerId);
-  }, [currentUserId, infoReelOwnerId]);
+	  const isInfoOwner = useMemo(() => {
+	    if (!currentUserId || !infoReelOwnerId) return false;
+	    return String(currentUserId) === String(infoReelOwnerId);
+	  }, [currentUserId, infoReelOwnerId]);
 
-  const filteredReels = useMemo(() => {
-    if (!reels.length) return [];
-    if (!blockedUsers || blockedUsers.length === 0) return reels;
-    const blockedSet = new Set(blockedUsers.map((id) => String(id)));
-    return reels.filter((reel) => {
-      const reelUserId = reel?.userId || reel?.user_id || reel?.authorId;
-      if (!reelUserId) return true;
-      return !blockedSet.has(String(reelUserId));
-    });
-  }, [blockedUsers, reels]);
+	  const pendingReelPlaceholders = useMemo(() => {
+	    if (!pendingUploads.length) return [];
+	    const placeholders = [];
+	    pendingUploads.forEach((upload) => {
+	      const statusValue = String(upload?.status || "").toLowerCase();
+	      if (statusValue === "failed" || statusValue === "error") return;
 
-  useEffect(() => {
-    if (typeof window === "undefined") return () => {};
-    clearExpiredPendingInBuzzUploads();
-    setPendingUploads(readPendingInBuzzUploads());
-    return subscribePendingInBuzzUploads(() => {
-      setPendingUploads(readPendingInBuzzUploads());
-    });
-  }, []);
+	      const owner = upload?.userId || upload?.user_id || "";
+	      if (currentUserId && owner && String(owner) !== String(currentUserId)) return;
+
+	      const reelIdValue =
+	        upload?.reelId ||
+	        upload?.reel_id ||
+	        upload?.data?.reelId ||
+	        upload?.data?.reel_id ||
+	        "";
+	      if (!reelIdValue) return;
+
+	      const uploadPercentValue =
+	        statusValue === "uploading"
+	          ? upload?.uploadPercent
+	          : upload?.processingPercent;
+	      const percent = Number(uploadPercentValue);
+	      const percentSafe = Number.isFinite(percent)
+	        ? Math.max(0, Math.min(100, percent))
+	        : undefined;
+
+	      placeholders.push({
+	        id: String(reelIdValue),
+	        status: "processing",
+	        isTemp: true,
+	        caption: upload?.caption || "",
+	        thumbnailUrl: upload?.previewThumb || "",
+	        userId: owner ? String(owner) : "",
+	        stage: upload?.stage || "",
+	        processingPercent: percentSafe,
+	      });
+	    });
+	    return placeholders.slice(0, 2);
+	  }, [pendingUploads, currentUserId]);
+
+	  const mergedReels = useMemo(() => {
+	    if (!reels.length && !pendingReelPlaceholders.length) return [];
+	    if (!pendingReelPlaceholders.length) return reels;
+	    const base = Array.isArray(reels) ? reels : [];
+	    const existingIds = new Set(
+	      base.map((item) => String(item?.id || item?._id || "")).filter(Boolean)
+	    );
+	    const placeholders = pendingReelPlaceholders.filter(
+	      (item) => item?.id && !existingIds.has(String(item.id))
+	    );
+	    return placeholders.length ? [...placeholders, ...base] : base;
+	  }, [pendingReelPlaceholders, reels]);
+
+	  const filteredReels = useMemo(() => {
+	    if (!mergedReels.length) return [];
+	    if (!blockedUsers || blockedUsers.length === 0) return mergedReels;
+	    const blockedSet = new Set(blockedUsers.map((id) => String(id)));
+	    return mergedReels.filter((reel) => {
+	      const reelUserId = reel?.userId || reel?.user_id || reel?.authorId;
+	      if (!reelUserId) return true;
+	      return !blockedSet.has(String(reelUserId));
+	    });
+	  }, [blockedUsers, mergedReels]);
+
+	  useEffect(() => {
+	    if (typeof window === "undefined") return () => {};
+	    clearExpiredPendingInBuzzUploads();
+	    setPendingUploads(readPendingInBuzzUploads());
+	    return subscribePendingInBuzzUploads(() => {
+	      setPendingUploads(readPendingInBuzzUploads());
+	    });
+	  }, []);
+
+	  useEffect(() => {
+	    if (!pendingUploads.length) return;
+	    const eligible = new Set();
+	    pendingUploads.forEach((upload) => {
+	      const uploadId = String(upload?.id || "");
+	      if (!uploadId) return;
+		      const owner = upload?.userId || upload?.user_id || "";
+		      if (currentUserId && owner && String(owner) !== String(currentUserId)) return;
+		      const statusValue = String(upload?.status || "").toLowerCase();
+		      if (statusValue === "failed" || statusValue === "error") return;
+		      if (
+		        statusValue === "published" ||
+		        statusValue === "completed" ||
+		        statusValue === "done"
+		      ) {
+		        return;
+		      }
+
+		      const shouldNotify = statusValue === "uploading" || statusValue === "processing";
+		      if (shouldNotify && !pendingNoticeRef.current.has(uploadId)) {
+		        pendingNoticeRef.current.add(uploadId);
+		        setPendingToast("Your reel is uploading and will appear shortly.");
+		      }
+
+	      const jobId = String(upload?.jobId || "");
+	      const reelIdValue = upload?.reelId || upload?.reel_id || "";
+	      if (!reelIdValue || jobId) return;
+	      if (statusValue !== "uploading" && statusValue !== "processing") return;
+
+	      eligible.add(uploadId);
+	      if (pendingRefreshTimersRef.current.has(uploadId)) return;
+	      const timer = window.setTimeout(() => {
+	        setFeedRefreshKey((prev) => prev + 1);
+	        pendingRefreshTimersRef.current.delete(uploadId);
+	      }, 5000);
+	      pendingRefreshTimersRef.current.set(uploadId, timer);
+	    });
+
+	    for (const [uploadId, timer] of pendingRefreshTimersRef.current.entries()) {
+	      if (!eligible.has(uploadId)) {
+	        window.clearTimeout(timer);
+	        pendingRefreshTimersRef.current.delete(uploadId);
+	      }
+	    }
+	  }, [pendingUploads, currentUserId]);
 
   useEffect(() => {
     const pollableIds = new Set();
@@ -267,14 +377,18 @@ export default function InBuzz() {
     });
   }, [pendingUploads]);
 
-  useEffect(() => {
-    return () => {
-      pendingPollersRef.current.forEach((controller) => {
-        controller.cancelled = true;
-      });
-      pendingPollersRef.current.clear();
-    };
-  }, []);
+	  useEffect(() => {
+	    return () => {
+	      pendingPollersRef.current.forEach((controller) => {
+	        controller.cancelled = true;
+	      });
+	      pendingPollersRef.current.clear();
+	      pendingRefreshTimersRef.current.forEach((timer) => {
+	        window.clearTimeout(timer);
+	      });
+	      pendingRefreshTimersRef.current.clear();
+	    };
+	  }, []);
 
   useEffect(() => {
     if (!pendingToast) return;
@@ -311,13 +425,43 @@ export default function InBuzz() {
     lastCursorRequestedRef.current = "";
     fetchInBuzzFeed({ scope, limit: 12 })
       .then((response) => {
-        const list = Array.isArray(response?.items) ? response.items : [];
-        if (isMounted && requestId === feedRequestRef.current) {
-          setReels(list);
-          loadedIdsRef.current = new Set(
-            list
-              .map((item) => String(item?.id || item?._id || ""))
-              .filter(Boolean)
+	        const list = Array.isArray(response?.items) ? response.items : [];
+	        if (isMounted && requestId === feedRequestRef.current) {
+	          setReels(list);
+	          const idsFromFeed = new Set(
+	            list
+	              .map((item) => String(item?.id || item?._id || ""))
+	              .filter(Boolean)
+	          );
+	          (pendingUploadsRef.current || []).forEach((upload) => {
+	            const uploadId = String(upload?.id || "");
+	            if (!uploadId) return;
+	            if (pendingResolvedRef.current.has(uploadId)) return;
+	            const statusValue = String(upload?.status || "").toLowerCase();
+	            if (statusValue === "published" || statusValue === "completed" || statusValue === "done") {
+	              return;
+	            }
+	            if (statusValue === "failed" || statusValue === "error") return;
+	            const reelIdValue = upload?.reelId || upload?.reel_id || "";
+	            if (!reelIdValue) return;
+	            if (!idsFromFeed.has(String(reelIdValue))) return;
+	            pendingResolvedRef.current.add(uploadId);
+	            upsertPendingInBuzzUpload({
+	              id: uploadId,
+	              status: "published",
+	              processingPercent: 100,
+	              reelId: String(reelIdValue),
+	              completedAt: new Date().toISOString(),
+	            });
+	            setPendingToast("Your InBuzz is live.");
+	            setTimeout(() => {
+	              removePendingInBuzzUpload(uploadId);
+	            }, 2500);
+	          });
+	          loadedIdsRef.current = new Set(
+	            list
+	              .map((item) => String(item?.id || item?._id || ""))
+	              .filter(Boolean)
           );
           const cursor = response?.nextCursor || "";
           setNextCursor(cursor);
@@ -464,7 +608,13 @@ export default function InBuzz() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => navigate(-1)}
+            onClick={() => {
+              if (typeof window !== "undefined" && window.history.length > 1) {
+                navigate(-1);
+                return;
+              }
+              navigate("/feed");
+            }}
             className="h-9 w-9 rounded-full border border-white/10 bg-white/5 flex items-center justify-center"
             aria-label="Back"
           >
@@ -504,7 +654,7 @@ export default function InBuzz() {
         </div>
         <button
           type="button"
-          onClick={() => navigate("/create/inbuzz")}
+          onClick={() => navigate("/create/inbuzz", { state: { from: location.pathname } })}
           className="rounded-full px-4 py-2 text-xs font-semibold liquid-button"
         >
           + Upload InBuzz
@@ -580,9 +730,11 @@ export default function InBuzz() {
                       <div className="space-y-1">
                         <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
                           <div
-                            className="h-full rounded-full bg-emerald-300/80 transition-all duration-300"
+                            className={`h-full rounded-full bg-emerald-300/80 ${
+                              hasPercent ? "transition-all duration-300" : "animate-pulse"
+                            }`}
                             style={{
-                              width: `${hasPercent ? Math.max(0, Math.min(100, percent)) : 35}%`,
+                              width: `${hasPercent ? Math.max(0, Math.min(100, percent)) : 60}%`,
                             }}
                           />
                         </div>
@@ -599,7 +751,9 @@ export default function InBuzz() {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => navigate("/create/inbuzz")}
+                          onClick={() =>
+                            navigate("/create/inbuzz", { state: { from: location.pathname } })
+                          }
                           className="flex-1 rounded-full liquid-button px-4 py-2 text-xs font-semibold text-[#faf0e6]"
                         >
                           Try again
@@ -631,6 +785,7 @@ export default function InBuzz() {
         reels={filteredReels}
         loading={loading}
         initialIndex={initialIndex}
+        isRouteActive={isRouteActive}
         onActiveIndexChange={handleActiveIndexChange}
         onShare={(reel) => setShareReel(reel)}
         onInfo={(reel) => setInfoReel(reel)}
