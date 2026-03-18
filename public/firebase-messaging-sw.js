@@ -58,27 +58,6 @@ if (firebaseCompatLoaded && hasConfig && typeof firebase !== "undefined") {
   }
 }
 
-let inCampusAuthToken = "";
-
-const normalizeAuthToken = (value) => {
-  if (!value) return "";
-  const raw = String(value).trim();
-  if (!raw) return "";
-  return raw.startsWith("Bearer ") ? raw.slice(7) : raw;
-};
-
-self.addEventListener("message", (event) => {
-  const data = event?.data;
-  if (!data || typeof data !== "object") return;
-  if (data.type === "AUTH_TOKEN") {
-    inCampusAuthToken = normalizeAuthToken(data.token);
-    return;
-  }
-  if (data.type === "CLEAR_AUTH_TOKEN") {
-    inCampusAuthToken = "";
-  }
-});
-
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const route = event.notification?.data?.route || "/";
@@ -101,23 +80,4 @@ self.addEventListener("install", () => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
-});
-
-// Selectively inject auth for InBuzz streams so tokens never appear in URLs.
-// We do not do any caching here to avoid noisy "Failed to fetch" logs.
-self.addEventListener("fetch", (event) => {
-  const request = event.request;
-  if (!request || request.method !== "GET") return;
-  if (!inCampusAuthToken) return;
-  try {
-    const url = new URL(request.url);
-    if (url.origin !== self.location.origin) return;
-    if (!url.pathname.startsWith("/api/inbuzz/stream/")) return;
-    if (request.headers.has("authorization")) return;
-    const headers = new Headers(request.headers);
-    headers.set("Authorization", `Bearer ${inCampusAuthToken}`);
-    event.respondWith(fetch(new Request(request, { headers })));
-  } catch {
-    // ignore
-  }
 });

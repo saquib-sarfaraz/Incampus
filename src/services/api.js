@@ -1226,6 +1226,30 @@ export const fetchInBuzzReel = async (reelId) => {
   return normalizeInBuzzReel(item) || item;
 };
 
+export const fetchInBuzzStreamToken = async (reelId) => {
+  if (!reelId) return "";
+  const encoded = encodeURIComponent(reelId);
+  const data = await apiFetchWithFallback(
+    [
+      `/inbuzz/stream-token/${encoded}`,
+      `/inbuzz/stream_token/${encoded}`,
+      `/inbuzz/reel/${encoded}/stream-token`,
+      `/inbuzz/reel/${encoded}/stream_token`,
+    ],
+    {}
+  );
+  const token =
+    (typeof data === "string" ? data : "") ||
+    data?.token ||
+    data?.streamToken ||
+    data?.stream_token ||
+    data?.data?.token ||
+    data?.data?.streamToken ||
+    data?.data?.stream_token ||
+    "";
+  return token ? String(token) : "";
+};
+
 export const fetchInBuzzByUser = async (userId, params = {}) => {
   if (!userId) return [];
   const encoded = encodeURIComponent(userId);
