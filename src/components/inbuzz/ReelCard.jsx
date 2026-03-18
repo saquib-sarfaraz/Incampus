@@ -4,6 +4,8 @@ import ReelActions from "./ReelActions";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { getOptimizedMediaUrl } from "../../utils/media";
+import { getStreamUrl } from "../../utils/inbuzzStream";
+import { fetchInBuzzStreamToken } from "../../services/api";
 
 const truncateCaption = (caption = "", limit = 120) => {
   const text = caption.trim();
@@ -29,7 +31,7 @@ export default function ReelCard({
   cardRef,
   videoRef,
 }) {
-  const { currentUser } = useAuth();
+  const { currentUser, authToken } = useAuth();
   const { getUserFromCache, prefetchUserProfile } = useApp();
   const [expanded, setExpanded] = useState(false);
   const [mediaLikePulse, setMediaLikePulse] = useState(0);
@@ -37,11 +39,15 @@ export default function ReelCard({
   const [soundToastPulse, setSoundToastPulse] = useState(0);
   const [videoError, setVideoError] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [streamToken, setStreamToken] = useState("");
   const [avatarErrorSrc, setAvatarErrorSrc] = useState("");
   const lastTapRef = useRef(0);
   const soundToastTimerRef = useRef(null);
+  const retriedRef = useRef(false);
   const prefetchedAuthorRef = useRef(new Set());
   const captionValue = reel?.caption || "";
+  const reelId = useMemo(() => String(reel?.id || reel?._id || ""), [reel?.id, reel?._id]);
   const reelUserId = useMemo(() => {
     return String(reel?.userId || reel?.user_id || reel?.authorId || reel?.author?.id || "");
   }, [reel?.author?.id, reel?.authorId, reel?.userId, reel?.user_id]);
@@ -166,8 +172,9 @@ export default function ReelCard({
     return getOptimizedMediaUrl(raw, { width });
   }, [reel?.poster, reel?.thumbnail, reel?.thumbnailUrl, thumbWidth]);
   const resolvedVideoSrc = useMemo(() => {
-    return reel?.videoUrl || reel?.streamUrl || "";
-  }, [reel?.streamUrl, reel?.videoUrl]);
+    if (!reelId) return "";
+    return streamToken ? getStreamUrl(reelId, streamToken) : getStreamUrl(reelId);
+  }, [reelId, streamToken]);
   const shouldAttachVideoSrc = isActive || preload !== "none";
   const captionData = useMemo(
     () => (expanded ? { text: captionValue.trim(), truncated: false } : truncateCaption(captionValue)),
@@ -223,6 +230,44 @@ export default function ReelCard({
     [handleMediaDoubleTap, isActive]
   );
 
+  const handleVideoError = useCallback(async () => {
+    if (retrying) return;
+    if (!reelId) {
+      setVideoError(true);
+      return;
+    }
+
+    // If we already switched to token mode (or already tried once), show the retry UI.
+    if (streamToken || retriedRef.current) {
+      setVideoError(true);
+      return;
+    }
+
+    // Can't fetch a stream token if we don't have an auth token.
+    if (!authToken) {
+      setVideoError(true);
+      return;
+    }
+
+    retriedRef.current = true;
+    setRetrying(true);
+    setVideoReady(false);
+
+    try {
+      const token = await fetchInBuzzStreamToken(reelId);
+      if (!token) {
+        setVideoError(true);
+        return;
+      }
+      setStreamToken(token);
+      setVideoError(false);
+    } catch {
+      setVideoError(true);
+    } finally {
+      setRetrying(false);
+    }
+  }, [authToken, reelId, retrying, streamToken]);
+
   useEffect(() => {
     return () => {
       if (soundToastTimerRef.current) {
@@ -232,15 +277,16 @@ export default function ReelCard({
   }, []);
 
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setVideoError(false);
-  }, [reel?.id, reel?.videoUrl]);
+    setRetrying(false);
+    setStreamToken("");
+    retriedRef.current = false;
+  }, [reelId]);
 
   useEffect(() => {
     // Reset buffering UI when the source changes.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setVideoReady(false);
-  }, [reel?.id, resolvedVideoSrc]);
+  }, [reelId, resolvedVideoSrc]);
 
   return (
     <div
@@ -262,7 +308,7 @@ export default function ReelCard({
               loop
               preload={preload}
               poster={thumbSrc || undefined}
-              onError={() => setVideoError(true)}
+              onError={handleVideoError}
               onLoadedData={() => setVideoReady(true)}
               onCanPlay={() => setVideoReady(true)}
               onPlaying={() => setVideoReady(true)}
@@ -289,6 +335,9 @@ export default function ReelCard({
                   <button
                     type="button"
                     onClick={() => {
+                      retriedRef.current = false;
+                      setStreamToken("");
+                      setRetrying(false);
                       setVideoError(false);
                     }}
                     className="rounded-full border border-white/10 bg-black/60 px-4 py-2 text-xs text-[#faf0e6] hover:bg-black/70"
@@ -323,20 +372,27 @@ export default function ReelCard({
                 >
                   <div className="ml-1 h-0 w-0 border-y-[9px] border-y-transparent border-l-[14px] border-l-white/25" />
                 </Motion.div>
+                {retrying && (
+                  <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[11px] text-[#faf0e6]/80">
+                    Retrying…
+                  </div>
+                )}
               </div>
             </Motion.div>
           )}
         </AnimatePresence>
 
-        <button
-          type="button"
-          onPointerUp={handleMediaTap}
-          onDoubleClick={handleMediaDoubleClick}
-          className="absolute inset-0 z-10"
-          aria-label={muted ? "Tap to unmute" : "Tap to mute"}
-        />
+        {showVideo && !videoError && (
+          <button
+            type="button"
+            onPointerUp={handleMediaTap}
+            onDoubleClick={handleMediaDoubleClick}
+            className="absolute inset-0 z-10"
+            aria-label={muted ? "Tap to unmute" : "Tap to mute"}
+          />
+        )}
 
-        <div className="absolute inset-0 z-10 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
+        <div className="absolute inset-0 z-10 pointer-events-none bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
 
         <AnimatePresence>
           {soundToast && (

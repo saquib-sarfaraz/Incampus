@@ -11,35 +11,6 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
   const pushInitRef = useRef("");
 
-  useEffect(() => {
-    // Video tags can't attach Authorization headers. We rely on the SW to inject
-    // the Bearer token for `/api/inbuzz/stream/*` requests so tokens never land in URLs.
-    if (typeof window === "undefined") return;
-    if (!("serviceWorker" in navigator)) return;
-
-    const raw = typeof authToken === "string" ? authToken.trim() : "";
-    const token = raw.startsWith("Bearer ") ? raw.slice(7) : raw;
-    const message = token
-      ? { type: "AUTH_TOKEN", token }
-      : { type: "CLEAR_AUTH_TOKEN" };
-
-    const post = (target) => {
-      if (!target) return;
-      try {
-        target.postMessage(message);
-      } catch {
-        // ignore messaging errors
-      }
-    };
-
-    navigator.serviceWorker.ready
-      .then((reg) => {
-        post(navigator.serviceWorker.controller);
-        post(reg.active);
-      })
-      .catch(() => {});
-  }, [authToken]);
-
   const buildGroupRooms = useCallback((user) => {
     const universityLabel = user?.university || user?.college || user?.school || "";
     const toSlug = (value) =>
