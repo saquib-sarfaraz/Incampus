@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
 import ReelEditor from "./ReelEditor";
 import { useAuth } from "../../context/authContext";
 import { createInBuzzReelWithProgress, searchColleges } from "../../services/api";
-import { upsertPendingInBuzzUpload } from "../../utils/inbuzzUploads";
+import { removePendingInBuzzUpload, upsertPendingInBuzzUpload } from "../../utils/inbuzzUploads";
 
 const DEFAULT_ADJUSTMENTS = {
   brightness: 100,
@@ -93,6 +93,8 @@ const normalizeCollegeList = (data) => {
 };
 
 const EDITOR_MUTED_KEY = "inbuzz:editorMuted";
+const MAX_UPLOAD_MB = 50;
+const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 
 const readEditorMutedPref = () => {
   if (typeof window === "undefined") return false;
@@ -108,6 +110,7 @@ const readEditorMutedPref = () => {
 
 export default function ReelUpload() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { currentUser } = useAuth();
   const [step, setStep] = useState(1);
   const [file, setFile] = useState(null);
@@ -141,6 +144,14 @@ export default function ReelUpload() {
   const previewPlayRef = useRef(null);
   const uploadAbortRef = useRef(null);
   const uploadClientIdRef = useRef("");
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -229,6 +240,25 @@ export default function ReelUpload() {
   const handleFileChange = (event) => {
     const nextFile = event.target.files?.[0];
     if (!nextFile) return;
+
+    if (Number(nextFile.size || 0) > MAX_UPLOAD_BYTES) {
+      setFile(null);
+      setStatus("");
+      setUploadPercent(0);
+      setUploadError(`Max file size is ${MAX_UPLOAD_MB}MB.`);
+      uploadClientIdRef.current = "";
+      setFrames([]);
+      setStep(1);
+      if (event.target) {
+        try {
+          event.target.value = "";
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
     setFile(nextFile);
     setStatus("");
     setUploadPercent(0);
@@ -359,13 +389,18 @@ export default function ReelUpload() {
     });
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!canProceed || uploading) return;
     if (!currentUser) {
       alert("Please sign in to upload.");
       return;
     }
     if (!file) return;
+    if (Number(file.size || 0) > MAX_UPLOAD_BYTES) {
+      setUploadError(`Max file size is ${MAX_UPLOAD_MB}MB.`);
+      setStatus("");
+      return;
+    }
 
     const clientUploadId =
       typeof crypto !== "undefined" && crypto.randomUUID
@@ -383,6 +418,7 @@ export default function ReelUpload() {
       caption: caption.trim(),
       visibility,
       previewThumb,
+      stage: "Uploading…",
       uploadPercent: 0,
       fileName: file?.name || "",
       fileSize: Number(file?.size || 0),
@@ -392,72 +428,156 @@ export default function ReelUpload() {
     setStatus("Uploading InBuzz…");
     setUploadPercent(0);
     setUploadError("");
-    try {
-      const payload = {
-        caption: caption.trim(),
-        visibility,
-        trim_start: trimStart,
-        trim_end: trimEnd || duration,
-        is_hidden_from_feed: false,
-      };
-      const response = await createInBuzzReelWithProgress(
-        file,
-        payload,
-        (percent) => {
-          setUploadPercent(percent);
-          upsertPendingInBuzzUpload({
-            id: clientUploadId,
-            status: "uploading",
-            uploadPercent: percent,
-          });
-        },
-        (controls) => {
-          uploadAbortRef.current = controls?.abort || null;
-        }
-      );
-      const uploadJob =
-        response?.uploadJob ||
-        response?.jobId ||
-        response?.job_id ||
-        response?.data?.uploadJob ||
-        response?.data?.jobId ||
-        null;
-      setUploadPercent(100);
-      upsertPendingInBuzzUpload({
-        id: clientUploadId,
-        status: "processing",
-        uploadPercent: 100,
-      });
+    const payload = {
+      caption: caption.trim(),
+      visibility,
+      trim_start: trimStart,
+      trim_end: trimEnd || duration,
+      is_hidden_from_feed: false,
+    };
 
-      const jobId =
-        typeof uploadJob === "string"
-          ? uploadJob
-          : uploadJob.id || uploadJob.jobId || uploadJob._id;
-
-      if (jobId) {
+    const uploadPromise = createInBuzzReelWithProgress(
+      file,
+      payload,
+      (percent) => {
+        if (mountedRef.current) setUploadPercent(percent);
         upsertPendingInBuzzUpload({
           id: clientUploadId,
-          jobId: String(jobId),
-          status: "processing",
+          status: "uploading",
+          stage: "Uploading…",
+          uploadPercent: percent,
         });
+      },
+      (controls) => {
+        uploadAbortRef.current = controls?.abort || null;
       }
+    );
 
-      setStatus("Processing video…");
-      // Jump back to the reel feed while the backend finishes processing.
-      navigate("/inbuzz", { replace: true, state: { fromUpload: true } });
-    } catch (error) {
-      const message = error?.message || "Failed to upload InBuzz.";
-      setStatus(message);
-      setUploadError(message);
-      upsertPendingInBuzzUpload({
-        id: clientUploadId,
-        status: "failed",
-        error: message,
-      });
-    } finally {
-      setUploading(false);
-      uploadAbortRef.current = null;
+    // TikTok-style UX: jump back to the feed immediately and let the upload finish in the background.
+    const fromPath = typeof location?.state?.from === "string" ? location.state.from : "";
+    const cameFromInBuzz = fromPath.startsWith("/inbuzz");
+    if (cameFromInBuzz && typeof window !== "undefined" && window.history.length > 1) {
+      navigate(-1);
+    } else {
+      navigate("/inbuzz", { replace: true });
     }
+
+	    uploadPromise
+	      .then((response) => {
+	        const responseStatus =
+	          response?.status ||
+	          response?.state ||
+	          response?.data?.status ||
+	          response?.data?.state ||
+	          "";
+	        const loweredStatus = String(responseStatus).toLowerCase();
+	        const isProcessing =
+	          loweredStatus === "processing" ||
+	          loweredStatus === "queued" ||
+	          loweredStatus === "pending";
+	        const isCompleted =
+	          loweredStatus === "completed" ||
+	          loweredStatus === "complete" ||
+	          loweredStatus === "done" ||
+	          loweredStatus === "published" ||
+	          loweredStatus === "ready";
+
+	        const uploadJob =
+	          response?.uploadJob ||
+	          response?.jobId ||
+	          response?.job_id ||
+          response?.data?.uploadJob ||
+          response?.data?.jobId ||
+          response?.data?.job_id ||
+          null;
+
+        if (mountedRef.current) {
+          setUploadPercent(100);
+          setStatus("Processing video…");
+        }
+
+        upsertPendingInBuzzUpload({
+          id: clientUploadId,
+          status: "processing",
+          stage: "Processing video…",
+          uploadPercent: 100,
+        });
+
+	        const jobId =
+	          typeof uploadJob === "string"
+	            ? uploadJob
+	            : uploadJob?.id || uploadJob?.jobId || uploadJob?._id;
+
+	        const possibleReelId =
+	          response?.reelId ||
+	          response?.reel_id ||
+	          response?.id ||
+	          response?.data?.reelId ||
+	          response?.data?.reel_id ||
+	          response?.data?.id ||
+	          response?.reel?._id ||
+	          response?.reel?.id ||
+	          response?.data?.reel?._id ||
+	          response?.data?.reel?.id ||
+	          "";
+
+		        if (jobId) {
+		          const nextUpload = {
+		            id: clientUploadId,
+		            jobId: String(jobId),
+		            status: "processing",
+		          };
+		          if (possibleReelId) nextUpload.reelId = String(possibleReelId);
+		          upsertPendingInBuzzUpload(nextUpload);
+		          return;
+		        }
+
+		        if (possibleReelId && isProcessing) {
+		          upsertPendingInBuzzUpload({
+		            id: clientUploadId,
+		            status: "processing",
+	            reelId: String(possibleReelId),
+	            stage: "Processing in background… It will appear shortly.",
+	          });
+	          return;
+	        }
+
+	        if (possibleReelId && (isCompleted || !loweredStatus)) {
+	          upsertPendingInBuzzUpload({
+	            id: clientUploadId,
+	            status: "published",
+	            processingPercent: 100,
+            reelId: String(possibleReelId),
+            completedAt: new Date().toISOString(),
+          });
+          setTimeout(() => removePendingInBuzzUpload(clientUploadId), 2400);
+	          return;
+	        }
+
+        upsertPendingInBuzzUpload({
+          id: clientUploadId,
+          status: "failed",
+          error: "Upload started but server did not return a job id.",
+        });
+      })
+      .catch((error) => {
+        const message = error?.message || "Failed to upload InBuzz.";
+        if (mountedRef.current) {
+          setStatus(message);
+          setUploadError(message);
+        }
+        upsertPendingInBuzzUpload({
+          id: clientUploadId,
+          status: "failed",
+          error: message,
+        });
+      })
+      .finally(() => {
+        if (mountedRef.current) {
+          setUploading(false);
+        }
+        uploadAbortRef.current = null;
+      });
   };
 
   return (

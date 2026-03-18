@@ -74,8 +74,10 @@ export default function FeedInBuzzStrip({ reels = [], loading = false }) {
               )}
               <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/10 to-transparent" />
               <div className="absolute bottom-2 left-2 text-[11px] text-[#faf0e6] flex items-center gap-1">
-                <i className="fa-solid fa-heart"></i>
-                {formatInBuzzCount(reel.likes)}
+                <i className="fa-solid fa-eye"></i>
+                {formatInBuzzCount(
+                  reel?.views ?? reel?.viewsCount ?? reel?.views_count ?? reel?.viewCount ?? 0
+                )}
               </div>
               <div className="absolute top-2 right-2 h-6 w-6 rounded-full bg-black/60 text-white flex items-center justify-center">
                 <i className="fa-solid fa-play text-xs"></i>

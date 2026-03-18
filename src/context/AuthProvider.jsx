@@ -204,6 +204,27 @@ export const AuthProvider = ({ children }) => {
     if (!user) return null;
     const normalized = normalizeUser(user);
     if (normalized.id) {
+      if (import.meta.env.DEV) {
+        const rawId = normalized.id;
+        const rawType = typeof rawId;
+        const stored = String(rawId);
+        if (rawType !== "string") {
+          // Forensic log: proves whether we are stringifying an object id.
+          console.warn("[auth][applyUser] non-string id detected", {
+            rawType,
+            rawId,
+            storedValue: stored,
+            userKeys: user && typeof user === "object" ? Object.keys(user) : null,
+          });
+        }
+        if (stored === "[object Object]" || stored.toLowerCase() === "undefined" || stored.toLowerCase() === "null") {
+          console.error("[auth][applyUser] INVALID currentUserId would be stored", {
+            rawType,
+            rawId,
+            storedValue: stored,
+          });
+        }
+      }
       localStorage.setItem("currentUserId", normalized.id);
       if (typeof window !== "undefined") {
         window.__currentUserId = normalized.id;
@@ -357,6 +378,29 @@ export const AuthProvider = ({ children }) => {
         data.id ||
         data._id ||
         username;
+
+      if (import.meta.env.DEV) {
+        const tokenType = typeof token;
+        const tokenPreview =
+          tokenType === "string"
+            ? { length: token.length, startsWithBearer: token.startsWith("Bearer ") }
+            : { tokenType, tokenValue: token };
+        const userIdType = typeof userId;
+        const userIdStored = String(userId);
+        console.log("[auth][login] token/userId snapshot", {
+          token: tokenPreview,
+          userIdType,
+          userId,
+          userIdStored,
+        });
+        if (userIdStored === "[object Object]" || userIdStored.toLowerCase() === "undefined" || userIdStored.toLowerCase() === "null") {
+          console.error("[auth][login] INVALID currentUserId would be stored", {
+            userIdType,
+            userId,
+            userIdStored,
+          });
+        }
+      }
 
       localStorage.setItem("authToken", token);
       localStorage.setItem("currentUserId", userId);

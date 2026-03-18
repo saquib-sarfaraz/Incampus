@@ -1541,6 +1541,21 @@ export const createStory = async (file, meta = {}) => {
   }
   const authorId = localStorage.getItem("currentUserId");
   if (authorId) {
+    if (import.meta.env.DEV) {
+      const stored = String(authorId);
+      if (stored === "[object Object]" || stored.toLowerCase() === "undefined" || stored.toLowerCase() === "null") {
+        console.error("[story][createStory] INVALID authorId from localStorage", {
+          authorIdType: typeof authorId,
+          authorId,
+          storedValue: stored,
+        });
+      } else {
+        console.log("[story][createStory] authorId snapshot", {
+          authorIdType: typeof authorId,
+          authorId: stored,
+        });
+      }
+    }
     formData.append("authorId", authorId);
   }
   Object.entries(meta || {}).forEach(([key, value]) => {
@@ -1575,6 +1590,21 @@ export const createStoryWithProgress = (file, meta = {}, onProgress, onReady) =>
   }
   const authorId = localStorage.getItem("currentUserId");
   if (authorId) {
+    if (import.meta.env.DEV) {
+      const stored = String(authorId);
+      if (stored === "[object Object]" || stored.toLowerCase() === "undefined" || stored.toLowerCase() === "null") {
+        console.error("[story][createStoryWithProgress] INVALID authorId from localStorage", {
+          authorIdType: typeof authorId,
+          authorId,
+          storedValue: stored,
+        });
+      } else {
+        console.log("[story][createStoryWithProgress] authorId snapshot", {
+          authorIdType: typeof authorId,
+          authorId: stored,
+        });
+      }
+    }
     formData.append("authorId", authorId);
   }
   Object.entries(meta || {}).forEach(([key, value]) => {
