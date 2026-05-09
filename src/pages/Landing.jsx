@@ -1,5 +1,8 @@
+import { useEffect } from "react";
 import { motion as Motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { usePWAInstall } from "../hooks/usePWAInstall";
+import { useAuth } from "../context/authContext";
 
 const fadeUp = {
   hidden: { opacity: 0, y: 18 },
@@ -32,6 +35,17 @@ const valueItems = [
 const experienceStrip = ["Private", "Verified", "Campus Only", "Real Conversations"];
 
 export default function Landing() {
+  const navigate = useNavigate();
+  const { isInstallable, install } = usePWAInstall();
+  const { authToken, loading } = useAuth();
+
+  useEffect(() => {
+    if (loading) return;
+    if (authToken) {
+      navigate("/feed", { replace: true });
+    }
+  }, [authToken, loading, navigate]);
+
   return (
     <div className="relative min-h-screen overflow-hidden bg-[#1a120b] text-[#faf0e6]">
       <div className="pointer-events-none absolute inset-0">
@@ -65,6 +79,15 @@ export default function Landing() {
             <span className="text-lg font-semibold text-[#faf0e6]">InCampus</span>
           </div>
           <div className="flex items-center gap-3">
+            {isInstallable && (
+              <button
+                type="button"
+                onClick={install}
+                className="rounded-full border border-white/20 bg-white/5 px-4 py-2 text-xs font-semibold text-[#faf0e6] transition-all duration-300 ease-out hover:border-white/40 hover:bg-white/10"
+              >
+                Install App
+              </button>
+            )}
             <Link
               to="/login"
               className="text-sm font-medium text-[#b9b4c7] transition-colors duration-300 hover:text-[#faf0e6]"
@@ -103,12 +126,14 @@ export default function Landing() {
           </p>
 
           <div className="space-y-4">
-            <Link
-              to="/register"
-              className="liquid-button inline-flex items-center justify-center rounded-full px-10 py-3 text-sm font-small text-[#faf0e6]"
-            >
-              Explore InCampus
-            </Link>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <Link
+                to="/register"
+                className="liquid-button inline-flex items-center justify-center rounded-full px-10 py-3 text-sm font-small text-[#faf0e6]"
+              >
+                Explore InCampus
+              </Link>
+            </div>
             <p className="text-xs text-[#b9b4c7]">
               See what your campus is talking about right now.
             </p>

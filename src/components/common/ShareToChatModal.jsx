@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { getUserById, sendChatMessage } from "../../services/api";
-import { getSocket } from "../../services/socket";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -24,14 +23,36 @@ export default function ShareToChatModal({
   postIsAnonymous = false,
   postAuthorName,
   postAuthorId,
+  reelId,
+  reelUrl,
+  reelCaption,
 }) {
   const { currentUser } = useAuth();
-  const { friendIds, friendMapLoaded } = useApp();
+  const { friendIds, friendMapLoaded, updateChatMeta } = useApp();
   const [search, setSearch] = useState("");
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [sending, setSending] = useState(false);
   const [selectedTargets, setSelectedTargets] = useState(new Set());
   const [toast, setToast] = useState("");
+  const [toastKind, setToastKind] = useState("success");
+  const contactsCacheRef = useRef({ userId: "", ts: 0, contacts: [] });
+
+  const normalizeId = useCallback((value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    if (typeof value === "object") {
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.$oid ||
+        "";
+      return normalizeId(nested);
+    }
+    return "";
+  }, []);
 
   const resolvedFriendIds = useMemo(() => {
     if (friendMapLoaded) return friendIds;
@@ -40,7 +61,25 @@ export default function ShareToChatModal({
 
   const groups = useMemo(() => {
     const college = currentUser?.university || currentUser?.college || "";
-    const slug = encodeURIComponent(String(college).toLowerCase());
+    const toSlug = (value) =>
+      String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+    const collegeGroupId =
+      currentUser?.collegeGroupId ||
+      currentUser?.college_group_id ||
+      currentUser?.groupId ||
+      currentUser?.collegeGroup ||
+      "";
+    const collegeRoomId = collegeGroupId
+      ? String(collegeGroupId).startsWith("group:")
+        ? String(collegeGroupId)
+        : `group:college:${collegeGroupId}`
+      : college
+        ? `group:college:${toSlug(college)}`
+        : "";
     return [
       {
         id: "group:global",
@@ -49,34 +88,46 @@ export default function ShareToChatModal({
         avatar: "/incampus-icon.svg",
         subtitle: "Global group",
       },
-      college
+      collegeRoomId
         ? {
-            id: `group:college:${slug}`,
-            label: `${college} Group`,
+            id: collegeRoomId,
+            label: college ? `${college} Group` : "College Group",
             type: "group",
             avatar: "/incampus-icon.svg",
             subtitle: "College group",
           }
         : null,
     ].filter(Boolean);
-  }, [currentUser?.university, currentUser?.college]);
+  }, [currentUser?.university, currentUser?.college, currentUser?.collegeGroupId, currentUser?.college_group_id, currentUser?.groupId, currentUser?.collegeGroup]);
 
   useEffect(() => {
     if (!isOpen) return;
     const loadContacts = async () => {
       const friends = resolvedFriendIds || [];
+      const userId = normalizeId(currentUser?.id || currentUser?._id || "");
+      const cached = contactsCacheRef.current;
+      const cachedHasContacts =
+        cached.userId === userId && cached.contacts.length > 0;
+      if (cachedHasContacts) {
+        setContacts(cached.contacts);
+      }
       if (friends.length === 0) {
         setContacts([]);
         return;
       }
-      setLoading(true);
+      const shouldRefresh = Date.now() - cached.ts > 5 * 60 * 1000;
+      if (cachedHasContacts && !shouldRefresh) {
+        setLoading(false);
+        return;
+      }
+      setLoading(!cachedHasContacts);
       try {
         const users = await Promise.all(
           friends.map(async (id) => {
             const user = await getUserById(id);
             return user
               ? {
-                  id: user._id || user.id,
+                  id: normalizeId(user._id || user.id),
                   label: user.fullName || user.username || "User",
                   subtitle: user.username ? `@${user.username}` : "Friend",
                   avatar: user.profilePicUrl || ANONYMOUS_AVATAR,
@@ -85,20 +136,27 @@ export default function ShareToChatModal({
               : null;
           })
         );
-        setContacts(users.filter(Boolean));
-      } catch (error) {
+        const nextContacts = users.filter(Boolean);
+        if (nextContacts.length > 0) {
+          contactsCacheRef.current = { userId, ts: Date.now(), contacts: nextContacts };
+          setContacts(nextContacts);
+        }
+      } catch (err) {
+        void err;
       } finally {
         setLoading(false);
       }
     };
     loadContacts();
-  }, [isOpen, resolvedFriendIds]);
+  }, [isOpen, resolvedFriendIds, currentUser?.id, currentUser?._id, normalizeId]);
 
   useEffect(() => {
     if (isOpen) return;
     setSearch("");
     setSelectedTargets(new Set());
     setToast("");
+    setToastKind("success");
+    setSending(false);
   }, [isOpen]);
 
   const filteredTargets = useMemo(() => {
@@ -122,51 +180,112 @@ export default function ShareToChatModal({
 
   const clearSelection = () => setSelectedTargets(new Set());
 
-  const handleShare = (targetIds) => {
-    const socket = getSocket();
-    if (!socket || !currentUser?.id) return;
+  const handleShare = async (targetIds) => {
+    const senderId = normalizeId(currentUser?.id || currentUser?._id || "");
+    if (!senderId) {
+      setToastKind("error");
+      setToast("Login required to share.");
+      return;
+    }
     const ids = Array.isArray(targetIds) ? targetIds : [targetIds];
     if (ids.length === 0) return;
-    const previewText = resolvePreviewText(postTitle, postPreviewText);
-    const shareLink =
-      postUrl || (postId ? `${window.location.origin}/feed?post=${postId}` : "");
 
-    const canUseSocket = Boolean(socket?.connected);
-    ids.forEach((targetId) => {
-      const message = {
-        from: currentUser.id,
-        to: targetId,
-        text: `Shared a post: ${previewText}`,
-        createdAt: new Date().toISOString(),
-        messageType: "shared_post",
-        type: "shared_post",
-        postId,
-        postUrl: shareLink,
-        postThumbnail,
-        postPreviewText: previewText,
-        postIsAnonymous,
-        postAuthorName: postIsAnonymous ? undefined : postAuthorName,
-        postAuthorId: postIsAnonymous ? undefined : postAuthorId,
-        senderId: currentUser.id,
-      };
-      if (canUseSocket) {
+    setSending(true);
+    setToast("");
+    setToastKind("success");
+    const isReelShare = Boolean(reelId || reelUrl);
+    const trimmedReelCaption =
+      typeof reelCaption === "string" ? reelCaption.trim() : "";
+    const reelPreviewText = trimmedReelCaption
+      ? trimmedReelCaption.length > 80
+        ? `${trimmedReelCaption.slice(0, 80)}...`
+        : trimmedReelCaption
+      : "Shared an InBuzz";
+    const postPreview = resolvePreviewText(postTitle, postPreviewText);
+
+    const shareLink = isReelShare
+      ? reelUrl || (reelId ? `${window.location.origin}/inbuzz/${reelId}` : "")
+      : postUrl || (postId ? `${window.location.origin}/feed?post=${postId}` : "");
+
+    const results = await Promise.allSettled(
+      ids.map(async (targetId) => {
         const isGroup = String(targetId).startsWith("group:");
-        socket.emit("chat:sendMessage", {
-          roomId: targetId,
-          receiverId: isGroup ? null : targetId,
-          message,
-        });
-      } else {
-        sendChatMessage(message).catch(() => {});
-      }
-    });
+        const clientMessageId =
+          typeof crypto !== "undefined" && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-    setToast("Post shared");
+        // Keep the payload backend-compatible: for reels we send a normal text
+        // message containing the share URL. Chat UI will render a preview card
+        // by parsing `/inbuzz/:id` from the text.
+        const baseMessage = {
+          from: senderId,
+          to: targetId,
+          text: "",
+          createdAt: new Date().toISOString(),
+          clientMessageId,
+          isGroup,
+          status: "sent",
+          pending: true,
+          senderId,
+          receiverId: targetId,
+          chatId: targetId,
+        };
+
+        const message = isReelShare
+          ? {
+              ...baseMessage,
+              text: shareLink
+                ? `Shared an InBuzz: ${shareLink}`
+                : `Shared an InBuzz: ${reelPreviewText}`,
+            }
+          : {
+              ...baseMessage,
+              text: `Shared a post: ${postPreview}`,
+              messageType: "shared_post",
+              type: "shared_post",
+              postId,
+              postUrl: shareLink,
+              postThumbnail,
+              postPreviewText: postPreview,
+              postIsAnonymous,
+              postAuthorName: postIsAnonymous ? undefined : postAuthorName,
+              postAuthorId: postIsAnonymous ? undefined : postAuthorId,
+            };
+
+        updateChatMeta?.(targetId, message, { incrementUnread: false });
+
+        const response = await sendChatMessage(message);
+        const saved = response?.message || response;
+        if (saved) {
+          updateChatMeta?.(targetId, saved, { incrementUnread: false });
+        }
+        return saved;
+      })
+    );
+
+    const failed = results.filter((res) => res.status === "rejected");
+    if (failed.length > 0) {
+      const firstError = failed[0]?.reason;
+      const details = typeof firstError?.message === "string" ? firstError.message.trim() : "";
+      setToastKind("error");
+      setToast(
+        failed.length === ids.length
+          ? `Message not sent.${details ? ` ${details}` : " Please try again."}`
+          : `Sent to ${ids.length - failed.length}/${ids.length}. ${failed.length} failed.${details ? ` ${details}` : ""}`
+      );
+      setSending(false);
+      return;
+    }
+
+    setToastKind("success");
+    setToast(isReelShare ? "Reel shared" : "Post shared");
     clearSelection();
     setTimeout(() => {
       setToast("");
       onClose?.();
     }, 700);
+    setSending(false);
   };
 
   return (
@@ -238,6 +357,8 @@ export default function ShareToChatModal({
                           src={target.avatar || ANONYMOUS_AVATAR}
                           alt={target.label}
                           className="h-10 w-10 rounded-full object-cover"
+                          loading="lazy"
+                          decoding="async"
                         />
                         <span className="text-[10px] text-[#faf0e6] truncate w-full">
                           {target.label}
@@ -277,6 +398,8 @@ export default function ShareToChatModal({
                         src={target.avatar || ANONYMOUS_AVATAR}
                         alt={target.label}
                         className="h-9 w-9 rounded-full object-cover"
+                        loading="lazy"
+                        decoding="async"
                       />
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-[#faf0e6]">
@@ -301,21 +424,24 @@ export default function ShareToChatModal({
             <div className="mt-4 flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => handleShare(Array.from(selectedTargets))}
-                disabled={selectedTargets.size === 0}
+                onClick={() => void handleShare(Array.from(selectedTargets))}
+                disabled={selectedTargets.size === 0 || sending}
                 className={`flex-1 rounded-full px-4 py-2 text-xs font-semibold text-[#faf0e6] ${
-                  selectedTargets.size === 0
+                  selectedTargets.size === 0 || sending
                     ? "bg-white/5 text-[#b9b4c7] cursor-not-allowed"
                     : "liquid-button"
                 }`}
               >
-                {selectedTargets.size > 0
-                  ? `Send (${selectedTargets.size})`
-                  : "Send"}
+                {sending
+                  ? "Sending..."
+                  : selectedTargets.size > 0
+                    ? `Send (${selectedTargets.size})`
+                    : "Send"}
               </button>
               <button
                 type="button"
                 onClick={onClose}
+                disabled={sending}
                 className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs text-[#faf0e6] hover:bg-white/10"
               >
                 Close
@@ -323,7 +449,13 @@ export default function ShareToChatModal({
             </div>
 
             {toast && (
-              <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-center text-xs text-[#faf0e6]">
+              <div
+                className={`mt-3 rounded-2xl border px-3 py-2 text-center text-xs ${
+                  toastKind === "error"
+                    ? "border-red-400/30 bg-red-500/10 text-red-100"
+                    : "border-white/10 bg-white/5 text-[#faf0e6]"
+                }`}
+              >
                 {toast}
               </div>
             )}

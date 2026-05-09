@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useAuth } from "../../context/authContext";
@@ -14,6 +15,7 @@ import {
 import { getSocket } from "../../services/socket";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 const toIdString = (value) => {
@@ -44,6 +46,20 @@ const toSafeIdString = (value) => {
   if (typeof value === "string") return isLikelyId(value) ? value.trim() : "";
   if (typeof value === "object") return toIdString(value);
   return "";
+};
+
+const isDeletedPlaceholderName = (value) => {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  return (
+    normalized === "deleted user" ||
+    normalized === "user deleted" ||
+    normalized === "deleted account" ||
+    normalized === "account deleted" ||
+    normalized === "deactivated user" ||
+    normalized === "deactivated account"
+  );
 };
 
 const resolveCommentId = (comment) =>
@@ -121,6 +137,9 @@ const resolveCommentUser = (comment, fallbackId) => {
   const candidate = comment?.user || comment?.author || comment?.owner || comment?.createdBy;
   if (typeof candidate === "string") {
     if (!isLikelyId(candidate)) {
+      if (isDeletedPlaceholderName(candidate)) {
+        return null;
+      }
       return {
         id: toIdString(fallbackId),
         displayName: candidate,
@@ -130,31 +149,49 @@ const resolveCommentUser = (comment, fallbackId) => {
     }
   }
   if (candidate && typeof candidate === "object") {
-    return {
-      id: toIdString(candidate._id || candidate.id || fallbackId),
-      displayName:
+      const candidateName =
         candidate.displayName ||
         candidate.fullName ||
         candidate.name ||
         candidate.username ||
-        "User",
-      profilePicUrl:
-        candidate.profilePicUrl ||
-        candidate.profilePic ||
-        candidate.avatarUrl ||
-        candidate.avatar ||
-        ANONYMOUS_AVATAR,
-      isVerified: Boolean(candidate.isVerified),
-    };
+        "";
+      if (isDeletedPlaceholderName(candidateName)) {
+        return null;
+      }
+      return {
+        id: toIdString(candidate._id || candidate.id || fallbackId),
+        displayName:
+          candidateName || "User",
+        profilePicUrl:
+          candidate.profilePicUrl ||
+          candidate.profilePic ||
+          candidate.avatarUrl ||
+          candidate.avatar ||
+          ANONYMOUS_AVATAR,
+        isVerified: Boolean(
+          candidate.isVerified ||
+            candidate.isVerifiedCommunity ||
+            candidate.verifiedCommunity ||
+            candidate.communityVerified
+        ),
+      };
   }
   const fallbackName = resolveCommentFallbackName(comment);
+  const safeFallbackName = isDeletedPlaceholderName(fallbackName) ? "" : fallbackName;
   const fallbackAvatar = resolveCommentFallbackAvatar(comment);
-  if (fallbackName || fallbackAvatar) {
+  if (safeFallbackName || fallbackAvatar) {
     return {
       id: toIdString(fallbackId),
-      displayName: fallbackName || "User",
+      displayName: safeFallbackName || "User",
       profilePicUrl: fallbackAvatar || ANONYMOUS_AVATAR,
-      isVerified: Boolean(comment?.isVerified || comment?.verified || comment?.is_verified),
+      isVerified: Boolean(
+        comment?.isVerified ||
+          comment?.isVerifiedCommunity ||
+          comment?.verifiedCommunity ||
+          comment?.communityVerified ||
+          comment?.verified ||
+          comment?.is_verified
+      ),
     };
   }
   return null;
@@ -245,7 +282,10 @@ const CommentList = memo(function CommentList({
   onDelete,
   onReport,
   onBlock,
+  getUserFromCache,
+  prefetchUserProfile,
 }) {
+  const navigate = useNavigate();
   if (!comments?.length) return null;
   return comments.map((comment, index) => {
     const stableId = resolveCommentId(comment) || toIdString(comment.userId);
@@ -273,35 +313,76 @@ const CommentList = memo(function CommentList({
       ANONYMOUS_AVATAR;
     const isVerified =
       commentUser && typeof commentUser === "object"
-        ? Boolean(commentUser.isVerified || commentUser.verified)
-        : Boolean(comment?.isVerified || comment?.verified);
+        ? Boolean(
+            commentUser.isVerified ||
+              commentUser.isVerifiedCommunity ||
+              commentUser.verifiedCommunity ||
+              commentUser.communityVerified ||
+              commentUser.verified
+          )
+        : Boolean(
+            comment?.isVerified ||
+              comment?.isVerifiedCommunity ||
+              comment?.verifiedCommunity ||
+              comment?.communityVerified ||
+              comment?.verified
+          );
     const isCommentOwner =
       currentUserId && String(comment.userId) === String(currentUserId);
     const isPostOwner =
       currentUserId && postOwnerId && String(postOwnerId) === String(currentUserId);
     const canDelete = isCommentOwner || isPostOwner;
+    const commentUserId = resolveCommentUserId(comment);
+    const safeCommentUserId = normalizeUserId(commentUserId || commentUser);
+    const canOpenProfile = Boolean(safeCommentUserId) && !isAnonymousComment(comment);
     return (
       <div
         key={commentKey}
         className="flex justify-between items-start p-2 border-b border-white/10"
       >
         <div className="flex items-start space-x-2 flex-1">
-          <img
-            src={commentAvatar}
-            alt={commentDisplayName}
-            className="w-8 h-8 rounded-full object-cover"
-            loading="lazy"
-            decoding="async"
-          />
-          <div className="flex-1">
-            <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
-              {commentDisplayName}
-              {isVerified && <BlueTick className="text-[12px]" />}
-            </p>
-            <p className="text-sm text-[#b9b4c7]">
-              {comment.content || comment.text || comment.body || ""}
-            </p>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (canOpenProfile) {
+                const cachedUser = getUserFromCache?.(safeCommentUserId);
+                prefetchUserProfile?.(safeCommentUserId, cachedUser || commentUser);
+                const preview = buildUserPreview({ ...(cachedUser || {}), ...(commentUser || {}) }, {
+                  _id: safeCommentUserId,
+                  fullName: commentUser?.fullName || commentUser?.name,
+                  displayName:
+                    commentUser?.displayName ||
+                    commentUser?.fullName ||
+                    commentDisplayName,
+                  username: commentUser?.username,
+                  profilePicUrl: commentAvatar,
+                  isVerified,
+                  isVerifiedCommunity: commentUser?.isVerifiedCommunity,
+                });
+                navigate(`/profile/${safeCommentUserId}`, {
+                  state: { userPreview: preview, modal: true },
+                });
+              }
+            }}
+            className="flex items-start space-x-2 flex-1 text-left"
+          >
+            <img
+              src={commentAvatar}
+              alt={commentDisplayName}
+              className="w-8 h-8 rounded-full object-cover"
+              loading="lazy"
+              decoding="async"
+            />
+            <div className="flex-1">
+              <p className="font-semibold text-sm text-[#faf0e6] flex items-center">
+                {commentDisplayName}
+                {isVerified && <BlueTick className="text-[12px]" />}
+              </p>
+              <p className="text-sm text-[#b9b4c7]">
+                {comment.content || comment.text || comment.body || ""}
+              </p>
+            </div>
+          </button>
         </div>
         <div
           className="relative ml-2"
@@ -373,7 +454,14 @@ const readCachedComments = (postId) => {
 
 export default function CommentModal({ post, isOpen, onClose }) {
   const { currentUser } = useAuth();
-  const { updatePost, cacheUser, getUserFromCache, addBlockedUser, isUserBlocked } = useApp();
+  const {
+    updatePost,
+    cacheUser,
+    getUserFromCache,
+    addBlockedUser,
+    isUserBlocked,
+    prefetchUserProfile,
+  } = useApp();
   const [comments, setComments] = useState([]);
   const [commentText, setCommentText] = useState("");
   const [isAnonymous, setIsAnonymous] = useState(false);
@@ -406,7 +494,13 @@ export default function CommentModal({ post, isOpen, onClose }) {
         currentUser?.avatarUrl ||
         currentUser?.avatar ||
         ANONYMOUS_AVATAR,
-      isVerified: Boolean(currentUser?.isVerified || currentUser?.verified),
+      isVerified: Boolean(
+        currentUser?.isVerified ||
+          currentUser?.isVerifiedCommunity ||
+          currentUser?.verifiedCommunity ||
+          currentUser?.communityVerified ||
+          currentUser?.verified
+      ),
     }),
     [currentUser, currentUserId]
   );
@@ -490,7 +584,13 @@ export default function CommentModal({ post, isOpen, onClose }) {
             user?.avatar ||
             fallbackAvatar ||
             ANONYMOUS_AVATAR;
-          const isVerified = Boolean(user?.isVerified || user?.verified);
+          const isVerified = Boolean(
+            user?.isVerified ||
+              user?.isVerifiedCommunity ||
+              user?.verifiedCommunity ||
+              user?.communityVerified ||
+              user?.verified
+          );
           const normalizedUser = {
             ...(user && typeof user === "object" ? user : {}),
             displayName,
@@ -534,7 +634,12 @@ export default function CommentModal({ post, isOpen, onClose }) {
           displayName:
             userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
           profilePicUrl: userData.profilePicUrl || ANONYMOUS_AVATAR,
-          isVerified: Boolean(userData.isVerified),
+          isVerified: Boolean(
+            userData.isVerified ||
+              userData.isVerifiedCommunity ||
+              userData.verifiedCommunity ||
+              userData.communityVerified
+          ),
         });
       });
       if (updates.size === 0) return;
@@ -548,7 +653,8 @@ export default function CommentModal({ post, isOpen, onClose }) {
           if (
             currentUser.displayName === update.displayName &&
             currentUser.profilePicUrl === update.profilePicUrl &&
-            Boolean(currentUser.isVerified) === Boolean(update.isVerified)
+            Boolean(currentUser.isVerified || currentUser.isVerifiedCommunity) ===
+              Boolean(update.isVerified || update.isVerifiedCommunity)
           ) {
             return comment;
           }
@@ -690,7 +796,11 @@ export default function CommentModal({ post, isOpen, onClose }) {
       : {
           displayName: currentUserProfile.displayName,
           profilePicUrl: currentUserProfile.profilePicUrl,
-          isVerified: currentUserProfile.isVerified,
+          isVerified:
+            currentUserProfile.isVerified ||
+            currentUserProfile.isVerifiedCommunity ||
+            currentUserProfile.verifiedCommunity ||
+            currentUserProfile.communityVerified,
         };
     const optimisticComment = {
       _id: tempId,
@@ -914,6 +1024,8 @@ export default function CommentModal({ post, isOpen, onClose }) {
                     onDelete={handleDeleteMenu}
                     onReport={handleReportMenu}
                     onBlock={handleBlockMenu}
+                    getUserFromCache={getUserFromCache}
+                    prefetchUserProfile={prefetchUserProfile}
                   />
                 )}
               </div>

@@ -1,8 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 import { useApp } from "../../context/useApp";
-import { getUserById, getFriendCount, reportUser, blockUser } from "../../services/api";
+import { useAuth } from "../../context/authContext";
+import {
+  getUserById,
+  getUserProfileBundle,
+  getUserPublicPosts,
+  fetchRankedFeedPage,
+  getFriendCount,
+  reportUser,
+  blockUser,
+} from "../../services/api";
 import ReportModal from "../moderation/ReportModal";
 import BlueTick from "../common/BlueTick";
 import PostModal from "./PostModal";
@@ -19,9 +28,190 @@ import {
   formatCommunityType,
   resolveCommunityDescription,
   resolveMemberCount,
+  resolveCommunityEmail,
+  normalizeUserId,
 } from "../../utils/userProfile";
+import {
+  readAnonymousPostIds,
+  readAnonymousPosts,
+  rememberAnonymousPost,
+} from "../../utils/anonymousPosts";
+import { readFeedSnapshotPosts } from "../../utils/feedSnapshot";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const relationshipCache = new Map();
+const PROFILE_CACHE_TTL = 30 * 60 * 1000;
+const PROFILE_CACHE_PREFIX = "incampus:profile:cache:v2:";
+const PROFILE_POSTS_CACHE_TTL = 10 * 60 * 1000;
+const PROFILE_POSTS_CACHE_PREFIX = "incampus:profile:posts:cache:v2:";
+const PROFILE_POSTS_CACHE_LIMIT = 36;
+const ANON_RECOVERY_LIMIT = 50;
+const ANON_RECOVERY_SESSION_PREFIX = "incampus:anon:recovery:";
+
+const readStoredAuthToken = () => {
+  if (typeof window === "undefined") return "";
+  return (
+    localStorage.getItem("authToken") ||
+    localStorage.getItem("token") ||
+    localStorage.getItem("accessToken") ||
+    ""
+  );
+};
+
+const isDeletedPlaceholderName = (value) => {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase().replace(/\s+/g, " ");
+  if (!normalized) return false;
+  return (
+    normalized === "deleted user" ||
+    normalized === "user deleted" ||
+    normalized === "deleted account" ||
+    normalized === "account deleted" ||
+    normalized === "deactivated user" ||
+    normalized === "deactivated account"
+  );
+};
+
+const sanitizeDisplayName = (value) => {
+  if (value === null || value === undefined) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  const lowered = trimmed.toLowerCase();
+  if (lowered === "null" || lowered === "undefined") return "";
+  if (isDeletedPlaceholderName(trimmed)) return "";
+  return trimmed;
+};
+
+const normalizeCacheKeyPart = (value) => (value ? String(value).trim() : "");
+
+const buildProfileCacheKey = ({ viewerId, profileId }) => {
+  const viewer = normalizeCacheKeyPart(viewerId) || "anon";
+  const profile = normalizeCacheKeyPart(profileId);
+  return `${PROFILE_CACHE_PREFIX}${viewer}:${profile}`;
+};
+
+const buildProfilePostsCacheKey = ({ viewerId, profileId }) => {
+  const viewer = normalizeCacheKeyPart(viewerId) || "anon";
+  const profile = normalizeCacheKeyPart(profileId);
+  return `${PROFILE_POSTS_CACHE_PREFIX}${viewer}:${profile}`;
+};
+
+const readProfileCache = ({ viewerId, profileId }) => {
+  if (!profileId || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(buildProfileCacheKey({ viewerId, profileId }));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_CACHE_TTL) return null;
+    return parsed.data || null;
+  } catch {
+    return null;
+  }
+};
+
+const shouldRunAnonRecovery = (userId) => {
+  if (!userId || typeof window === "undefined") return false;
+  const key = `${ANON_RECOVERY_SESSION_PREFIX}${userId}`;
+  if (sessionStorage.getItem(key)) return false;
+  sessionStorage.setItem(key, String(Date.now()));
+  return true;
+};
+
+const writeProfileCache = ({ viewerId, profileId, data }) => {
+  if (!profileId || !data || typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      buildProfileCacheKey({ viewerId, profileId }),
+      JSON.stringify({ ts: Date.now(), data })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const readProfilePostsCache = ({ viewerId, profileId }) => {
+  if (!profileId || typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(buildProfilePostsCacheKey({ viewerId, profileId }));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > PROFILE_POSTS_CACHE_TTL) return null;
+    const items = Array.isArray(parsed.items) ? parsed.items : [];
+    return {
+      items,
+      nextCursor: parsed.nextCursor || "",
+      hasMore: typeof parsed.hasMore === "boolean" ? parsed.hasMore : undefined,
+      count: parsed.count ?? null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const writeProfilePostsCache = ({ viewerId, profileId, items, nextCursor, hasMore, count }) => {
+  if (!profileId || typeof window === "undefined") return;
+  try {
+    const list = Array.isArray(items) ? items.slice(0, PROFILE_POSTS_CACHE_LIMIT) : [];
+    localStorage.setItem(
+      buildProfilePostsCacheKey({ viewerId, profileId }),
+      JSON.stringify({
+        ts: Date.now(),
+        items: list,
+        nextCursor: nextCursor || "",
+        hasMore: typeof hasMore === "boolean" ? hasMore : undefined,
+        count: count ?? null,
+      })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const normalizeIdValue = normalizeUserId;
+
+const resolvePostIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolvePostIdValue(nested);
+  }
+  return "";
+};
+
+const resolvePostAuthorId = (post) => {
+  if (!post) return "";
+  const direct =
+    post.authorId ||
+    post.author_id ||
+    post.userId ||
+    post.user_id ||
+    post.ownerId ||
+    post.owner_id ||
+    post.createdById ||
+    post.created_by ||
+    post.postedById ||
+    post.creatorId ||
+    post.__localAuthorId ||
+    post.localAuthorId ||
+    "";
+  const directId = normalizeIdValue(direct);
+  if (directId) return directId;
+  const author =
+    post.author ||
+    post.user ||
+    post.owner ||
+    post.createdBy ||
+    post.postedBy ||
+    post.creator ||
+    null;
+  return normalizeIdValue(author);
+};
 
 const resolvePostMediaUrl = (post) => {
   if (!post) return "";
@@ -39,6 +229,34 @@ const resolvePostMediaUrl = (post) => {
     post.file ||
     ""
   );
+};
+
+const resolvePostIdentity = (post) => {
+  if (!post) return "";
+  return resolvePostIdValue(post._id || post.id || post.postId || post.post_id || "");
+};
+
+const mergePostsByIdentity = (primary = [], secondary = []) => {
+  const combined = [];
+  const indexById = new Map();
+  const add = (post) => {
+    const id = resolvePostIdentity(post);
+    if (!id) {
+      combined.push(post);
+      return;
+    }
+    if (indexById.has(id)) {
+      const idx = indexById.get(id);
+      const current = combined[idx];
+      combined[idx] = current === post ? current : { ...current, ...post };
+      return;
+    }
+    indexById.set(id, combined.length);
+    combined.push(post);
+  };
+  (Array.isArray(primary) ? primary : []).forEach(add);
+  (Array.isArray(secondary) ? secondary : []).forEach(add);
+  return combined;
 };
 
 const isPostAnonymous = (post) => {
@@ -67,89 +285,569 @@ const UserProfileModalContent = ({
   user,
   onClose,
   currentUser,
+  variant = "modal",
 }) => {
-  const { posts, loadPosts, addBlockedUser, canChat } = useApp();
+  const {
+    loadPosts,
+    posts,
+    addBlockedUser,
+    canChat,
+    getUserFromCache,
+    cacheUser,
+    getFriendStatus,
+    ensureFriendStatus,
+    sendFriendRequest,
+    acceptFriend,
+    requestChatOpen,
+  } = useApp();
+  const { authToken, loading: authLoading } = useAuth();
+  const location = useLocation();
   const navigate = useNavigate();
   const [showReport, setShowReport] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [profileUser, setProfileUser] = useState(user);
   const [profileLoading, setProfileLoading] = useState(false);
   const [selectedPost, setSelectedPost] = useState(null);
+  const [profilePosts, setProfilePosts] = useState([]);
+  const [profilePostsCount, setProfilePostsCount] = useState(null);
+  const [visiblePostsCount, setVisiblePostsCount] = useState(9);
+  const [profilePostsCursor, setProfilePostsCursor] = useState("");
+  const [profilePostsHasMore, setProfilePostsHasMore] = useState(true);
+  const [profilePostsLoading, setProfilePostsLoading] = useState(false);
+  const [profilePostsLoaded, setProfilePostsLoaded] = useState(false);
+  const [profileLoadMorePending, setProfileLoadMorePending] = useState(false);
+  const [profileHydrated, setProfileHydrated] = useState(false);
+  const [relationshipStatus, setRelationshipStatus] = useState("none");
+  const [relationshipLoading, setRelationshipLoading] = useState(false);
+  const [relationshipActionLoading, setRelationshipActionLoading] = useState(false);
+  const lastUserIdRef = useRef(null);
+  const lastFetchRef = useRef({ id: null, ts: 0 });
+  const cacheUserRef = useRef(cacheUser);
+  const getUserFromCacheRef = useRef(getUserFromCache);
+  const profileLoadMoreRef = useRef(null);
+  const profileAuthTokenRef = useRef("");
+  const PROFILE_POSTS_LIMIT = 12;
 
-  const baseUserId = user?._id || user?.id;
+  const routeUserId = useMemo(() => {
+    const path = location?.pathname || "";
+    if (!path.startsWith("/profile/")) return "";
+    const parts = path.split("/").filter(Boolean);
+    return parts[1] || "";
+  }, [location?.pathname]);
+  const baseUserId = normalizeUserId(routeUserId || user);
+  const viewerIdValue = normalizeIdValue(
+    currentUser?.id || currentUser?._id || currentUser?.userId
+  );
 
   useEffect(() => {
-    setProfileUser(user);
+    cacheUserRef.current = cacheUser;
+  }, [cacheUser]);
+
+  useEffect(() => {
+    getUserFromCacheRef.current = getUserFromCache;
+  }, [getUserFromCache]);
+
+  useEffect(() => {
+    if (!user) return;
+    setProfileUser((prev) => {
+      const prevId = prev?._id || prev?.id;
+      const nextId = user?._id || user?.id;
+      const hasDetails = Boolean(
+        user?.username ||
+          user?.fullName ||
+          user?.displayName ||
+          user?.profilePicUrl ||
+          user?.communityName ||
+          user?.college ||
+          user?.university
+      );
+      if (prev && String(prevId) === String(nextId) && !hasDetails) {
+        return prev;
+      }
+      return user;
+    });
   }, [user]);
+
+  useEffect(() => {
+    if (!baseUserId) return;
+    const cachedUser = getUserFromCacheRef.current?.(baseUserId);
+    if (!cachedUser) return;
+    setProfileUser((prev) => ({ ...cachedUser, ...prev }));
+  }, [
+    baseUserId,
+    user?.displayName,
+    user?.fullName,
+    user?.username,
+  ]);
 
   useEffect(() => {
     loadPosts();
   }, [loadPosts]);
 
   useEffect(() => {
+    if (!baseUserId) return;
+    const cachedPosts = readProfilePostsCache({
+      viewerId: viewerIdValue,
+      profileId: baseUserId,
+    });
+    setProfilePosts(Array.isArray(cachedPosts?.items) ? cachedPosts.items : []);
+    setProfilePostsCount(cachedPosts?.count ?? null);
+    setProfilePostsCursor(cachedPosts?.nextCursor || "");
+    setProfilePostsHasMore(
+      typeof cachedPosts?.hasMore === "boolean" ? cachedPosts.hasMore : true
+    );
+    setProfilePostsLoading(false);
+    setProfilePostsLoaded(Boolean(cachedPosts?.items?.length));
+    setProfileLoadMorePending(false);
+    setProfileHydrated(false);
+    setVisiblePostsCount(PROFILE_POSTS_LIMIT);
+  }, [baseUserId, viewerIdValue]);
+
+  useEffect(() => {
     let isActive = true;
     const loadProfile = async () => {
       if (!baseUserId) return;
+      const cachedProfile = readProfileCache({
+        viewerId: viewerIdValue,
+        profileId: baseUserId,
+      });
+      if (cachedProfile && isActive) {
+        setProfileUser((prev) => ({ ...cachedProfile, ...prev }));
+        setProfileHydrated(true);
+      }
+      lastUserIdRef.current = baseUserId;
+      const lastFetch = lastFetchRef.current;
+      const sameUser = String(lastFetch.id || "") === String(baseUserId);
+      const now = Date.now();
+      if (sameUser && now - (lastFetch.ts || 0) < 1500) {
+        if (isActive) {
+          setProfileLoading(false);
+          setProfileHydrated(true);
+        }
+        return;
+      }
+      lastFetchRef.current = { id: baseUserId, ts: now };
       setProfileLoading(true);
-      let data = await getUserById(baseUserId);
-      if (data) {
-        const rawCount =
-          data.friendCount ??
-          data.friendsCount ??
-          data.friends_count ??
-          (Array.isArray(data.friends) ? data.friends.length : null);
-        if (rawCount === null || rawCount === undefined) {
-          const fetchedCount = await getFriendCount(baseUserId);
-          if (Number.isFinite(fetchedCount)) {
+      try {
+        const cachedUser = getUserFromCacheRef.current?.(baseUserId);
+        let bundle = await getUserProfileBundle(baseUserId);
+        let data = bundle?.user || null;
+        const rawProfile =
+          bundle?.raw?.profile ||
+          bundle?.raw?.data?.profile ||
+          bundle?.raw?.userProfile ||
+          bundle?.raw?.data?.userProfile ||
+          null;
+        if (rawProfile && typeof rawProfile === "object") {
+          data = data ? { ...rawProfile, ...data } : rawProfile;
+        }
+        if (bundle?.publicPostsCount && profilePostsCount === null) {
+          setProfilePostsCount(bundle.publicPostsCount ?? null);
+        }
+        const postsForProfile = Array.isArray(bundle?.publicPosts)
+          ? bundle.publicPosts
+          : [];
+        const postAuthor =
+          postsForProfile.length > 0
+            ? postsForProfile[0]?.author ||
+              postsForProfile[0]?.user ||
+              postsForProfile[0]?.owner ||
+              postsForProfile[0]?.createdBy ||
+              null
+            : null;
+        if (postAuthor && typeof postAuthor === "object") {
+          data = data ? { ...postAuthor, ...data } : postAuthor;
+        }
+        if (!data) {
+          data = await getUserById(baseUserId);
+        }
+        if (cachedUser) {
+          data = data ? { ...cachedUser, ...data } : cachedUser;
+        }
+        if (data) {
+          cacheUserRef.current?.(data);
+        }
+        if (data) {
+          const fallbackName = sanitizeDisplayName(
+            user?.fullName || user?.displayName || user?.username || ""
+          );
+          const nextName = sanitizeDisplayName(
+            data?.fullName || data?.displayName || data?.username || ""
+          );
+          if (!nextName && fallbackName) {
             data = {
               ...data,
-              friendCount: fetchedCount,
-              friendsCount: fetchedCount,
+              fullName: user?.fullName || data.fullName,
+              displayName: user?.displayName || data.displayName,
+              username: user?.username || data.username,
             };
           }
+          const rawCount =
+            data.friendCount ??
+            data.friendsCount ??
+            data.friends_count ??
+            (Array.isArray(data.friends) ? data.friends.length : null);
+          if (rawCount === null || rawCount === undefined) {
+            const fetchedCount = await getFriendCount(baseUserId);
+            if (Number.isFinite(fetchedCount)) {
+              data = {
+                ...data,
+                friendCount: fetchedCount,
+                friendsCount: fetchedCount,
+              };
+            }
+          }
+        }
+        if (isActive && data) {
+          setProfileUser(data);
+          writeProfileCache({ viewerId: viewerIdValue, profileId: baseUserId, data });
+        }
+      } catch (_error) {
+        void _error;
+      } finally {
+        if (isActive) {
+          setProfileLoading(false);
+          setProfileHydrated(true);
         }
       }
-      if (isActive && data) {
-        setProfileUser(data);
-      }
-      if (isActive) setProfileLoading(false);
     };
     loadProfile();
     return () => {
       isActive = false;
     };
-  }, [baseUserId]);
+  }, [
+    baseUserId,
+    user?.displayName,
+    user?.fullName,
+      user?.username,
+      profilePostsCount,
+      viewerIdValue,
+    ]);
 
-  const resolvedUser = profileUser || user;
+  const resolvedUser = useMemo(() => {
+    const preview = user && typeof user === "object" ? user : {};
+    const hydrated = profileUser && typeof profileUser === "object" ? profileUser : {};
+    return { ...preview, ...hydrated };
+  }, [profileUser, user]);
   const resolvedUserId = resolvedUser?._id || resolvedUser?.id || baseUserId;
-  const isVerified = Boolean(resolvedUser?.isVerified);
+  const resolvedUserIdValue = normalizeIdValue(resolvedUserId);
+  const resolvedCurrentUserId = normalizeIdValue(
+    currentUser?.id || currentUser?._id || currentUser?.userId
+  );
+
+  const loadPublicPosts = useCallback(
+    async ({ reset = false } = {}) => {
+      if (!resolvedUserIdValue) return;
+      const isSelfView = Boolean(
+        resolvedCurrentUserId &&
+          String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+      );
+      if (isSelfView) {
+        const storedToken = readStoredAuthToken();
+        if (storedToken) {
+          profileAuthTokenRef.current = storedToken;
+        } else if (authLoading) {
+          return;
+        }
+      }
+      if (profilePostsLoading) return;
+      if (!profilePostsHasMore && !reset) return;
+      setProfilePostsLoading(true);
+      try {
+        const params = {
+          limit: PROFILE_POSTS_LIMIT,
+          ...(reset || !profilePostsCursor ? {} : { cursor: profilePostsCursor }),
+          ...(isSelfView ? { includeAnonymous: true } : {}),
+        };
+        const data = await getUserPublicPosts(resolvedUserIdValue, params);
+        const items = Array.isArray(data)
+          ? data
+          : Array.isArray(data?.items)
+            ? data.items
+            : Array.isArray(data?.posts)
+              ? data.posts
+              : Array.isArray(data?.publicPosts)
+                ? data.publicPosts
+                : Array.isArray(data?.data?.items)
+                  ? data.data.items
+                  : Array.isArray(data?.data?.posts)
+                    ? data.data.posts
+                    : Array.isArray(data?.data?.publicPosts)
+                      ? data.data.publicPosts
+                      : [];
+        const nextCursor =
+          data?.nextCursor ||
+          data?.next_cursor ||
+          data?.cursor ||
+          data?.data?.nextCursor ||
+          data?.data?.next_cursor ||
+          data?.data?.cursor ||
+          "";
+        const hasMore =
+          typeof data?.hasMore === "boolean"
+            ? data.hasMore
+            : typeof data?.data?.hasMore === "boolean"
+              ? data.data.hasMore
+              : items.length >= PROFILE_POSTS_LIMIT;
+        const nextCount =
+          data?.publicPostsCount ||
+          data?.publicPostCount ||
+          data?.public_posts_count ||
+          data?.data?.publicPostsCount ||
+          data?.data?.publicPostCount ||
+          profilePostsCount;
+
+        const enriched = isSelfView
+          ? items.map((post) => {
+              if (!post || typeof post !== "object") return post;
+              const ownerId = resolvePostAuthorId(post);
+              if (ownerId) return post;
+              return { ...post, __localAuthorId: resolvedUserIdValue };
+            })
+          : items;
+        if (reset) {
+          writeProfilePostsCache({
+            viewerId: resolvedCurrentUserId,
+            profileId: resolvedUserIdValue,
+            items: enriched,
+            nextCursor,
+            hasMore,
+            count: nextCount,
+          });
+        }
+        setProfilePosts((prev) => (reset ? enriched : [...prev, ...enriched]));
+        setVisiblePostsCount((prev) =>
+          reset ? items.length : Math.max(prev, (reset ? 0 : prev) + items.length)
+        );
+        if (nextCount !== null && nextCount !== undefined) {
+          setProfilePostsCount(nextCount);
+        }
+        setProfilePostsHasMore(Boolean(hasMore));
+        setProfilePostsCursor(nextCursor || "");
+        setProfilePostsLoaded(true);
+      } catch (_error) {
+        void _error;
+        setProfilePostsHasMore(false);
+        setProfilePostsLoaded(true);
+      } finally {
+        setProfilePostsLoading(false);
+      }
+    },
+    [
+      resolvedUserIdValue,
+      profilePostsCursor,
+      profilePostsHasMore,
+      profilePostsLoading,
+      PROFILE_POSTS_LIMIT,
+      profilePostsCount,
+      authLoading,
+      resolvedCurrentUserId,
+    ]
+  );
+
+  useEffect(() => {
+    if (!resolvedUserIdValue || !profileHydrated) return;
+    setProfileLoadMorePending(false);
+    loadPublicPosts({ reset: true });
+  }, [resolvedUserIdValue, profileHydrated, loadPublicPosts]);
+
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    if (!authToken) return;
+    if (profileAuthTokenRef.current === authToken) return;
+    profileAuthTokenRef.current = authToken;
+    loadPublicPosts({ reset: true });
+  }, [resolvedUserIdValue, resolvedCurrentUserId, authToken, loadPublicPosts]);
+
+  const isVerified = Boolean(
+    resolvedUser?.isVerified ||
+      resolvedUser?.isVerifiedCommunity ||
+      resolvedUser?.verifiedCommunity ||
+      resolvedUser?.communityVerified
+  );
   const resolvedUsername = String(resolvedUser?.username || "").trim();
+  const shouldShowUpdating =
+    profileLoading &&
+    !resolvedUser?.fullName &&
+    !resolvedUser?.displayName &&
+    !resolvedUsername;
+
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    if (!shouldRunAnonRecovery(resolvedUserIdValue)) return;
+    let active = true;
+    const recover = async () => {
+      try {
+        const response = await fetchRankedFeedPage({
+          page: 1,
+          limit: ANON_RECOVERY_LIMIT,
+        });
+        const list = Array.isArray(response?.items)
+          ? response.items
+          : Array.isArray(response)
+            ? response
+            : [];
+        const recovered = list.filter((post) => {
+          if (!isPostAnonymous(post)) return false;
+          const authorId = resolvePostAuthorId(post);
+          return authorId && String(authorId) === String(resolvedUserIdValue);
+        });
+        if (!recovered.length) return;
+        recovered.forEach((post) => rememberAnonymousPost(resolvedUserIdValue, post));
+        if (!active) return;
+        setProfilePosts((prev) => mergePostsByIdentity(prev, recovered));
+      } catch {
+        // ignore recovery errors
+      }
+    };
+    recover();
+    return () => {
+      active = false;
+    };
+  }, [resolvedUserIdValue, resolvedCurrentUserId, fetchRankedFeedPage]);
+
+  useEffect(() => {
+    if (!resolvedUserIdValue) return;
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    if (!isSelfView) return;
+    const snapshot = readFeedSnapshotPosts();
+    if (!snapshot || !snapshot.length) return;
+    snapshot.forEach((post) => {
+      if (!isPostAnonymous(post)) return;
+      const authorId = resolvePostAuthorId(post);
+      if (authorId && String(authorId) === String(resolvedUserIdValue)) {
+        rememberAnonymousPost(resolvedUserIdValue, post);
+      }
+    });
+  }, [resolvedUserIdValue, resolvedCurrentUserId]);
 
   const publicPosts = useMemo(() => {
-    if (!resolvedUserId) return [];
-    const list = Array.isArray(posts) ? posts : [];
-    return list
-      .filter((post) => {
-        const authorId = post.author?._id || post.authorId || post.author;
-        if (String(authorId) !== String(resolvedUserId)) return false;
-        if (isPostAnonymous(post)) return false;
-        if (!isPostPublic(post)) return false;
-        return true;
-      })
-      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [posts, resolvedUserId]);
+    if (!resolvedUserIdValue) return [];
+    const isSelfView = Boolean(
+      resolvedCurrentUserId &&
+        String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+    );
+    const baseList = Array.isArray(profilePosts) ? profilePosts : [];
+    if (!isSelfView) {
+      return baseList
+        .filter((post) => {
+          const authorId = resolvePostAuthorId(post);
+          if (authorId && String(authorId) !== String(resolvedUserIdValue)) return false;
+          if (isPostAnonymous(post)) return false;
+          if (!isPostPublic(post)) return false;
+          return true;
+        })
+        .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
+    }
 
-  if (!resolvedUser) return null;
-  const isSelf = String(resolvedUserId) === String(currentUser?.id);
+    const normalizedBase = baseList.map((post) => {
+      if (!post || typeof post !== "object") return post;
+      const ownerId = resolvePostAuthorId(post);
+      if (ownerId) return post;
+      return { ...post, __localAuthorId: resolvedCurrentUserId, __isLocalOwner: true };
+    });
+    const anonSnapshots = readAnonymousPosts(resolvedCurrentUserId);
+    const extrasSource = mergePostsByIdentity(posts || [], anonSnapshots || []);
+    const anonSet = new Set(readAnonymousPostIds(resolvedCurrentUserId));
+    const extras = extrasSource.filter((post) => {
+      const authorId = resolvePostAuthorId(post);
+      if (authorId && String(authorId) === String(resolvedUserIdValue)) return true;
+      if (!authorId) {
+        const postId = resolvePostIdentity(post);
+        return postId && anonSet.has(String(postId));
+      }
+      return false;
+    });
+    return mergePostsByIdentity(normalizedBase, extras).sort(
+      (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+    );
+  }, [resolvedUserIdValue, profilePosts, posts, resolvedCurrentUserId]);
+
+  useEffect(() => {
+    setVisiblePostsCount((prev) => {
+      const next = publicPosts.length || 0;
+      if (next === 0) return 0;
+      const baseline = PROFILE_POSTS_LIMIT;
+      return Math.min(Math.max(baseline, prev), next);
+    });
+  }, [publicPosts.length, PROFILE_POSTS_LIMIT]);
+
+  const visiblePublicPosts = useMemo(
+    () => publicPosts.slice(0, visiblePostsCount),
+    [publicPosts, visiblePostsCount]
+  );
+  const hasMorePublicPosts = profilePostsHasMore;
+  const showProfileLoadSkeletons =
+    publicPosts.length > 0 &&
+    hasMorePublicPosts &&
+    (profilePostsLoading || profileLoadMorePending);
+  const showInitialPostsLoading = !profilePostsLoaded && publicPosts.length === 0;
+
+  const requestMorePublicPosts = useCallback(async () => {
+    if (profilePostsLoading || !profilePostsHasMore) return;
+    setProfileLoadMorePending(true);
+    try {
+      await loadPublicPosts();
+    } finally {
+      setProfileLoadMorePending(false);
+    }
+  }, [profilePostsLoading, profilePostsHasMore, loadPublicPosts]);
+
+  useEffect(() => {
+    if (!profileLoadMoreRef.current) return;
+    if (!hasMorePublicPosts) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        requestMorePublicPosts();
+      },
+      { rootMargin: "240px" }
+    );
+    observer.observe(profileLoadMoreRef.current);
+    return () => observer.disconnect();
+  }, [hasMorePublicPosts, requestMorePublicPosts]);
+
+  const isSelf = Boolean(
+    resolvedCurrentUserId && String(resolvedUserId) === String(resolvedCurrentUserId)
+  );
   const userType = resolveUserType(resolvedUser);
   const isCommunity = userType === "community";
-  const userTypeBadge = formatUserType(userType);
+  const rawAccountType = String(
+    resolvedUser?.accountType ||
+      resolvedUser?.account_type ||
+      resolvedUser?.userType ||
+      resolvedUser?.user_type ||
+      resolvedUser?.type ||
+      ""
+  )
+    .trim()
+    .toLowerCase();
   const studentTypeLabel = formatStudentType(resolveStudentType(resolvedUser));
-  const showStudentTypeBadge = !isCommunity && studentTypeLabel !== userTypeBadge;
-  const collegeLabel = resolveCollegeName(resolvedUser) || (isCommunity ? "" : "College");
   const bioText = resolveUserBio(resolvedUser) || "No bio shared yet.";
   const communityName = resolveCommunityName(resolvedUser);
-  const communityTypeLabel = formatCommunityType(resolveCommunityType(resolvedUser));
+  const communityTypeValue = resolveCommunityType(resolvedUser);
+  const baseDisplayName =
+    communityName ||
+    resolvedUser?.fullName ||
+    resolvedUser?.displayName ||
+    resolvedUser?.username ||
+    "";
+  const resolvedDisplayName = sanitizeDisplayName(baseDisplayName) || "User";
+  const communityTypeLabel = formatCommunityType(communityTypeValue);
   const communityDescription =
     resolveCommunityDescription(resolvedUser) || "No description shared yet.";
   const rawFriendCount =
@@ -167,18 +865,86 @@ const UserProfileModalContent = ({
   const showFriendCount = Number.isFinite(resolvedFriendCount);
   const memberCount = Number(resolveMemberCount(resolvedUser) || 0);
   const fallbackPublicCount = Number(
-    resolvedUser.publicPostCount ||
-      resolvedUser.publicPostsCount ||
-      resolvedUser.postCount ||
+    profilePostsCount ??
+      resolvedUser.publicPostCount ??
+      resolvedUser.publicPostsCount ??
+      resolvedUser.postCount ??
       0
   );
-  const publicPostCount = publicPosts.length > 0 ? publicPosts.length : fallbackPublicCount;
-  const canMessage = Boolean(resolvedUserId) && (isSelf || canChat(resolvedUserId));
+  const publicPostCount =
+    publicPosts.length > 0 || profilePostsLoaded
+      ? publicPosts.length
+      : fallbackPublicCount;
+  const contactEmail = resolveCommunityEmail(resolvedUser);
+  const roleLower = String(resolvedUser?.role || "").toLowerCase();
+  const isCommunityAccount =
+    isCommunity ||
+    rawAccountType === "community" ||
+    roleLower.includes("community");
+  const resolvedUserType = isCommunityAccount ? "community" : userType;
+  const userTypeBadge = formatUserType(resolvedUserType);
+  const showStudentTypeBadge =
+    !isCommunityAccount && studentTypeLabel !== userTypeBadge;
+  const collegeLabel =
+    resolveCollegeName(resolvedUser) || (isCommunityAccount ? "" : "College");
+  const canMessage =
+    Boolean(resolvedUserIdValue) && (isSelf || canChat(resolvedUserIdValue));
 
   const handleMessage = () => {
     if (!canMessage) return;
+    if (resolvedUserIdValue) {
+      requestChatOpen?.(resolvedUserIdValue);
+    }
     navigate("/chat");
-    onClose?.();
+  };
+
+  const handleAddFriend = async () => {
+    if (!resolvedUserIdValue) return;
+    if (relationshipActionLoading || relationshipStatus === "pending_sent") return;
+    if (relationshipStatus === "friends") return;
+    setRelationshipActionLoading(true);
+    try {
+      await sendFriendRequest?.(resolvedUserIdValue);
+      setRelationshipStatus("pending_sent");
+      relationshipCache.set(resolvedUserIdValue, "pending_sent");
+    } catch (error) {
+      alert(error?.message || "Failed to send friend request");
+    } finally {
+      setRelationshipActionLoading(false);
+    }
+  };
+
+  const handleAcceptFriend = async () => {
+    if (!resolvedUserIdValue) return;
+    if (relationshipActionLoading || relationshipStatus === "friends") return;
+    setRelationshipActionLoading(true);
+    try {
+      await acceptFriend?.(resolvedUserIdValue);
+      setRelationshipStatus("friends");
+      relationshipCache.set(resolvedUserIdValue, "friends");
+    } catch (error) {
+      alert(error?.message || "Failed to accept request");
+    } finally {
+      setRelationshipActionLoading(false);
+    }
+  };
+
+  const handleConnectCommunity = () => {
+    if (!contactEmail) {
+      alert("No contact email available for this community.");
+      return;
+    }
+    const subject = encodeURIComponent("Community Connection Request");
+    const body = encodeURIComponent(
+      "Hi, I would like to connect with your community on InCampus."
+    );
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+      contactEmail
+    )}&su=${subject}&body=${body}`;
+    const opened = window.open(gmailUrl, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      window.location.href = `mailto:${contactEmail}?subject=${subject}&body=${body}`;
+    }
   };
 
   const handleReportUser = () => {
@@ -214,37 +980,73 @@ const UserProfileModalContent = ({
     }
   };
 
-  return (
-    <>
-      <Motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-0 sm:p-4"
-        onClick={onClose}
-      >
-        <Motion.div
-          initial={{ y: 30, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          exit={{ y: 30, opacity: 0 }}
-          transition={{ type: "spring", damping: 26, stiffness: 240 }}
-          className="relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-3xl glass-card rounded-none sm:rounded-3xl p-6 sm:p-8 overflow-y-auto"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-4 mb-6">
+  useEffect(() => {
+    if (!resolvedUserIdValue || isSelf || isCommunityAccount) return;
+    if (relationshipCache.has(resolvedUserIdValue)) {
+      setRelationshipStatus(relationshipCache.get(resolvedUserIdValue));
+      setRelationshipLoading(false);
+      return;
+    }
+    const immediateStatus = getFriendStatus?.(resolvedUserIdValue) || "none";
+    setRelationshipStatus(immediateStatus);
+    let active = true;
+    setRelationshipLoading(true);
+    Promise.resolve(ensureFriendStatus?.(resolvedUserIdValue))
+      .then((status) => {
+        if (!active || !status) return;
+        setRelationshipStatus(status);
+        relationshipCache.set(resolvedUserIdValue, status);
+      })
+      .finally(() => {
+        if (active) setRelationshipLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    resolvedUserIdValue,
+    isSelf,
+    isCommunityAccount,
+    getFriendStatus,
+    ensureFriendStatus,
+  ]);
+
+  if (!resolvedUser) return null;
+
+  const panelClass =
+    variant === "modal"
+      ? "relative w-full h-full sm:h-auto sm:max-h-[90vh] sm:max-w-3xl glass-card rounded-none sm:rounded-3xl p-6 sm:p-8 overflow-y-auto"
+      : "relative w-full max-w-3xl glass-card rounded-3xl p-6 sm:p-8 shadow-2xl mx-auto";
+
+  const panel = (
+    <Motion.div
+      initial={{ y: 30, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      exit={{ y: 30, opacity: 0 }}
+      transition={{ type: "spring", damping: 26, stiffness: 240 }}
+      className={panelClass}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div className="flex items-start justify-between gap-4 mb-6">
             <div className="flex items-center gap-4">
               <img
-                src={resolvedUser.profilePicUrl || ANONYMOUS_AVATAR}
-                alt={communityName || resolvedUser.fullName || resolvedUser.username}
+                src={
+                  resolvedUser.profilePicUrl ||
+                  resolvedUser.profilePic ||
+                  resolvedUser.avatarUrl ||
+                  resolvedUser.avatar ||
+                  resolvedUser.photoUrl ||
+                  resolvedUser.photo ||
+                  resolvedUser.imageUrl ||
+                  resolvedUser.image ||
+                  ANONYMOUS_AVATAR
+                }
+                alt={resolvedDisplayName}
                 className="h-14 w-14 rounded-full object-cover"
               />
               <div>
                 <h3 className="text-lg font-semibold text-[#faf0e6] flex items-center">
-                  {communityName ||
-                    resolvedUser.fullName ||
-                    resolvedUser.displayName ||
-                    resolvedUser.username ||
-                    "User"}
+                  {resolvedDisplayName}
                   {isVerified && <BlueTick />}
                 </h3>
                 {resolvedUsername && (
@@ -266,7 +1068,7 @@ const UserProfileModalContent = ({
                     <span className="text-xs text-[#b9b4c7]">{communityTypeLabel}</span>
                   )}
                 </div>
-                {profileLoading && (
+                {shouldShowUpdating && (
                   <p className="text-[10px] text-[#b9b4c7] mt-1">Updating profile...</p>
                 )}
               </div>
@@ -291,7 +1093,7 @@ const UserProfileModalContent = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 text-center text-xs text-[#b9b4c7] mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-4 text-center text-[11px] sm:text-xs text-[#b9b4c7] mb-6">
             <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
               <p className="text-base font-semibold text-[#faf0e6]">
                 {publicPostCount}
@@ -304,8 +1106,8 @@ const UserProfileModalContent = ({
                   <p className="text-base font-semibold text-[#faf0e6]">{memberCount}</p>
                   <p>Members</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3 col-span-2 sm:col-span-1">
+                  <p className="text-[11px] sm:text-xs font-semibold text-[#faf0e6] leading-tight break-normal">
                     {communityTypeLabel || "Community"}
                   </p>
                   <p>Type</p>
@@ -319,8 +1121,8 @@ const UserProfileModalContent = ({
                   </p>
                   <p>Friends</p>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3">
-                  <p className="text-xs font-semibold text-[#faf0e6] leading-tight break-words">
+                <div className="rounded-2xl border border-white/10 bg-white/5 px-2 py-3 col-span-2 sm:col-span-1">
+                  <p className="text-[11px] sm:text-xs font-semibold text-[#faf0e6] leading-tight break-normal">
                     {studentTypeLabel}
                   </p>
                   <p>Student Type</p>
@@ -331,22 +1133,33 @@ const UserProfileModalContent = ({
 
           <div className="mb-6">
             <h4 className="text-sm font-semibold text-[#faf0e6] mb-2">
-              {isCommunity ? "About" : "Bio"}
+              {isCommunityAccount ? "About" : "Bio"}
             </h4>
             <p className="text-sm text-[#b9b4c7]">
-              {isCommunity ? communityDescription : bioText}
+              {isCommunityAccount ? communityDescription : bioText}
             </p>
           </div>
 
           <div className="space-y-3 pb-16 sm:pb-4">
             <h4 className="text-sm font-semibold text-[#faf0e6]">Public Posts</h4>
-            {publicPosts.length === 0 ? (
+            {showInitialPostsLoading ? (
+              <div className="grid grid-cols-3 gap-2">
+                {[1, 2, 3, 4, 5, 6].map((item) => (
+                  <div
+                    key={`profile-initial-loading-${item}`}
+                    className="aspect-square rounded-xl border border-white/10 bg-white/5 animate-pulse"
+                  >
+                    <div className="h-full w-full rounded-xl bg-white/10" />
+                  </div>
+                ))}
+              </div>
+            ) : publicPosts.length === 0 ? (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-[#b9b4c7]">
                 No public posts available.
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-2">
-                {publicPosts.map((post, index) => {
+                {visiblePublicPosts.map((post, index) => {
                   const mediaUrl = resolvePostMediaUrl(post);
                   const isVideo =
                     isVideoUrl(mediaUrl) ||
@@ -355,7 +1168,20 @@ const UserProfileModalContent = ({
                     <button
                       key={post._id || post.id || `public-post-${index}`}
                       type="button"
-                      onClick={() => setSelectedPost(post)}
+                      onClick={() => {
+                        if (
+                          resolvedCurrentUserId &&
+                          String(resolvedUserIdValue) === String(resolvedCurrentUserId)
+                        ) {
+                          setSelectedPost({
+                            ...post,
+                            __isLocalOwner: true,
+                            __localAuthorId: resolvedCurrentUserId,
+                          });
+                        } else {
+                          setSelectedPost(post);
+                        }
+                      }}
                       className="relative aspect-square overflow-hidden rounded-xl border border-white/10 bg-white/5"
                     >
                       {mediaUrl ? (
@@ -384,6 +1210,26 @@ const UserProfileModalContent = ({
                     </button>
                   );
                 })}
+                {showProfileLoadSkeletons &&
+                  [1, 2, 3].map((item) => (
+                    <div
+                      key={`profile-loading-${item}`}
+                      className="aspect-square rounded-xl border border-white/10 bg-white/5 animate-pulse"
+                    >
+                      <div className="h-full w-full rounded-xl bg-white/10" />
+                    </div>
+                  ))}
+                {hasMorePublicPosts && (
+                  <div
+                    ref={profileLoadMoreRef}
+                    className={`col-span-full h-10 flex items-center justify-center text-[11px] text-[#b9b4c7] transition-opacity ${
+                      showProfileLoadSkeletons ? "opacity-100" : "opacity-0"
+                    }`}
+                    aria-hidden={!showProfileLoadSkeletons}
+                  >
+                    Loading more...
+                  </div>
+                )}
               </div>
             )}
             <p className="text-[11px] text-[#b9b4c7]">
@@ -391,19 +1237,68 @@ const UserProfileModalContent = ({
             </p>
           </div>
 
-          {!isSelf && (
-            <div className="sticky bottom-0 left-0 right-0 mt-6 bg-gradient-to-t from-[#120f0a]/95 via-[#120f0a]/85 to-transparent pt-4">
+          {!isSelf && profileHydrated && (
+            <div className="profile-actions sticky bottom-0 left-0 right-0 mt-6 bg-gradient-to-t from-[#120f0a]/95 via-[#120f0a]/85 to-transparent pt-4">
               <div className="flex items-center gap-2">
-                <button
-                  onClick={handleMessage}
-                  disabled={!canMessage}
-                  className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
-                    canMessage ? "" : "opacity-60 cursor-not-allowed"
-                  }`}
-                >
-                  <i className="fa-solid fa-message mr-2"></i>
-                  {canMessage ? "Message" : "Friends only"}
-                </button>
+                {isCommunityAccount ? (
+                  <button
+                    onClick={handleConnectCommunity}
+                    disabled={!contactEmail || relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      contactEmail && !relationshipActionLoading
+                        ? ""
+                        : "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-link mr-2"></i>
+                    Connect
+                  </button>
+                ) : relationshipStatus === "friends" ? (
+                  <button
+                    onClick={handleMessage}
+                    disabled={!canMessage}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      canMessage ? "" : "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-message mr-2"></i>
+                    Message
+                  </button>
+                ) : relationshipStatus === "pending_received" ? (
+                  <button
+                    onClick={handleAcceptFriend}
+                    disabled={relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      relationshipActionLoading ? "opacity-60 cursor-not-allowed" : ""
+                    }`}
+                  >
+                    <i className="fa-solid fa-user-check mr-2"></i>
+                    Accept Friend
+                  </button>
+                ) : relationshipStatus === "pending_sent" ? (
+                  <button
+                    disabled
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      "opacity-60 cursor-not-allowed"
+                    }`}
+                  >
+                    <i className="fa-solid fa-hourglass-half mr-2"></i>
+                    Request Sent
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleAddFriend}
+                    disabled={relationshipLoading || relationshipActionLoading}
+                    className={`flex-1 liquid-button text-xs font-semibold px-4 py-3 rounded-full text-[#faf0e6] ${
+                      relationshipLoading || relationshipActionLoading
+                        ? "opacity-60 cursor-not-allowed"
+                        : ""
+                    }`}
+                  >
+                    <i className="fa-solid fa-user-plus mr-2"></i>
+                    Add Friend
+                  </button>
+                )}
                 <button
                   onClick={() => setOptionsOpen(true)}
                   className="h-11 w-11 rounded-full border border-white/10 bg-white/5 text-[#faf0e6] hover:bg-white/10"
@@ -412,10 +1307,31 @@ const UserProfileModalContent = ({
                   <i className="fa-solid fa-circle-info"></i>
                 </button>
               </div>
+              {isCommunityAccount && contactEmail && (
+                <p className="mt-2 text-[10px] text-[#b9b4c7] text-center">
+                  Official email: {contactEmail}
+                </p>
+              )}
             </div>
           )}
+    </Motion.div>
+  );
+
+  return (
+    <>
+      {variant === "modal" ? (
+        <Motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-0 sm:p-4"
+          onClick={onClose}
+        >
+          {panel}
         </Motion.div>
-      </Motion.div>
+      ) : (
+        <div className="w-full px-4 py-6 sm:py-8">{panel}</div>
+      )}
 
       <AnimatePresence>
         {optionsOpen && (
@@ -498,6 +1414,7 @@ export default function UserProfileModal({
   user,
   onClose,
   currentUser,
+  variant = "modal",
 }) {
   if (!user) return null;
   const userKey = user._id || user.id || "user";
@@ -510,6 +1427,7 @@ export default function UserProfileModal({
           user={user}
           onClose={onClose}
           currentUser={currentUser}
+          variant={variant}
         />
       )}
     </AnimatePresence>

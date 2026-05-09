@@ -1,8 +1,30 @@
 import { io } from "socket.io-client";
 
-const SOCKET_BASE_URL =
-  import.meta.env.VITE_SOCKET_URL ||
-  (typeof window !== "undefined" ? window.location.origin : "");
+const normalizeBaseUrl = (base) => {
+  if (!base) return "";
+  return String(base).endsWith("/") ? String(base).slice(0, -1) : String(base);
+};
+
+const resolveSocketBaseUrl = () => {
+  const raw = import.meta.env.VITE_SOCKET_URL || "";
+  const base = normalizeBaseUrl(raw);
+
+  if (typeof window === "undefined") return base;
+  if (!base) return window.location.origin;
+
+  // In dev, if env points to localhost, prefer same-origin and rely on Vite's
+  // websocket proxy (`/socket.io`) to avoid CORS headaches.
+  if (
+    import.meta.env.DEV &&
+    /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(base)
+  ) {
+    return window.location.origin;
+  }
+
+  return base;
+};
+
+const SOCKET_BASE_URL = resolveSocketBaseUrl();
 const HEARTBEAT_INTERVAL_MS = Number(import.meta.env.VITE_SOCKET_HEARTBEAT_MS) || 25000;
 const HEARTBEAT_EVENT =
   import.meta.env.VITE_SOCKET_HEARTBEAT_EVENT ||
@@ -136,7 +158,7 @@ export const initSocket = (userId, rooms = []) => {
 
   const socket = io(SOCKET_BASE_URL, {
     autoConnect: false,
-    transports: ["websocket"],
+    transports: ["websocket", "polling"],
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,

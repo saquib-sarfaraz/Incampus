@@ -1,11 +1,13 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { motion as Motion } from "framer-motion";
+import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { preloadChatPage } from "../../utils/preloadRoutes";
 
 export default function BottomNav({ hidden = false, onCreate, overlay = false }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const { currentUser } = useAuth();
   const { chatUnreadTotal } = useApp();
 
   const normalizePath = (path = "") => (path.length > 1 ? path.replace(/\/+$/, "") : path);
@@ -15,15 +17,22 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
     if (normalized === "/feed") {
       return currentPath === "/feed" || currentPath === "/home";
     }
+    if (normalized.startsWith("/profile")) {
+      return currentPath.startsWith("/profile");
+    }
     return currentPath === normalized || currentPath.startsWith(`${normalized}/`);
   };
 
+  const currentUserId =
+    currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
+  const profilePath = currentUserId ? `/profile/${currentUserId}` : "/profile";
   const navItems = [
     { path: "/feed", icon: "fa-house", label: "Home" },
     { path: "/trending", icon: "fa-compass", label: "Trending" },
-    { path: "/chat", icon: "fa-message", label: "Chat" },
-    { path: "/profile", icon: "fa-user", label: "Profile" },
+    { path: "/inbuzz", icon: "fa-circle-play", label: "InBuzz" },
+    { path: profilePath, icon: "fa-user", label: "Profile" },
   ];
+  const showChatBadge = navItems[2]?.path === "/chat";
 
   const handleCreate = (event) => {
     if (event?.currentTarget) {
@@ -43,7 +52,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
     >
       <div className="relative grid grid-cols-5 items-end px-4 pb-2 pt-5">
         <Motion.button
-          onClick={() => navigate(navItems[0].path)}
+          onClick={() => navigate(navItems[0].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[0].path)
               ? "active-link text-[#faf0e6]"
@@ -58,7 +67,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </Motion.button>
 
         <Motion.button
-          onClick={() => navigate(navItems[1].path)}
+          onClick={() => navigate(navItems[1].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[1].path)
               ? "active-link text-[#faf0e6]"
@@ -85,10 +94,10 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </div>
 
         <Motion.button
-          onClick={() => navigate(navItems[2].path)}
-          onMouseEnter={preloadChatPage}
-          onFocus={preloadChatPage}
-          onTouchStart={preloadChatPage}
+          onClick={() => navigate(navItems[2].path, { replace: true })}
+          onMouseEnter={showChatBadge ? preloadChatPage : undefined}
+          onFocus={showChatBadge ? preloadChatPage : undefined}
+          onTouchStart={showChatBadge ? preloadChatPage : undefined}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[2].path)
               ? "active-link text-[#faf0e6]"
@@ -98,7 +107,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         >
           <span className="relative">
             <i className={`fa-solid ${navItems[2].icon} text-base`} />
-            {chatUnreadTotal > 0 && (
+            {showChatBadge && chatUnreadTotal > 0 && (
               <span className="absolute -top-1 -right-2 block h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(34,197,94,0.75)]"></span>
             )}
           </span>
@@ -106,7 +115,7 @@ export default function BottomNav({ hidden = false, onCreate, overlay = false })
         </Motion.button>
 
         <Motion.button
-          onClick={() => navigate(navItems[3].path)}
+          onClick={() => navigate(navItems[3].path, { replace: true })}
           className={`nav-link flex flex-col items-center text-[11px] transition-colors ${
             isActive(navItems[3].path)
               ? "active-link text-[#faf0e6]"

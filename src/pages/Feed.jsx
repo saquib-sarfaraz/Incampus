@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { motion as Motion } from "framer-motion";
-import { useLocation, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useApp } from "../context/useApp";
 import { useAuth } from "../context/authContext";
 import StoryBar from "../components/stories/StoryBar";
@@ -8,9 +8,17 @@ import Post from "../components/feed/Post";
 import PostCreator from "../components/feed/PostCreator";
 import Header from "../components/common/Header";
 import BottomNav from "../components/common/BottomNav";
+import CreateMenu from "../components/common/CreateMenu";
 import CreatePostModal from "../components/feed/CreatePostModal";
+import FeedInBuzzStrip from "../components/inbuzz/FeedInBuzzStrip";
 import PostModal from "../components/profile/PostModal";
-import { fetchRankedFeedPage } from "../services/api";
+import TrendingSidebar from "../components/feed/TrendingSidebar";
+import ChatSidebar from "../components/chat/ChatSidebar";
+import { fetchInBuzzTrending, fetchRankedFeedPage } from "../services/api";
+import {
+  readInBuzzTrendingSnapshot,
+  writeInBuzzTrendingSnapshot,
+} from "../utils/inbuzzCache";
 import {
   getLikeCount,
   getCommentCount,
@@ -27,9 +35,11 @@ const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 90000;
 const COLLEGE_REFRESH_MS = 120000;
 const FEED_WINDOW_SIZE = 20;
-const FEED_WINDOW_STEP = 10;
-const FEED_SCROLL_EDGE = 220;
 const FEED_ESTIMATED_ITEM_HEIGHT = 420;
+const FEED_PREFETCH_THRESHOLD = 2;
+const FEED_SNAPSHOT_KEY = "incampus:feed:snapshot:universal";
+const FEED_SNAPSHOT_TTL = 5 * 60 * 1000;
+const FEED_SNAPSHOT_LIMIT = 40;
 const FRIEND_BADGE = {
   text: "👥 Friend",
   tone: "border-emerald-400/30 bg-emerald-400/10 text-emerald-200",
@@ -50,22 +60,67 @@ const resolveBadge = (badgeKey) => {
   return null;
 };
 
+const resolveIdValue = (value) => {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw || raw === "[object Object]") return "";
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested = value._id || value.id || value.postId || value.post_id || value.value;
+    if (nested) return resolveIdValue(nested);
+  }
+  return "";
+};
+
+const isLikelyId = (value) => {
+  const trimmed = resolveIdValue(value);
+  if (!trimmed) return false;
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return true;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trimmed)) {
+    return true;
+  }
+  if (/^\d+$/.test(trimmed)) return true;
+  return false;
+};
+
 const getAuthorId = (post) => {
-  return post.author?._id || post.authorId || post.author || "";
+  const candidate =
+    post.author?._id ||
+    post.author?.id ||
+    post.authorId ||
+    post.author_id ||
+    post.userId ||
+    post.user_id ||
+    post.author ||
+    "";
+  const resolved = resolveIdValue(candidate);
+  return isLikelyId(resolved) ? resolved : "";
 };
 
 const resolvePostId = (post, index) => {
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   return `post-${index}`;
 };
 
 const resolvePostIdentity = (post) => {
-  const id = post?._id || post?.id || post?.postId || post?.post_id;
-  if (id) return String(id);
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
   const authorId = getAuthorId(post);
   const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
   if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
+  return "";
+};
+
+const resolveCursorValue = (post) => {
+  if (!post) return "";
+  const id = resolveIdValue(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
+  const createdAt = post?.createdAt || post?.created_at || post?.timestamp || "";
+  if (createdAt) return String(createdAt);
   return "";
 };
 
@@ -231,19 +286,75 @@ const getEngagementScore = (post) => {
 
 const resolveFeedOrderKey = (post) => resolvePostIdentity(post) || "";
 
+const readFeedSnapshot = () => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(FEED_SNAPSHOT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.ts || Date.now() - parsed.ts > FEED_SNAPSHOT_TTL) return null;
+    return Array.isArray(parsed.items) ? parsed.items : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeFeedSnapshot = (items) => {
+  if (typeof window === "undefined") return;
+  try {
+    const trimmed = Array.isArray(items) ? items.slice(0, FEED_SNAPSHOT_LIMIT) : [];
+    localStorage.setItem(
+      FEED_SNAPSHOT_KEY,
+      JSON.stringify({ ts: Date.now(), items: trimmed })
+    );
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const normalizeRankedResponse = (response) => {
+  if (Array.isArray(response)) {
+    return { items: response, nextCursor: "", hasMore: undefined };
+  }
+  const items = Array.isArray(response?.items)
+    ? response.items
+    : Array.isArray(response?.posts)
+      ? response.posts
+      : Array.isArray(response?.data)
+        ? response.data
+        : [];
+  return {
+    items,
+    nextCursor: response?.nextCursor || response?.next_cursor || response?.cursor || "",
+    hasMore:
+      typeof response?.hasMore === "boolean"
+        ? response.hasMore
+        : typeof response?.data?.hasMore === "boolean"
+          ? response.data.hasMore
+          : undefined,
+  };
+};
+
 export default function Feed() {
   const { posts, loading, feedScope, isUserBlocked, isFriend, loadPosts, loadStories } =
     useApp();
   const { currentUser } = useAuth();
+  const currentUserId = useMemo(
+    () => currentUser?.id || currentUser?._id || "",
+    [currentUser?.id, currentUser?._id]
+  );
+  const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [sharedPost, setSharedPost] = useState(null);
   const [rankedPosts, setRankedPosts] = useState([]);
   const [rankedPage, setRankedPage] = useState(1);
   const [rankedHasMore, setRankedHasMore] = useState(true);
   const [rankedLoading, setRankedLoading] = useState(false);
   const [rankedError, setRankedError] = useState("");
+  const [feedBooting, setFeedBooting] = useState(true);
   const [feedCursor, setFeedCursor] = useState({ key: "", page: 0 });
   const [newPostsAvailable, setNewPostsAvailable] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -254,12 +365,15 @@ export default function Feed() {
   const windowStartRef = useRef(0);
   const heightStatsRef = useRef({ total: 0, count: 0 });
   const heightMapRef = useRef(new Map());
-  const prefetchRef = useRef({ page: null, data: null, promise: null });
+  const prefetchRef = useRef({ cursor: "", data: null, promise: null });
   const rankedPostsRef = useRef([]);
   const rankedLoadingRef = useRef(false);
+  const rankedCursorRef = useRef("");
   const latestPostRef = useRef("");
   const sharedPostRef = useRef(null);
   const openedPostRef = useRef("");
+  const [inBuzzReels, setInBuzzReels] = useState([]);
+  const [inBuzzLoading, setInBuzzLoading] = useState(false);
 
   const campusLabel = resolveUserCampus(currentUser);
   const campusId = resolveUserCollegeId(currentUser);
@@ -268,12 +382,60 @@ export default function Feed() {
     () => `${feedScope}-${campusLabel || ""}-${campusId || ""}`,
     [feedScope, campusLabel, campusId]
   );
+  const canPrefetchRanked = useMemo(() => {
+    if (typeof navigator === "undefined") return true;
+    const connection =
+      navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+    if (!connection) return true;
+    if (connection.saveData) return false;
+    const type = String(connection.effectiveType || "").toLowerCase();
+    if (type.includes("2g") || type.includes("slow-2g")) return false;
+    return true;
+  }, []);
+
+  const visibleInBuzzReels = useMemo(() => {
+    const list = Array.isArray(inBuzzReels) ? inBuzzReels : [];
+    return list.filter((reel) => {
+      const reelUserId = reel?.userId || reel?.user_id || reel?.authorId;
+      if (!reelUserId) return true;
+      return !isUserBlocked?.(reelUserId);
+    });
+  }, [inBuzzReels, isUserBlocked]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const cached = readInBuzzTrendingSnapshot({ userId: currentUserId });
+    const hadCached = Array.isArray(cached) && cached.length > 0;
+    if (hadCached) setInBuzzReels(cached);
+    setInBuzzLoading(!hadCached);
+    fetchInBuzzTrending({ limit: 12 })
+      .then((items) => {
+        if (!isMounted) return;
+        const list = Array.isArray(items) ? items : [];
+        setInBuzzReels(list);
+        writeInBuzzTrendingSnapshot({ userId: currentUserId, items: list });
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        if (!hadCached) setInBuzzReels([]);
+      })
+      .finally(() => {
+        if (isMounted) setInBuzzLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [currentUserId]);
+
+  useEffect(() => {
+    setFeedBooting(true);
+  }, [feedKey]);
 
   const checkForNewPosts = useCallback(async () => {
     if (shouldFilterByCollege) return false;
     try {
-      const data = await fetchRankedFeedPage({ page: 1, limit: 1 });
-      const list = Array.isArray(data) ? data : [];
+      const response = await fetchRankedFeedPage({ page: 1, limit: 1 });
+      const { items: list } = normalizeRankedResponse(response);
       const latest = list[0];
       const latestId = latest ? resolvePostIdentity(latest) : "";
       if (!latestId) return false;
@@ -296,28 +458,29 @@ export default function Feed() {
     return () => clearInterval(interval);
   }, [checkForNewPosts, shouldFilterByCollege, refreshing]);
 
-  const consumePrefetch = useCallback((page) => {
+  const consumePrefetch = useCallback((cursor) => {
     const cached = prefetchRef.current;
-    if (cached.page !== page || !Array.isArray(cached.data)) return null;
-    prefetchRef.current = { page: null, data: null, promise: null };
+    if (cached.cursor !== cursor || !cached.data) return null;
+    prefetchRef.current = { cursor: "", data: null, promise: null };
     return cached.data;
   }, []);
 
-  const prefetchPage = useCallback(async (page) => {
-    if (!page || prefetchRef.current.page === page) return;
-    prefetchRef.current = { page, data: null, promise: null };
+  const prefetchPage = useCallback(async (cursor) => {
+    if (!canPrefetchRanked) return;
+    if (!cursor || prefetchRef.current.cursor === cursor) return;
+    prefetchRef.current = { cursor, data: null, promise: null };
     try {
-      const data = await fetchRankedFeedPage({ page, limit: FEED_PAGE_LIMIT });
-      const list = Array.isArray(data) ? data : [];
-      if (prefetchRef.current.page === page) {
-        prefetchRef.current = { page, data: list, promise: null };
+      const response = await fetchRankedFeedPage({ cursor, limit: FEED_PAGE_LIMIT });
+      const normalized = normalizeRankedResponse(response);
+      if (prefetchRef.current.cursor === cursor) {
+        prefetchRef.current = { cursor, data: normalized, promise: null };
       }
     } catch {
-      if (prefetchRef.current.page === page) {
-        prefetchRef.current = { page: null, data: null, promise: null };
+      if (prefetchRef.current.cursor === cursor) {
+        prefetchRef.current = { cursor: "", data: null, promise: null };
       }
     }
-  }, []);
+  }, [canPrefetchRanked]);
 
   const loadRankedPage = useCallback(
     async (page, { replace = false } = {}) => {
@@ -326,12 +489,18 @@ export default function Feed() {
       setRankedLoading(true);
       setRankedError("");
       try {
-        const prefetched = consumePrefetch(page);
-        const data = prefetched
+        const cursorParam = replace ? "" : rankedCursorRef.current || "";
+        const prefetched = consumePrefetch(cursorParam);
+        const params = {
+          limit: FEED_PAGE_LIMIT,
+          ...(cursorParam ? { cursor: cursorParam } : { page: page || 1 }),
+        };
+        const response = prefetched
           ? prefetched
-          : await fetchRankedFeedPage({ page, limit: FEED_PAGE_LIMIT });
-        const list = Array.isArray(data) ? data : [];
-        const basePosts = replace ? [] : rankedPostsRef.current;
+          : await fetchRankedFeedPage(params);
+        const { items: list, nextCursor, hasMore: hasMoreFromBackend } =
+          normalizeRankedResponse(response);
+        const basePosts = rankedPostsRef.current;
         const existingIds = new Set(
           basePosts.map((post) => resolvePostIdentity(post)).filter(Boolean)
         );
@@ -342,15 +511,27 @@ export default function Feed() {
           existingIds.add(id);
           return true;
         });
-        const nextPosts = replace ? uniqueList : [...basePosts, ...uniqueList];
-        const addedCount = uniqueList.length;
+        const nextPosts = replace
+          ? [...uniqueList, ...basePosts]
+          : [...basePosts, ...uniqueList];
+        const shouldPrimeCursor = basePosts.length === 0;
+        const resolvedCursor = nextCursor || resolveCursorValue(list[list.length - 1]);
+        if ((shouldPrimeCursor || !replace) && resolvedCursor) {
+          rankedCursorRef.current = resolvedCursor;
+        }
         rankedPostsRef.current = nextPosts;
         setRankedPosts(nextPosts);
-        const canLoadMore = addedCount > 0 && list.length >= FEED_PAGE_LIMIT;
-        setRankedHasMore(canLoadMore);
+        writeFeedSnapshot(nextPosts);
+        const canLoadMore =
+          typeof hasMoreFromBackend === "boolean"
+            ? hasMoreFromBackend
+            : list.length >= FEED_PAGE_LIMIT;
+        if (!replace || shouldPrimeCursor) {
+          setRankedHasMore(canLoadMore);
+        }
         setRankedPage(page);
-        if (canLoadMore) {
-          prefetchPage(page + 1);
+        if (canLoadMore && resolvedCursor && (!replace || shouldPrimeCursor)) {
+          prefetchPage(resolvedCursor);
         }
       } catch (error) {
         setRankedError(error?.message || "Unable to load feed.");
@@ -398,14 +579,23 @@ export default function Feed() {
 
   useEffect(() => {
     if (shouldFilterByCollege) return;
-    setRankedPosts([]);
-    setRankedPage(1);
-    setRankedHasMore(true);
-    setRankedError("");
-    prefetchRef.current = { page: null, data: null, promise: null };
-    rankedPostsRef.current = [];
-    rankedLoadingRef.current = false;
-    loadRankedPage(1, { replace: true });
+    const hasExisting = rankedPostsRef.current.length > 0;
+    if (!hasExisting) {
+      const snapshot = readFeedSnapshot();
+      if (snapshot && snapshot.length) {
+        setRankedPosts(snapshot);
+      } else {
+        setRankedPosts([]);
+      }
+      setRankedPage(1);
+      setRankedHasMore(true);
+      setRankedError("");
+      prefetchRef.current = { cursor: "", data: null, promise: null };
+      rankedPostsRef.current = [];
+      rankedLoadingRef.current = false;
+      rankedCursorRef.current = "";
+    }
+    loadRankedPage(1, { replace: !hasExisting });
   }, [shouldFilterByCollege, loadRankedPage]);
 
   const scopedPosts = useMemo(() => {
@@ -618,17 +808,38 @@ export default function Feed() {
   const activePage = feedCursor.key === feedKey ? feedCursor.page : 0;
   const visibleCount = 8 + activePage * 6;
   const showSkeletons = shouldFilterByCollege
-    ? loading && finalFeedPosts.length === 0
-    : rankedLoading && finalFeedPosts.length === 0 && !rankedError;
+    ? (loading || feedBooting) && finalFeedPosts.length === 0
+    : (rankedLoading || feedBooting) && finalFeedPosts.length === 0 && !rankedError;
   const hasMore = shouldFilterByCollege
     ? visibleCount < finalFeedPosts.length
     : rankedHasMore;
+  const showLoadMoreSkeletons =
+    !shouldFilterByCollege && rankedLoading && finalFeedPosts.length > 0 && hasMore;
   const displayedPosts = shouldFilterByCollege
     ? finalFeedPosts.slice(0, visibleCount)
     : finalFeedPosts;
   const showRankedError =
-    !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0;
+    !shouldFilterByCollege && rankedError && finalFeedPosts.length === 0 && !feedBooting;
+  const showEmptyState =
+    finalFeedPosts.length === 0 && !showSkeletons && !showRankedError && !feedBooting;
   const postParam = (searchParams.get("post") || "").trim();
+  const trendingSidebarItems = useMemo(() => {
+    if (!finalFeedPosts.length) return [];
+    const entries = finalFeedPosts
+      .map((post, index) => {
+        const id = resolvePostId(post, index);
+        if (!id) return null;
+        return {
+          id,
+          post,
+          score: getEngagementScore(post),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6);
+    return entries;
+  }, [finalFeedPosts]);
 
   useEffect(() => {
     if (location.state?.sharedPost) {
@@ -667,6 +878,16 @@ export default function Feed() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
+  const handleOpenTrendingPost = useCallback(
+    (postId) => {
+      if (!postId) return;
+      const next = new URLSearchParams(searchParams);
+      next.set("post", String(postId));
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
+
   useEffect(() => {
     const latestId = finalFeedPosts.length
       ? resolvePostIdentity(finalFeedPosts[0]) || ""
@@ -675,6 +896,15 @@ export default function Feed() {
       latestPostRef.current = latestId;
     }
   }, [finalFeedPosts]);
+
+  useEffect(() => {
+    if (!feedBooting) return;
+    if (shouldFilterByCollege) {
+      if (!loading) setFeedBooting(false);
+      return;
+    }
+    if (!rankedLoading) setFeedBooting(false);
+  }, [feedBooting, shouldFilterByCollege, loading, rankedLoading]);
 
   const [windowStart, setWindowStart] = useState(0);
   const [estimatedItemHeight, setEstimatedItemHeight] = useState(FEED_ESTIMATED_ITEM_HEIGHT);
@@ -706,14 +936,25 @@ export default function Feed() {
   );
 
   const maxWindowStart = Math.max(0, displayedPosts.length - FEED_WINDOW_SIZE);
-  const windowEnd = Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length);
+  const shouldWindow = useMemo(() => {
+    if (displayedPosts.length <= FEED_WINDOW_SIZE * 2) return false;
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(min-width: 1024px)").matches;
+  }, [displayedPosts.length]);
+  const windowEnd = shouldWindow
+    ? Math.min(windowStart + FEED_WINDOW_SIZE, displayedPosts.length)
+    : displayedPosts.length;
   const windowedPosts = useMemo(
-    () => displayedPosts.slice(windowStart, windowEnd),
-    [displayedPosts, windowStart, windowEnd]
+    () => (shouldWindow ? displayedPosts.slice(windowStart, windowEnd) : displayedPosts),
+    [displayedPosts, windowStart, windowEnd, shouldWindow]
   );
-  const topSpacerHeight = windowStart * estimatedItemHeight;
-  const bottomSpacerHeight =
-    Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight;
+  const topSpacerHeight = shouldWindow ? windowStart * estimatedItemHeight : 0;
+  const bottomSpacerHeight = shouldWindow
+    ? Math.max(0, displayedPosts.length - windowEnd) * estimatedItemHeight
+    : 0;
+  const effectiveBottomSpacerHeight = showLoadMoreSkeletons
+    ? Math.min(bottomSpacerHeight, estimatedItemHeight * 2)
+    : bottomSpacerHeight;
 
   const renderedWindowedPosts = useMemo(() => {
     return windowedPosts.map((post, index) => {
@@ -766,6 +1007,22 @@ export default function Feed() {
   }, [maxWindowStart, windowStart]);
 
   useEffect(() => {
+    if (shouldFilterByCollege) return;
+    if (rankedLoading || !rankedHasMore) return;
+    const remaining = displayedPosts.length - windowEnd;
+    if (remaining <= FEED_PREFETCH_THRESHOLD) {
+      loadMoreRanked();
+    }
+  }, [
+    shouldFilterByCollege,
+    rankedLoading,
+    rankedHasMore,
+    displayedPosts.length,
+    windowEnd,
+    loadMoreRanked,
+  ]);
+
+  useEffect(() => {
     setWindowStart(0);
     windowStartRef.current = 0;
     heightMapRef.current.clear();
@@ -800,24 +1057,12 @@ export default function Feed() {
   );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const prev = windowStartRef.current;
-    if (prev === windowStart) return;
-    const delta = (windowStart - prev) * estimatedItemHeight;
-    const scrollEl = resolveScrollElement();
-    if (scrollEl && Number.isFinite(delta) && delta !== 0) {
-      const docEl = document.scrollingElement || document.documentElement;
-      if (scrollEl === docEl || scrollEl === document.body) {
-        docEl.scrollTop += delta;
-      } else {
-        scrollEl.scrollTop += delta;
-      }
-    }
     windowStartRef.current = windowStart;
-  }, [windowStart, estimatedItemHeight, resolveScrollElement]);
+  }, [windowStart]);
 
   const handleWindowScroll = useCallback(
     (event) => {
+      if (!shouldWindow) return;
       if (scrollRafRef.current) return;
       scrollRafRef.current = window.requestAnimationFrame(() => {
         scrollRafRef.current = null;
@@ -827,17 +1072,27 @@ export default function Feed() {
             : null;
         const metrics = getScrollMetrics(target);
         if (!metrics) return;
-        const { scrollTop, scrollHeight, clientHeight } = metrics;
-        const nearBottom = scrollTop + clientHeight >= scrollHeight - FEED_SCROLL_EDGE;
-        const nearTop = scrollTop <= FEED_SCROLL_EDGE;
-        if (nearBottom && windowEnd < displayedPosts.length) {
-          setWindowStart((prev) => Math.min(prev + FEED_WINDOW_STEP, maxWindowStart));
-        } else if (nearTop && windowStart > 0) {
-          setWindowStart((prev) => Math.max(prev - FEED_WINDOW_STEP, 0));
+        const { scrollTop } = metrics;
+        const approxIndex = Math.floor(
+          scrollTop / Math.max(estimatedItemHeight, 1)
+        );
+        const buffer = Math.max(4, Math.floor(FEED_WINDOW_SIZE / 3));
+        const nextStart = Math.min(
+          maxWindowStart,
+          Math.max(0, approxIndex - buffer)
+        );
+        if (nextStart !== windowStart) {
+          setWindowStart(nextStart);
         }
       });
     },
-    [getScrollMetrics, windowEnd, displayedPosts.length, maxWindowStart, windowStart]
+    [
+      getScrollMetrics,
+      shouldWindow,
+      estimatedItemHeight,
+      maxWindowStart,
+      windowStart,
+    ]
   );
 
   useEffect(() => {
@@ -869,7 +1124,7 @@ export default function Feed() {
           loadMoreRanked();
         }
       },
-      { rootMargin: "200px" }
+      { rootMargin: "600px" }
     );
     observer.observe(loadMoreRef.current);
     return () => observer.disconnect();
@@ -901,54 +1156,116 @@ export default function Feed() {
       id="feed-view"
       ref={feedViewRef}
       onScroll={handleWindowScroll}
-      className="min-h-screen flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
+      className="min-h-[100dvh] flex flex-col pb-24 sm:pb-6 sm:h-[100dvh] sm:overflow-y-auto sm:overscroll-contain"
     >
       <Header />
       <main
         id="feed"
         ref={feedMainRef}
         onScroll={handleWindowScroll}
-        className="max-w-6xl mx-auto w-full py-6 px-4 sm:px-6 lg:px-8 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"
+        className="w-full py-4 sm:py-6 lg:py-4 px-3 sm:px-4 lg:px-0 sm:flex-1 sm:min-h-0 sm:overflow-y-auto sm:overscroll-contain"
       >
-        <div className="mb-6 space-y-4">
-          <div className="flex flex-col gap-2">
-            <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
-              {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
-            </p>
-            {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
-              <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
-                🔥 Trending
-              </span>
-            )}
-            {feedScope === "college" && !campusLabel && (
-              <p className="text-sm text-[#b9b4c7]">
-                Set your university to filter your feed. Showing all posts for now.
-              </p>
-            )}
-          </div>
-          {newPostsAvailable && (
-            <button
-              type="button"
-              onClick={handleRefreshFeed}
-              className="glass-card border border-sky-400/30 bg-sky-400/10 text-sky-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit"
+        <div className="mx-auto w-full max-w-6xl lg:max-w-screen-2xl flex flex-col lg:flex-row lg:justify-center lg:gap-6 lg:px-6">
+          <aside className="hidden lg:block lg:w-[260px] xl:w-[280px] lg:sticky lg:top-24 h-fit self-start">
+            <TrendingSidebar
+              items={trendingSidebarItems}
+              onOpenPost={handleOpenTrendingPost}
+            />
+          </aside>
+
+          <div className="w-full lg:w-[720px] xl:w-[760px] flex-shrink-0">
+            <div className="mb-4 lg:mb-2 space-y-3 lg:space-y-2">
+              <div className="flex flex-col gap-2">
+                <p className="text-xs uppercase tracking-[0.25em] text-[#b9b4c7]">
+                  {feedScope === "college" ? "🏫 Your Campus Feed" : "🌍 Campus Network"}
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  {!shouldFilterByCollege && universalFeedMeta.trendingIds.size > 0 && (
+                    <span className="inline-flex w-fit items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[10px] text-amber-200">
+                      🔥 Trending
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => navigate("/inbuzz")}
+                    className="inline-flex w-fit items-center gap-1 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-[#faf0e6] hover:bg-white/10"
+                  >
+                    <span>🎬</span>
+                    <span>InBuzz</span>
+                  </button>
+                </div>
+                {feedScope === "college" && !campusLabel && (
+                  <p className="text-sm text-[#b9b4c7]">
+                    Set your university to filter your feed. Showing all posts for now.
+                  </p>
+                )}
+              </div>
+              {newPostsAvailable && (
+                <button
+                  type="button"
+                  onClick={handleRefreshFeed}
+                  className="glass-card border border-sky-400/30 bg-sky-400/10 text-sky-100 px-4 py-2 rounded-2xl text-sm font-semibold w-fit"
+                >
+                  New posts available ↑ Tap to refresh
+                </button>
+              )}
+            </div>
+
+            <section className="space-y-4 lg:space-y-2">
+              <div className="hidden sm:block">
+                <PostCreator />
+              </div>
+              <StoryBar />
+              <FeedInBuzzStrip reels={visibleInBuzzReels} loading={inBuzzLoading} />
+
+      {showSkeletons ? (
+        <div className="space-y-4 lg:space-y-2">
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
             >
-              New posts available ↑ Tap to refresh
-            </button>
-          )}
+                      <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
+                      <div className="h-28 bg-white/10 rounded mb-4"></div>
+                      <div className="h-4 bg-white/10 rounded w-1/2"></div>
+                    </div>
+                  ))}
+                </div>
+      ) : showRankedError ? (
+        <div className="text-center py-12 glass-card rounded-3xl">
+          <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
+          <p className="text-[#b9b4c7]">{rankedError}</p>
         </div>
-
-        <section className="space-y-6">
-          <div className="hidden sm:block">
-            <PostCreator />
-          </div>
-          <StoryBar />
-
-          {showSkeletons ? (
-            <div className="space-y-6">
-              {[1, 2, 3].map((i) => (
+      ) : showEmptyState ? (
+                <div className="text-center py-12 glass-card rounded-3xl">
+                  <i className="fa-solid fa-inbox text-3xl text-[#b9b4c7] mb-3"></i>
+                  <p className="text-[#b9b4c7]">
+                    No posts yet. Be the first to share!
+                  </p>
+                </div>
+              ) : (
+        <div className="space-y-4 lg:space-y-2">
+          {topSpacerHeight > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${topSpacerHeight}px` }}
+            />
+          )}
+          {renderedWindowedPosts}
+          {hasMore && (
+            <div
+              ref={loadMoreRef}
+              className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
+            >
+              Loading more...
+            </div>
+          )}
+          {showLoadMoreSkeletons && (
+            <div className="space-y-4 lg:space-y-2">
+              {[1, 2].map((i) => (
                 <div
-                  key={i}
-                  className="glass-card rounded-3xl p-6 animate-pulse"
+                  key={`feed-loading-${i}`}
+                  className="glass-card rounded-3xl p-6 lg:p-4 animate-pulse"
                 >
                   <div className="h-4 bg-white/10 rounded w-3/4 mb-4"></div>
                   <div className="h-28 bg-white/10 rounded mb-4"></div>
@@ -956,54 +1273,32 @@ export default function Feed() {
                 </div>
               ))}
             </div>
-          ) : showRankedError ? (
-            <div className="text-center py-12 glass-card rounded-3xl">
-              <i className="fa-solid fa-triangle-exclamation text-3xl text-[#b9b4c7] mb-3"></i>
-              <p className="text-[#b9b4c7]">{rankedError}</p>
-            </div>
-          ) : finalFeedPosts.length === 0 ? (
-            <div className="text-center py-12 glass-card rounded-3xl">
-              <i className="fa-solid fa-inbox text-3xl text-[#b9b4c7] mb-3"></i>
-              <p className="text-[#b9b4c7]">
-                No posts yet. Be the first to share!
-              </p>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {topSpacerHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{ height: `${topSpacerHeight}px` }}
-                />
-              )}
-              {renderedWindowedPosts}
-              {bottomSpacerHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  style={{ height: `${bottomSpacerHeight}px` }}
-                />
-              )}
-              {hasMore && (
-                <div
-                  ref={loadMoreRef}
-                  className="h-10 flex items-center justify-center text-xs text-[#b9b4c7]"
-                >
-                  Loading more...
+          )}
+          {bottomSpacerHeight > 0 && (
+            <div
+              aria-hidden="true"
+              style={{ height: `${effectiveBottomSpacerHeight}px` }}
+            />
+          )}
                 </div>
               )}
-            </div>
-          )}
-        </section>
+            </section>
+          </div>
+
+          <aside className="hidden lg:block lg:w-[320px] xl:w-[340px] lg:sticky lg:top-24 h-fit self-start">
+            <ChatSidebar />
+          </aside>
+        </div>
       </main>
       <Motion.button
         type="button"
-        onClick={() => setShowCreateModal(true)}
+        onClick={() => setShowCreateMenu(true)}
         whileHover={{ scale: 1.05 }}
         whileTap={{ scale: 0.95 }}
         className={`hidden sm:flex fixed bottom-6 right-6 z-40 create-fab liquid-button h-14 w-14 items-center justify-center text-[#faf0e6] ${
-          showCreateModal ? "opacity-0 pointer-events-none" : ""
+          showCreateModal || showCreateMenu ? "opacity-0 pointer-events-none" : ""
         }`}
-        aria-label="Create post"
+        aria-label="Create"
       >
         <i className="fa-solid fa-plus text-lg"></i>
       </Motion.button>
@@ -1016,7 +1311,28 @@ export default function Feed() {
         />
       )}
       <CreatePostModal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} />
-      <BottomNav onCreate={() => setShowCreateModal(true)} overlay={showCreateModal} />
+      <CreateMenu
+        isOpen={showCreateMenu}
+        onClose={() => setShowCreateMenu(false)}
+        onCreatePost={() => {
+          setShowCreateMenu(false);
+          setShowCreateModal(true);
+        }}
+        onCreateStory={() => {
+          setShowCreateMenu(false);
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new Event("incampus:createStory"));
+          }
+        }}
+        onCreateInBuzz={() => {
+          setShowCreateMenu(false);
+          navigate("/create/inbuzz");
+        }}
+      />
+      <BottomNav
+        onCreate={() => setShowCreateMenu(true)}
+        overlay={showCreateModal || showCreateMenu}
+      />
     </div>
   );
 }

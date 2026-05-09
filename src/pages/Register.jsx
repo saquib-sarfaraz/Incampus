@@ -5,15 +5,38 @@ import ReCAPTCHA from "react-google-recaptcha";
 import { register as registerAPI, searchColleges } from "../services/api";
 import { useAuth } from "../context/authContext";
 
+const API_BASE_URL = import.meta.env.VITE_API_URL || "/api";
+
+const getGoogleAuthUrl = () => {
+  const base = API_BASE_URL.endsWith("/") ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+  return `${base}/auth/google`;
+};
+
+const ROLE_OPTIONS = [
+  {
+    key: "student",
+    label: "Current Student",
+  },
+  {
+    key: "alumni",
+    label: "Alumni",
+  },
+  {
+    key: "community",
+    label: "Community / Club",
+  },
+];
+
 export default function Register() {
   const navigate = useNavigate();
   const { login } = useAuth();
+  const [accountType, setAccountType] = useState(null);
   const [formData, setFormData] = useState({
     email: "",
     password: "",
     fullName: "",
     username: "",
-    userType: "student",
+    userType: "",
     university: "",
     course: "",
     graduationYear: "",
@@ -134,6 +157,9 @@ export default function Register() {
       const parsed = JSON.parse(raw);
       if (parsed?.formData) {
         setFormData((prev) => ({ ...prev, ...parsed.formData }));
+        if (parsed.formData.userType) {
+          setAccountType(parsed.formData.userType);
+        }
       }
       if (parsed?.step) {
         setStep(parsed.step);
@@ -150,7 +176,7 @@ export default function Register() {
 
   useEffect(() => {
     setError("");
-  }, [step, formData.userType]);
+  }, [step, formData.userType, accountType]);
 
   useEffect(() => {
     const nextType = formData.userType;
@@ -186,6 +212,14 @@ export default function Register() {
     setPasswordStrength(calculatePasswordStrength(formData.password));
   }, [formData.password]);
 
+  const handleRoleSelect = (value) => {
+    setAccountType(value);
+    setFormData((prev) => ({ ...prev, userType: value }));
+  };
+
+  const handleGoogleRegister = () => {
+    window.location.href = getGoogleAuthUrl();
+  };
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -236,9 +270,10 @@ export default function Register() {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
   };
 
-  const isStudent = formData.userType === "student";
-  const isAlumni = formData.userType === "alumni";
-  const isCommunity = formData.userType === "community";
+  const activeAccountType = accountType || formData.userType;
+  const isStudent = activeAccountType === "student";
+  const isAlumni = activeAccountType === "alumni";
+  const isCommunity = activeAccountType === "community";
 
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear();
@@ -279,6 +314,10 @@ export default function Register() {
   };
 
   const validateStepOne = () => {
+    if (!activeAccountType) {
+      setError("Please select how you are joining.");
+      return false;
+    }
     const emailValue = normalizeEmail(formData.email);
     const fullNameValue = normalizeText(formData.fullName);
     const usernameValue = resolveUsername();
@@ -384,7 +423,7 @@ export default function Register() {
         password: formData.password,
         fullName: fullNameValue,
         username,
-        userType: formData.userType,
+        userType: activeAccountType,
         studentType: formData.studentType,
         student_type: formData.studentType,
         recaptchaToken: disableRecaptcha ? undefined : captchaValue,
@@ -511,30 +550,52 @@ export default function Register() {
             {step === 1 && (
               <>
                 <div className="space-y-2">
-                  <label className="block text-xs font-semibold uppercase tracking-wide text-[#b9b4c7]">
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-[var(--text-secondary)]">
                     I am joining as
                   </label>
-                  <div className="flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-white/5 p-2">
-                    {[
-                      { key: "student", label: "Current Student" },
-                      { key: "alumni", label: "Alumni" },
-                      { key: "community", label: "Community / Club" },
-                    ].map((option) => (
-                      <button
-                        key={option.key}
-                        type="button"
-                        onClick={() =>
-                          setFormData((prev) => ({ ...prev, userType: option.key }))
-                        }
-                        className={`flex-1 rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
-                          formData.userType === option.key
-                            ? "liquid-button text-[#faf0e6]"
-                            : "text-[#b9b4c7] hover:text-[#faf0e6]"
-                        }`}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
+                  <div className="flex flex-nowrap gap-2 rounded-2xl border border-white/10 bg-white/5 p-2 overflow-x-auto">
+                    {ROLE_OPTIONS.map((option) => {
+                      const isSelected = activeAccountType === option.key;
+                      return (
+                        <button
+                          key={option.key}
+                          type="button"
+                          onClick={() => handleRoleSelect(option.key)}
+                          aria-pressed={isSelected}
+                          className={`flex-1 whitespace-nowrap rounded-xl px-2.5 py-2 text-[11px] font-semibold transition-all ${
+                            isSelected
+                              ? "text-[var(--text-primary)] border border-[color:var(--accent-primary)] bg-[var(--surface-glass)]"
+                              : "text-[var(--text-secondary)] border border-transparent bg-[var(--surface-glass)] opacity-[0.9] hover:text-[var(--text-primary)] hover:border-[color:var(--accent-primary)]"
+                          }`}
+                          style={
+                            isSelected
+                              ? { boxShadow: "0 0 6px rgba(92, 84, 112, 0.45)" }
+                              : undefined
+                          }
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <Motion.button
+                    type="button"
+                    onClick={handleGoogleRegister}
+                    className="w-full inline-flex items-center justify-center gap-2 rounded-xl border border-[color:var(--border-glass)] bg-[var(--surface-glass)] px-4 py-2.5 text-sm font-semibold text-[var(--text-primary)] transition-all hover:border-[color:var(--accent-primary)] hover:shadow-[0_0_8px_rgba(92,84,112,0.45)]"
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                  >
+                    <i className="fa-brands fa-google text-sm"></i>
+                    Continue with Google
+                  </Motion.button>
+
+                  <div className="flex items-center gap-3 text-[11px] text-[var(--text-secondary)]">
+                    <span className="h-px flex-1 bg-white/10" />
+                    or continue with email
+                    <span className="h-px flex-1 bg-white/10" />
                   </div>
                 </div>
 
@@ -956,7 +1017,7 @@ export default function Register() {
               ) : (
                 <Motion.button
                   type="submit"
-                  disabled={loading}
+                  disabled={loading || !activeAccountType}
                   className="flex-1 inline-flex items-center justify-center gap-2 rounded-xl liquid-button px-4 py-2.5 text-sm font-semibold text-[#faf0e6] transition-all disabled:opacity-70 disabled:cursor-not-allowed"
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}

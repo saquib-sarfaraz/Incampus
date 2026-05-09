@@ -1,20 +1,18 @@
-import { Suspense, lazy, useEffect } from "react";
+import { Suspense, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider } from "./context/AuthProvider";
 import { AppProvider } from "./context/AppContext";
 import ProtectedRoute from "./components/common/ProtectedRoute";
 import PageLoader from "./components/common/PageLoader";
+import RootTabs from "./components/common/RootTabs";
+import { preloadChatPage } from "./utils/preloadRoutes";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import Landing from "./pages/Landing";
 import AuthSuccess from "./pages/AuthSuccess";
 import CollegeSetup from "./pages/CollegeSetup";
-import Feed from "./pages/Feed";
-import { preloadChatPage } from "./utils/preloadRoutes";
-
-const Chat = lazy(preloadChatPage);
-const Profile = lazy(() => import("./pages/Profile"));
-const Trending = lazy(() => import("./pages/Trending"));
+import CreateInBuzz from "./pages/CreateInBuzz";
+import InstallBanner from "./components/InstallBanner";
 
 export default function App() {
   useEffect(() => {
@@ -61,48 +59,36 @@ export default function App() {
                 }
               />
               <Route
-                path="/feed"
                 element={
                   <ProtectedRoute>
-                    <Feed />
+                    <RootTabs />
                   </ProtectedRoute>
                 }
-              />
+              >
+                <Route path="/feed" element={<div />} />
+                <Route path="/home" element={<div />} />
+                <Route path="/trending" element={<div />} />
+                <Route path="/chat" element={<div />} />
+                <Route path="/chat/:chatId" element={<div />} />
+                <Route path="/notifications" element={<div />} />
+                <Route path="/inbuzz" element={<div />} />
+                <Route path="/inbuzz/reel/:reelId" element={<div />} />
+                <Route path="/inbuzz/:reelId" element={<div />} />
+                <Route path="/profile" element={<div />} />
+                <Route path="/profile/:userId" element={<div />} />
+              </Route>
               <Route
-                path="/home"
+                path="/create/inbuzz"
                 element={
                   <ProtectedRoute>
-                    <Feed />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/chat"
-                element={
-                  <ProtectedRoute>
-                    <Chat />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/trending"
-                element={
-                  <ProtectedRoute>
-                    <Trending />
-                  </ProtectedRoute>
-                }
-              />
-              <Route
-                path="/profile"
-                element={
-                  <ProtectedRoute>
-                    <Profile />
+                    <CreateInBuzz />
                   </ProtectedRoute>
                 }
               />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
+          <InstallBanner />
         </AppProvider>
       </AuthProvider>
     </Router>

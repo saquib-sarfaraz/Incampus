@@ -1,3 +1,5 @@
+import { normalizeInBuzzList, normalizeInBuzzReel } from "../utils/inbuzz";
+
 const normalizeBaseUrl = (base) => {
   if (!base) return "";
   return base.endsWith("/") ? base.slice(0, -1) : base;
@@ -9,7 +11,20 @@ const API_PREFIX = "/api";
 const IS_DEV = import.meta.env.DEV;
 const RAW_API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || "";
-const API_BASE_URL = normalizeBaseUrl(RAW_API_BASE_URL) || API_PREFIX;
+const resolveApiBaseUrl = (raw) => {
+  const base = normalizeBaseUrl(raw);
+  if (!IS_DEV) return base || API_PREFIX;
+
+  // In dev, prefer the Vite `/api` proxy when env points at localhost.
+  // This avoids CORS issues and also works when testing from a phone via LAN IP.
+  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api$/i.test(base)) {
+    return API_PREFIX;
+  }
+
+  return base || API_PREFIX;
+};
+
+const API_BASE_URL = resolveApiBaseUrl(RAW_API_BASE_URL);
 const API_BASE_HAS_PREFIX = API_BASE_URL.endsWith(API_PREFIX);
 const RAW_COLLEGES_API_URL =
   import.meta.env.VITE_COLLEGES_API_URL || import.meta.env.COLLEGES_API_URL || "";
@@ -170,6 +185,13 @@ const apiFetch = async (path, options = {}) => {
   }
 
   try {
+    const resolvedCache =
+      cache !== undefined
+        ? cache
+        : method.toUpperCase() === "GET"
+          ? "no-store"
+          : undefined;
+
     const res = await fetch(buildUrl(path, params), {
       method,
       headers: finalHeaders,
@@ -180,7 +202,7 @@ const apiFetch = async (path, options = {}) => {
             ? body
             : JSON.stringify(body),
       signal,
-      cache,
+      cache: resolvedCache,
     });
 
     const data = await parseResponse(res);
@@ -218,7 +240,13 @@ const apiFetchWithFallback = async (paths, options = {}) => {
       return await apiFetch(path, options);
     } catch (error) {
       lastError = error;
-      if (error?.status && error.status !== 404) {
+      const status = error?.status;
+      // Only fallback on "route missing" style errors.
+      // Network errors or real server errors should surface immediately.
+      if (!status) {
+        throw error;
+      }
+      if (![404, 405].includes(status)) {
         throw error;
       }
     }
@@ -235,10 +263,58 @@ const normalizeList = (data, keys = []) => {
   return [];
 };
 
+const extractInBuzzList = (data) => {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.reels)) return data.reels;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.data)) return data.data;
+  if (Array.isArray(data?.data?.reels)) return data.data.reels;
+  if (Array.isArray(data?.data?.items)) return data.data.items;
+  if (Array.isArray(data?.data?.data)) return data.data.data;
+  return [];
+};
+
+const extractInBuzzItem = (data) => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  if (data.reel && typeof data.reel === "object") return data.reel;
+  if (data.item && typeof data.item === "object") return data.item;
+  const nested = data.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    if (nested.reel && typeof nested.reel === "object") return nested.reel;
+    if (nested.item && typeof nested.item === "object") return nested.item;
+    return nested;
+  }
+  return data;
+};
+
 const userRequestCache = new Map();
+const userProfileBundleCache = new Map();
+const userProfileBundleRequestCache = new Map();
+const USER_PROFILE_BUNDLE_TTL_MS = 60 * 1000;
+const USER_PROFILE_BUNDLE_CACHE_LIMIT = 50;
 let cachedPostCommentsEndpointMissing = false;
 let cachedFriendCountEndpointMissing = false;
 let cachedFriendListEndpointMissing = false;
+
+const getCachedProfileBundle = (cacheKey) => {
+  const entry = userProfileBundleCache.get(cacheKey);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > USER_PROFILE_BUNDLE_TTL_MS) {
+    userProfileBundleCache.delete(cacheKey);
+    return null;
+  }
+  return entry.data;
+};
+
+const setCachedProfileBundle = (cacheKey, data) => {
+  if (!data) return;
+  userProfileBundleCache.set(cacheKey, { data, ts: Date.now() });
+  if (userProfileBundleCache.size > USER_PROFILE_BUNDLE_CACHE_LIMIT) {
+    const oldestKey = userProfileBundleCache.keys().next().value;
+    if (oldestKey) userProfileBundleCache.delete(oldestKey);
+  }
+};
 
 // Auth APIs
 export const login = async (username, password) => {
@@ -304,10 +380,28 @@ export const resetPassword = async (tokenOrPayload, password) => {
   });
 };
 
+const normalizeUser = (user) => {
+  if (!user || typeof user !== "object") return user;
+  const resolvedAvatar =
+    user.profilePicUrl ||
+    user.profilePic ||
+    user.avatarUrl ||
+    user.avatar ||
+    user.photoUrl ||
+    user.photo ||
+    user.imageUrl ||
+    user.image ||
+    "";
+  if (resolvedAvatar && !user.profilePicUrl) {
+    return { ...user, profilePicUrl: resolvedAvatar };
+  }
+  return user;
+};
+
 // User APIs
 export const getCurrentUser = async () => {
   const data = await apiFetch("/users/me");
-  return data?.user || data;
+  return normalizeUser(data?.user || data);
 };
 
 export const getUserById = async (userId) => {
@@ -320,7 +414,17 @@ export const getUserById = async (userId) => {
   const request = (async () => {
     try {
       const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
-      return data?.user || data;
+      const resolved =
+        (
+        data?.user ||
+        data?.profile ||
+        data?.data?.user ||
+        data?.data?.profile ||
+        data?.data?.item ||
+        data?.item ||
+        data
+        );
+      return normalizeUser(resolved);
     } catch (_error) {
       void _error;
       return null;
@@ -332,6 +436,125 @@ export const getUserById = async (userId) => {
     return await request;
   } finally {
     userRequestCache.delete(cacheKey);
+  }
+};
+
+export const getUserProfileBundle = async (userId) => {
+  if (!userId) return null;
+  const cacheKey = String(userId);
+  const cached = getCachedProfileBundle(cacheKey);
+  if (cached) return cached;
+  if (userProfileBundleRequestCache.has(cacheKey)) {
+    return userProfileBundleRequestCache.get(cacheKey);
+  }
+
+  const request = (async () => {
+    try {
+      const data = await apiFetch(`/users/${encodeURIComponent(userId)}`);
+      const user = normalizeUser(
+        data?.user ||
+          data?.profile ||
+          data?.data?.user ||
+          data?.data?.profile ||
+          data?.data?.item ||
+          data?.item ||
+          data
+      );
+      const publicPosts =
+        data?.publicPosts ||
+        data?.public_posts ||
+        data?.posts ||
+        data?.data?.publicPosts ||
+        data?.data?.posts ||
+        [];
+      const publicPostsCount =
+        data?.publicPostsCount ||
+        data?.publicPostCount ||
+        data?.public_posts_count ||
+        (Array.isArray(publicPosts) ? publicPosts.length : 0);
+      const bundle = {
+        user,
+        publicPosts: Array.isArray(publicPosts) ? publicPosts : [],
+        publicPostsCount,
+        raw: data,
+      };
+      setCachedProfileBundle(cacheKey, bundle);
+      return bundle;
+    } catch (_error) {
+      void _error;
+      return null;
+    }
+  })();
+
+  userProfileBundleRequestCache.set(cacheKey, request);
+  try {
+    return await request;
+  } finally {
+    userProfileBundleRequestCache.delete(cacheKey);
+  }
+};
+
+export const getUserPublicPosts = async (userId, params = {}) => {
+  if (!userId) return null;
+  const resolveId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") {
+      const raw = String(value).trim();
+      if (!raw) return "";
+      if (raw.includes("[object Object]")) return "";
+      const lowered = raw.toLowerCase();
+      if (lowered === "undefined" || lowered === "null") return "";
+      return raw;
+    }
+    if (typeof value === "object") {
+      if (value.$oid) return String(value.$oid);
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.profileId ||
+        value.profile_id ||
+        "";
+      if (nested) return resolveId(nested);
+    }
+    return "";
+  };
+  const resolvedId = resolveId(userId);
+  if (!resolvedId) return null;
+  const safeId = encodeURIComponent(resolvedId);
+  return apiFetch(`/users/${safeId}/public`, { params });
+};
+
+export const registerPushToken = async (token, meta = {}) => {
+  if (!token) return null;
+  const body = {
+    token,
+    fcmToken: token,
+    fcm_token: token,
+    deviceType: meta.deviceType || "web",
+    device_type: meta.device_type || meta.deviceType || "web",
+    platform: meta.platform || "web",
+    ...meta,
+  };
+
+  const paths = [
+    "/push/register",
+    "/push/token",
+    "/push/subscribe",
+    "/notifications/register-device",
+    "/notifications/register_device",
+    "/notifications/register",
+  ];
+
+  try {
+    return await apiFetchWithFallback(paths, {
+      method: "POST",
+      body,
+    });
+  } catch (error) {
+    void error;
+    return null;
   }
 };
 
@@ -549,6 +772,199 @@ export const autoAssignGroups = async (payload) => {
   });
 };
 
+export const createGroup = async (payload = {}, imageFile) => {
+  if (!payload) return null;
+  const baseName =
+    payload.name ||
+    payload.title ||
+    payload.groupName ||
+    payload.group_name ||
+    payload.displayName ||
+    payload.display_name ||
+    "";
+  const baseDescription =
+    payload.description ||
+    payload.about ||
+    payload.bio ||
+    payload.summary ||
+    payload.details ||
+    "";
+  const visibility =
+    payload.visibility ||
+    payload.privacy ||
+    payload.access ||
+    payload.groupVisibility ||
+    "";
+  const body = {
+    ...payload,
+    ...(baseName
+      ? {
+          name: baseName,
+          title: baseName,
+          groupName: baseName,
+          displayName: baseName,
+        }
+      : {}),
+    ...(baseDescription
+      ? {
+          description: baseDescription,
+          about: baseDescription,
+          bio: baseDescription,
+        }
+      : {}),
+    ...(visibility
+      ? {
+          visibility,
+          privacy: visibility,
+          isPrivate: String(visibility).toLowerCase() === "private",
+          isPublic: String(visibility).toLowerCase() === "public",
+        }
+      : {}),
+  };
+
+  const endpoints = ["/groups/create", "/group/create", "/groups"];
+
+  const sendFormData = async () => {
+    const formData = new FormData();
+    Object.entries(body).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      formData.append(key, value);
+    });
+    if (imageFile) {
+      formData.append("profileImage", imageFile);
+      formData.append("image", imageFile);
+    }
+    return apiFetchWithFallback(endpoints, {
+      method: "POST",
+      body: formData,
+      isFormData: true,
+    });
+  };
+
+  if (imageFile) {
+    return sendFormData();
+  }
+
+  try {
+    return await apiFetchWithFallback(endpoints, {
+      method: "POST",
+      body,
+    });
+  } catch {
+    return sendFormData();
+  }
+};
+
+const safeDecodeParam = (value) => {
+  if (!value) return "";
+  let result = String(value);
+  for (let i = 0; i < 2; i += 1) {
+    try {
+      const decoded = decodeURIComponent(result);
+      if (decoded === result) break;
+      result = decoded;
+    } catch {
+      break;
+    }
+  }
+  return result;
+};
+
+const encodeGroupParam = (value) => encodeURIComponent(safeDecodeParam(value));
+
+export const getGroupDetails = async (groupId) => {
+  if (!groupId) return null;
+  const safeId = safeDecodeParam(groupId);
+  const encodedId = encodeGroupParam(safeId);
+  if (safeId.startsWith("group:college:")) {
+    const collegeGroupId = safeId.replace("group:college:", "");
+    const normalizedCollegeId = collegeGroupId
+      ? collegeGroupId
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "")
+      : "";
+    const encodedCollegeId = encodeGroupParam(normalizedCollegeId || collegeGroupId);
+    return apiFetchWithFallback(
+      [
+        `/groups/college/${encodedCollegeId}`,
+        `/groups/${encodedId}`,
+        `/group/${encodedId}`,
+        `/groups/details/${encodedId}`,
+      ],
+      {}
+    );
+  }
+  return apiFetchWithFallback(
+    [`/groups/${encodedId}`, `/group/${encodedId}`, `/groups/details/${encodedId}`],
+    {}
+  );
+};
+
+export const requestGroupJoin = async (groupId) => {
+  if (!groupId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/request`,
+      `/groups/${encodedId}/join`,
+      `/groups/${encodedId}/join-request`,
+    ],
+    { method: "POST" }
+  );
+};
+
+export const approveGroupJoin = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/approve`,
+      `/groups/${encodedId}/requests/approve`,
+      `/groups/${encodedId}/join/approve`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const rejectGroupJoin = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/reject`,
+      `/groups/${encodedId}/requests/reject`,
+      `/groups/${encodedId}/join/reject`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const removeGroupMember = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/members/remove`,
+      `/groups/${encodedId}/members/${encodeURIComponent(userId)}`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
+export const addGroupMember = async (groupId, userId) => {
+  if (!groupId || !userId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  return apiFetchWithFallback(
+    [
+      `/groups/${encodedId}/members/add`,
+      `/groups/${encodedId}/members`,
+    ],
+    { method: "POST", body: { userId } }
+  );
+};
+
 export const setupCollege = async (payload) => {
   return apiFetch("/users/setup-college", {
     method: "POST",
@@ -567,7 +983,24 @@ export const fetchRankedFeedPage = async (params = {}) => {
     ["/feed/universal", "/posts/feed", "/posts"],
     { params }
   );
-  return normalizeList(data, ["posts", "items", "data"]);
+  const items = normalizeList(data, ["posts", "items", "data"]);
+  if (Array.isArray(data)) {
+    return { items, nextCursor: "", hasMore: undefined };
+  }
+  const nextCursor =
+    data?.nextCursor ||
+    data?.next_cursor ||
+    data?.cursor ||
+    data?.data?.nextCursor ||
+    data?.data?.next_cursor ||
+    "";
+  const hasMore =
+    typeof data?.hasMore === "boolean"
+      ? data.hasMore
+      : typeof data?.data?.hasMore === "boolean"
+        ? data.data.hasMore
+        : undefined;
+  return { items, nextCursor, hasMore };
 };
 
 export const createPost = async (postData, imageFile) => {
@@ -598,6 +1031,9 @@ export const createPost = async (postData, imageFile) => {
   }
   if (postData.collegeTagId) {
     payload.collegeTagId = postData.collegeTagId;
+  }
+  if (postData.aspectRatio) {
+    payload.aspectRatio = postData.aspectRatio;
   }
 
   if (!imageFile) {
@@ -635,6 +1071,9 @@ export const createPost = async (postData, imageFile) => {
   }
   if (payload.collegeTagId) {
     formData.append("collegeTagId", payload.collegeTagId);
+  }
+  if (payload.aspectRatio) {
+    formData.append("aspectRatio", payload.aspectRatio);
   }
   formData.append("image", imageFile);
 
@@ -742,6 +1181,359 @@ export const fetchStories = async (params) => {
   return normalizeList(data, ["stories", "items", "data"]);
 };
 
+// InBuzz APIs
+export const fetchInBuzzFeed = async (params = {}) => {
+  const data = await apiFetchWithFallback(
+    ["/inbuzz/feed", "/inbuzz/reels", "/inbuzz"],
+    { params }
+  );
+  const items = normalizeInBuzzList(extractInBuzzList(data));
+  if (Array.isArray(data)) {
+    return { items, nextCursor: "", hasMore: undefined };
+  }
+  const nextCursor =
+    data?.nextCursor ||
+    data?.next_cursor ||
+    data?.cursor ||
+    data?.data?.nextCursor ||
+    data?.data?.next_cursor ||
+    "";
+  const hasMore =
+    typeof data?.hasMore === "boolean"
+      ? data.hasMore
+      : typeof data?.data?.hasMore === "boolean"
+        ? data.data.hasMore
+        : undefined;
+  return { items, nextCursor, hasMore };
+};
+
+export const fetchInBuzzTrending = async (params = {}) => {
+  const data = await apiFetchWithFallback(
+    ["/inbuzz/trending", "/inbuzz/reels/trending"],
+    { params }
+  );
+  return normalizeInBuzzList(extractInBuzzList(data));
+};
+
+export const fetchInBuzzReel = async (reelId) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  const data = await apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}`, `/inbuzz/${encoded}`],
+    {}
+  );
+  const item = extractInBuzzItem(data);
+  return normalizeInBuzzReel(item) || item;
+};
+
+export const fetchInBuzzStreamToken = async (reelId) => {
+  if (!reelId) return "";
+  const encoded = encodeURIComponent(reelId);
+  const data = await apiFetchWithFallback(
+    [
+      `/inbuzz/stream-token/${encoded}`,
+      `/inbuzz/stream_token/${encoded}`,
+      `/inbuzz/reel/${encoded}/stream-token`,
+      `/inbuzz/reel/${encoded}/stream_token`,
+    ],
+    {}
+  );
+  const token =
+    (typeof data === "string" ? data : "") ||
+    data?.token ||
+    data?.streamToken ||
+    data?.stream_token ||
+    data?.data?.token ||
+    data?.data?.streamToken ||
+    data?.data?.stream_token ||
+    "";
+  return token ? String(token) : "";
+};
+
+export const fetchInBuzzByUser = async (userId, params = {}) => {
+  if (!userId) return [];
+  const encoded = encodeURIComponent(userId);
+  const endpoints = [
+    `/inbuzz/user/${encoded}`,
+    `/inbuzz/users/${encoded}`,
+    `/users/${encoded}/inbuzz`,
+  ];
+  if (!fetchInBuzzByUser._rejectsQueryParams) {
+    fetchInBuzzByUser._rejectsQueryParams = false;
+  }
+
+  const attempt = async (attemptParams) => {
+    const data = await apiFetchWithFallback(endpoints, { params: attemptParams });
+    return normalizeInBuzzList(extractInBuzzList(data));
+  };
+
+  const rawParams = params && typeof params === "object" ? params : {};
+  const normalizedParams = { ...rawParams };
+  if (Object.prototype.hasOwnProperty.call(normalizedParams, "limit")) {
+    const limit = Number(normalizedParams.limit);
+    if (!Number.isFinite(limit)) {
+      delete normalizedParams.limit;
+    }
+  }
+
+  try {
+    if (fetchInBuzzByUser._rejectsQueryParams) {
+      return await attempt({});
+    }
+    return await attempt(normalizedParams);
+  } catch (error) {
+    const status = error?.status;
+    if (error?.status && [404, 405].includes(error.status)) {
+      return [];
+    }
+    // Some backends validate query params strictly for this endpoint and return 400.
+    // Retry without any query params, and remember so we don't spam 400s.
+    if (status === 400 && normalizedParams && Object.keys(normalizedParams).length) {
+      fetchInBuzzByUser._rejectsQueryParams = true;
+      try {
+        return await attempt({});
+      } catch (retryError) {
+        if (retryError?.status && [404, 405].includes(retryError.status)) {
+          return [];
+        }
+        throw retryError;
+      }
+    }
+    throw error;
+  }
+};
+
+export const recordInBuzzReelView = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}/view`, `/inbuzz/${encoded}/view`],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+};
+
+export const likeInBuzzReel = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}/like`, `/inbuzz/${encoded}/like`],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+};
+
+export const shareInBuzzReel = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}/share`, `/inbuzz/${encoded}/share`],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+};
+
+export const fetchInBuzzComments = async (reelId, params = {}) => {
+  if (!reelId) return [];
+  const encoded = encodeURIComponent(reelId);
+  const data = await apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}/comments`, `/inbuzz/${encoded}/comments`],
+    { params }
+  );
+  return normalizeList(data, ["comments", "items", "data"]);
+};
+
+export const addInBuzzComment = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}/comment`, `/inbuzz/${encoded}/comment`],
+    {
+      method: "POST",
+      body: payload,
+    }
+  );
+};
+
+export const deleteInBuzzComment = async (reelId, commentId, payload = {}) => {
+  if (!reelId || !commentId) return null;
+  const encodedReel = encodeURIComponent(reelId);
+  const encodedComment = encodeURIComponent(commentId);
+  const hasBody =
+    payload && typeof payload === "object" && Object.keys(payload).length > 0;
+  const deletePaths = [
+    `/inbuzz/reel/${encodedReel}/comment/${encodedComment}`,
+    `/inbuzz/reel/${encodedReel}/comments/${encodedComment}`,
+    `/inbuzz/${encodedReel}/comment/${encodedComment}`,
+    `/inbuzz/${encodedReel}/comments/${encodedComment}`,
+    `/inbuzz/comment/${encodedComment}`,
+    `/inbuzz/comments/${encodedComment}`,
+  ];
+
+  try {
+    return await apiFetchWithFallback(deletePaths, {
+      method: "DELETE",
+      body: hasBody ? payload : undefined,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+
+  return apiFetchWithFallback(deletePaths, {
+    method: "POST",
+    body: hasBody ? payload : undefined,
+  });
+};
+
+export const createInBuzzReel = async (file, meta = {}) => {
+  const formData = new FormData();
+  if (file) formData.append("video", file);
+  Object.entries(meta || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    formData.append(key, value);
+  });
+  return apiFetchWithFallback(["/inbuzz/reel", "/inbuzz/reels", "/inbuzz"], {
+    method: "POST",
+    body: formData,
+    isFormData: true,
+  });
+};
+
+export const createInBuzzReelWithProgress = (file, meta = {}, onProgress, onReady) => {
+  const formData = new FormData();
+  if (file) formData.append("video", file);
+  Object.entries(meta || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    formData.append(key, value);
+  });
+
+  return new Promise((resolve, reject) => {
+    const endpoints = ["/inbuzz/reel", "/inbuzz/reels", "/inbuzz"];
+    let activeXhr = null;
+    let aborted = false;
+
+    if (typeof onReady === "function") {
+      onReady({
+        abort: () => {
+          aborted = true;
+          if (activeXhr) activeXhr.abort();
+        },
+      });
+    }
+
+    const startRequest = (index) => {
+      if (aborted) return;
+      const path = endpoints[index];
+      if (!path) {
+        reject(new Error("Failed to upload InBuzz."));
+        return;
+      }
+
+      const xhr = new XMLHttpRequest();
+      activeXhr = xhr;
+      xhr.open("POST", buildUrl(path), true);
+
+      const authToken = readAuthToken();
+      if (authToken) {
+        xhr.setRequestHeader("Authorization", `Bearer ${authToken}`);
+      }
+
+      xhr.upload.onprogress = (event) => {
+        if (!onProgress || !event.lengthComputable) return;
+        const percent = Math.round((event.loaded / event.total) * 100);
+        onProgress(percent, { loaded: event.loaded, total: event.total });
+      };
+
+      xhr.onload = () => {
+        const data = parseXhrResponse(xhr);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(data);
+          return;
+        }
+
+        // Only fallback when the endpoint isn't implemented.
+        if ([404, 405].includes(xhr.status) && index < endpoints.length - 1) {
+          startRequest(index + 1);
+          return;
+        }
+
+        const error = new Error(resolveErrorMessage(data, xhr.status));
+        error.status = xhr.status;
+        error.data = data;
+        if (xhr.status === 401) {
+          localStorage.removeItem("authToken");
+          localStorage.removeItem("currentUserId");
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("auth:invalid-token"));
+          }
+        }
+        reject(error);
+      };
+
+      xhr.onerror = () => {
+        const error = new Error("Network error: Failed to upload.");
+        reject(error);
+      };
+
+      xhr.onabort = () => {
+        const error = new Error("Upload cancelled.");
+        error.name = "AbortError";
+        reject(error);
+      };
+
+      xhr.send(formData);
+    };
+
+    startRequest(0);
+  });
+};
+
+export const getInBuzzUploadStatus = async (jobId) => {
+  if (!jobId) return null;
+  const encoded = encodeURIComponent(jobId);
+  return apiFetchWithFallback([`/inbuzz/uploads/${encoded}`, `/inbuzz/upload/${encoded}`], {});
+};
+
+export const updateInBuzzReel = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}`, `/inbuzz/${encoded}`],
+    {
+      method: "PATCH",
+      body: payload,
+    }
+  );
+};
+
+export const deleteInBuzzReel = async (reelId, payload = {}) => {
+  if (!reelId) return null;
+  const encoded = encodeURIComponent(reelId);
+  return apiFetchWithFallback(
+    [`/inbuzz/reel/${encoded}`, `/inbuzz/${encoded}`],
+    {
+      method: "DELETE",
+      body: payload,
+    }
+  );
+};
+
+export const fetchInBuzzTopCreators = async (params = {}) => {
+  const data = await apiFetchWithFallback(
+    ["/inbuzz/creators/top", "/inbuzz/creators/leaderboard", "/inbuzz/leaderboard"],
+    { params }
+  );
+  return normalizeList(data, ["creators", "items", "data", "users"]);
+};
+
 export const createStory = async (file, meta = {}) => {
   const formData = new FormData();
   if (file) {
@@ -749,6 +1541,21 @@ export const createStory = async (file, meta = {}) => {
   }
   const authorId = localStorage.getItem("currentUserId");
   if (authorId) {
+    if (import.meta.env.DEV) {
+      const stored = String(authorId);
+      if (stored === "[object Object]" || stored.toLowerCase() === "undefined" || stored.toLowerCase() === "null") {
+        console.error("[story][createStory] INVALID authorId from localStorage", {
+          authorIdType: typeof authorId,
+          authorId,
+          storedValue: stored,
+        });
+      } else {
+        console.log("[story][createStory] authorId snapshot", {
+          authorIdType: typeof authorId,
+          authorId: stored,
+        });
+      }
+    }
     formData.append("authorId", authorId);
   }
   Object.entries(meta || {}).forEach(([key, value]) => {
@@ -783,6 +1590,21 @@ export const createStoryWithProgress = (file, meta = {}, onProgress, onReady) =>
   }
   const authorId = localStorage.getItem("currentUserId");
   if (authorId) {
+    if (import.meta.env.DEV) {
+      const stored = String(authorId);
+      if (stored === "[object Object]" || stored.toLowerCase() === "undefined" || stored.toLowerCase() === "null") {
+        console.error("[story][createStoryWithProgress] INVALID authorId from localStorage", {
+          authorIdType: typeof authorId,
+          authorId,
+          storedValue: stored,
+        });
+      } else {
+        console.log("[story][createStoryWithProgress] authorId snapshot", {
+          authorIdType: typeof authorId,
+          authorId: stored,
+        });
+      }
+    }
     formData.append("authorId", authorId);
   }
   Object.entries(meta || {}).forEach(([key, value]) => {
@@ -936,7 +1758,7 @@ export const getGroupChatMessages = async (groupId, params) => {
   if (!groupId) return { messages: [] };
   const resolvedParams = params === undefined ? { last24h: true } : params;
   try {
-    return await apiFetch(`/chat/group/${encodeURIComponent(groupId)}`, {
+    return await apiFetch(`/chat/group/${encodeGroupParam(groupId)}`, {
       params: resolvedParams,
     });
   } catch {
@@ -946,6 +1768,20 @@ export const getGroupChatMessages = async (groupId, params) => {
 
 export const getChatGroups = async (params = {}) => {
   const data = await apiFetch("/chat/groups", { params });
+  return normalizeList(data, ["groups", "items", "data"]);
+};
+
+export const getPublicGroups = async (params = {}) => {
+  const data = await apiFetchWithFallback(
+    [
+      "/groups/public",
+      "/groups/discover",
+      "/groups/explore",
+      "/public/groups",
+      "/groups",
+    ],
+    { params }
+  );
   return normalizeList(data, ["groups", "items", "data"]);
 };
 
@@ -1498,7 +2334,36 @@ export const removeFriend = async (friendId) => {
 
 export const getFriendStatus = async (targetUserId) => {
   if (!targetUserId) throw new Error("Missing target user id.");
-  const encodedId = encodeURIComponent(targetUserId);
+  const resolveId = (value) => {
+    if (!value) return "";
+    if (typeof value === "string" || typeof value === "number") {
+      const raw = String(value).trim();
+      if (!raw) return "";
+      const lowered = raw.toLowerCase();
+      if (raw.includes("[object Object]") || lowered === "undefined" || lowered === "null") {
+        return "";
+      }
+      return raw;
+    }
+    if (typeof value === "object") {
+      if (value.$oid) return String(value.$oid);
+      const nested =
+        value._id ||
+        value.id ||
+        value.userId ||
+        value.user_id ||
+        value.ownerId ||
+        value.authorId ||
+        value.profileId ||
+        value.profile_id ||
+        "";
+      if (nested) return resolveId(nested);
+    }
+    return "";
+  };
+  const resolvedId = resolveId(targetUserId);
+  if (!resolvedId) throw new Error("Missing target user id.");
+  const encodedId = encodeURIComponent(resolvedId);
   return apiFetchWithFallback([
     `/friend/status/${encodedId}`,
     `/friends/status/${encodedId}`,
@@ -1606,6 +2471,92 @@ export const reportMessage = async (messageId, payload = {}) => {
 
 export const reportUser = async (userId, payload = {}) => {
   return reportContent({ targetType: "user", targetId: userId, ...payload });
+};
+
+export const reportInBuzz = async (reelId, payload = {}) => {
+  if (!reelId) throw new Error("Missing reel id.");
+  const contentType = payload.content_type || payload.contentType || "inbuzz_reel";
+  const body = {
+    content_type: contentType,
+    content_id: reelId,
+    reported_user_id:
+      payload.reported_user_id ||
+      payload.reportedUserId ||
+      payload.reportedUserID ||
+      payload.reported_user ||
+      payload.reportedUser ||
+      payload.userId ||
+      payload.user_id ||
+      null,
+    reason: payload.reason,
+    details: payload.details || payload.description || payload.message || "",
+    ...payload,
+  };
+  if (!body.reported_user_id) delete body.reported_user_id;
+
+  try {
+    return await apiFetchWithFallback(["/report", "/reports", "/moderation/report"], {
+      method: "POST",
+      body,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+  return reportContent({ targetType: "inbuzz", targetId: reelId, ...payload });
+};
+
+export const deleteChatMessage = async (messageId, payload = {}) => {
+  if (!messageId) return null;
+  const encodedId = encodeGroupParam(messageId);
+  const deletePaths = [
+    `/chat/messages/${encodedId}`,
+    `/chat/message/${encodedId}`,
+    `/messages/${encodedId}`,
+    `/chat/messages/${encodedId}/delete`,
+    `/chat/message/${encodedId}/delete`,
+    `/chat/delete/${encodedId}`,
+  ];
+  try {
+    return await apiFetchWithFallback(deletePaths, {
+      method: "DELETE",
+      body: payload,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+  return apiFetchWithFallback(deletePaths, {
+    method: "POST",
+    body: payload,
+  });
+};
+
+export const deleteGroup = async (groupId, payload = {}) => {
+  if (!groupId) return null;
+  const encodedId = encodeGroupParam(groupId);
+  const deletePaths = [
+    `/groups/${encodedId}`,
+    `/group/${encodedId}`,
+    `/groups/${encodedId}/delete`,
+    `/group/${encodedId}/delete`,
+  ];
+  try {
+    return await apiFetchWithFallback(deletePaths, {
+      method: "DELETE",
+      body: payload,
+    });
+  } catch (error) {
+    if (error?.status && ![404, 405].includes(error.status)) {
+      throw error;
+    }
+  }
+  return apiFetchWithFallback(deletePaths, {
+    method: "POST",
+    body: payload,
+  });
 };
 
 export const blockUser = async (userId, payload = {}) => {

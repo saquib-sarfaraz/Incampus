@@ -5,7 +5,9 @@ import { useAuth } from "../../context/authContext";
 import { useApp } from "../../context/useApp";
 import { markAllNotificationsRead } from "../../services/api";
 import { preloadChatPage } from "../../utils/preloadRoutes";
+import { usePWAInstall } from "../../hooks/usePWAInstall";
 import BlueTick from "./BlueTick";
+import { buildUserPreview, normalizeUserId } from "../../utils/userProfile";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
 
@@ -36,6 +38,9 @@ const resolveActorAvatar = (actor) => {
 const resolveActorVerified = (actor) => {
   return Boolean(
     actor?.isVerified ||
+      actor?.isVerifiedCommunity ||
+      actor?.verifiedCommunity ||
+      actor?.communityVerified ||
       actor?.verified ||
       actor?.is_verified ||
       actor?.verification?.status === "verified"
@@ -75,7 +80,12 @@ const formatTimeAgo = (dateValue) => {
   return `${Math.floor(diff / day)}d`;
 };
 
-const NotificationItem = memo(function NotificationItem({ notif }) {
+const NotificationItem = memo(function NotificationItem({
+  notif,
+  getUserFromCache,
+  prefetchUserProfile,
+}) {
+  const navigate = useNavigate();
   const actor = resolveActor(notif);
   const actorName = resolveActorName(actor);
   const actorAvatar = resolveActorAvatar(actor);
@@ -85,11 +95,49 @@ const NotificationItem = memo(function NotificationItem({ notif }) {
     notif.createdAt || notif.created_at || notif.timestamp
   );
   const isVerified = resolveActorVerified(actor);
+  const actorId = normalizeUserId(actor);
+  const cachedActor = actorId ? getUserFromCache?.(actorId) : null;
   return (
     <div
-      className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm ${
+      className={`px-4 py-3 border-b border-white/10 hover:bg-white/5 text-sm cursor-pointer ${
         isUnread ? "bg-white/5" : ""
       }`}
+      role="button"
+      tabIndex={0}
+      onClick={() => {
+        if (actorId) {
+          prefetchUserProfile?.(actorId, cachedActor || actor);
+          const preview = buildUserPreview({ ...cachedActor, ...actor }, {
+            _id: actorId,
+            fullName: actor?.fullName || actor?.name,
+            displayName: actorName,
+            username: actor?.username,
+            profilePicUrl: actorAvatar,
+            isVerified,
+            isVerifiedCommunity: actor?.isVerifiedCommunity,
+          });
+          navigate(`/profile/${actorId}`, {
+            state: { userPreview: preview, modal: true },
+          });
+        }
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && actorId) {
+          prefetchUserProfile?.(actorId, cachedActor || actor);
+          const preview = buildUserPreview({ ...cachedActor, ...actor }, {
+            _id: actorId,
+            fullName: actor?.fullName || actor?.name,
+            displayName: actorName,
+            username: actor?.username,
+            profilePicUrl: actorAvatar,
+            isVerified,
+            isVerifiedCommunity: actor?.isVerifiedCommunity,
+          });
+          navigate(`/profile/${actorId}`, {
+            state: { userPreview: preview, modal: true },
+          });
+        }
+      }}
     >
       <div className="flex items-center gap-3">
         <img
@@ -120,17 +168,30 @@ const NotificationItem = memo(function NotificationItem({ notif }) {
 export default function Header() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { logout } = useAuth();
+  const { logout, currentUser } = useAuth();
+  const { isInstallable, install: triggerInstall, isInstalled } = usePWAInstall();
   const {
     notifications,
     setNotifications,
     feedScope,
     setFeedScope,
     chatUnreadTotal,
+    getUserFromCache,
+    prefetchUserProfile,
   } = useApp();
   const [showNotifications, setShowNotifications] = useState(false);
   const [showFeedSwitcher, setShowFeedSwitcher] = useState(false);
   const feedSwitcherRef = useRef(null);
+
+  const shouldOpenNotificationsByPath = location.pathname.startsWith("/notifications");
+  const shouldOpenNotificationsByFlag = useMemo(() => {
+    try {
+      return sessionStorage.getItem("incampus:openNotifications") === "1";
+    } catch {
+      return false;
+    }
+  }, [location.pathname]);
+  const notificationsOpen = showNotifications || shouldOpenNotificationsByPath || shouldOpenNotificationsByFlag;
 
   useEffect(() => {
     const handleClickOutside = (event) => {
@@ -153,9 +214,16 @@ export default function Header() {
           notif.notificationId ||
           notif.notification_id ||
           `notif-${index}`;
-        return <NotificationItem key={String(notifKey)} notif={notif} />;
+        return (
+          <NotificationItem
+            key={String(notifKey)}
+            notif={notif}
+            getUserFromCache={getUserFromCache}
+            prefetchUserProfile={prefetchUserProfile}
+          />
+        );
       }),
-    [notifications]
+    [notifications, getUserFromCache, prefetchUserProfile]
   );
 
   const markAllReadOptimistic = () => {
@@ -172,23 +240,45 @@ export default function Header() {
     try {
       markAllReadOptimistic();
       await markAllNotificationsRead();
-    } catch (error) {
+    } catch (err) {
+      void err;
     }
   };
 
   const handleToggleNotifications = async () => {
-    const nextOpen = !showNotifications;
+    const nextOpen = !notificationsOpen;
     setShowNotifications(nextOpen);
+    if (!nextOpen) {
+      if (shouldOpenNotificationsByFlag) {
+        try {
+          sessionStorage.removeItem("incampus:openNotifications");
+        } catch {
+          // ignore storage errors
+        }
+      }
+      if (shouldOpenNotificationsByPath) {
+        navigate("/feed", { replace: true });
+      }
+    }
     if (nextOpen && unreadCount > 0) {
       markAllReadOptimistic();
       try {
         await markAllNotificationsRead();
-      } catch (error) {
+      } catch (err) {
+        void err;
       }
     }
   };
 
-  const isActive = (path) => location.pathname === path;
+  const isActive = (path) => {
+    if (path === "/profile") {
+      return location.pathname.startsWith("/profile");
+    }
+    return location.pathname === path;
+  };
+  const currentUserId =
+    currentUser?.id || currentUser?._id || currentUser?.userId || currentUser?.user_id || "";
+  const profilePath = currentUserId ? `/profile/${currentUserId}` : "/profile";
 
   return (
     <header className="sticky top-0 z-40 border-b border-white/10 bg-[#1a120b]/80 backdrop-blur-xl">
@@ -259,6 +349,19 @@ export default function Header() {
           </div>
 
           <div className="flex items-center space-x-3">
+            {isInstallable && !isInstalled && (
+              <Motion.button
+                type="button"
+                onClick={() => triggerInstall()}
+                className="rounded-full px-3 py-2 text-sm text-[#b9b4c7] transition-all duration-300 ease-out hover:bg-white/5 hover:text-[#faf0e6]"
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.96 }}
+                aria-label="Install app"
+                title="Install app"
+              >
+                <i className="fa-solid fa-download text-base"></i>
+              </Motion.button>
+            )}
             <Motion.button
               onClick={() => navigate("/trending")}
               className={`hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
@@ -277,7 +380,7 @@ export default function Header() {
               onMouseEnter={preloadChatPage}
               onFocus={preloadChatPage}
               onTouchStart={preloadChatPage}
-              className={`relative hidden sm:block rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
+              className={`relative rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/chat")
                   ? "bg-white/10 text-[#faf0e6]"
                   : "text-[#b9b4c7] hover:bg-white/5 hover:text-[#faf0e6]"
@@ -305,7 +408,7 @@ export default function Header() {
               </Motion.button>
 
               <AnimatePresence>
-                {showNotifications && (
+                {notificationsOpen && (
                   <Motion.div
                     id="notifications-panel"
                     initial={{ opacity: 0, y: -10 }}
@@ -339,7 +442,7 @@ export default function Header() {
             </div>
 
             <Motion.button
-              onClick={() => navigate("/profile")}
+              onClick={() => navigate(profilePath)}
               className={`rounded-full px-3 py-2 text-sm transition-all duration-300 ease-out ${
                 isActive("/profile")
                   ? "bg-white/10 text-[#faf0e6]"

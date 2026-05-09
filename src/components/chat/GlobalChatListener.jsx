@@ -19,6 +19,14 @@ const resolveMessagePreview = (msg) => {
   if (msg.messageType === "shared_post" || msg.type === "shared_post") {
     return msg.postPreviewText || msg.postTitle || "Shared a post";
   }
+  if (
+    msg.messageType === "inbuzz_reel" ||
+    msg.type === "inbuzz_reel" ||
+    msg.reelId ||
+    msg.reel_id
+  ) {
+    return msg.reelCaption || msg.reelPreviewText || "Shared an InBuzz";
+  }
   return msg.text || "";
 };
 
@@ -68,7 +76,7 @@ export default function GlobalChatListener() {
       }
       return fromId || target;
     },
-    [currentUser?.id]
+    [currentUser]
   );
 
   const handleChatMessage = useCallback(
@@ -145,7 +153,7 @@ export default function GlobalChatListener() {
       }
     },
     [
-      currentUser?.id,
+      currentUser,
       activeChatId,
       chatViewActive,
       isChatRoute,

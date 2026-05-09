@@ -17,6 +17,59 @@ import { getOptimizedMediaUrl } from "../../utils/media";
 import BlueTick from "../common/BlueTick";
 
 const ANONYMOUS_AVATAR = "https://placehold.co/100x100/9ca3af/ffffff?text=A";
+const STORY_TEXT_BASE_SIZE = 28;
+const STORY_TEXT_SCALE_MIN = 0.5;
+const STORY_TEXT_SCALE_MAX = 4;
+const STORY_TEXT_SNAP_PX = 10;
+
+const clampValue = (value, min, max) => Math.min(max, Math.max(min, value));
+
+const getTouchDistance = (touchA, touchB) => {
+  const dx = touchB.clientX - touchA.clientX;
+  const dy = touchB.clientY - touchA.clientY;
+  return Math.hypot(dx, dy);
+};
+
+const getTouchAngle = (touchA, touchB) =>
+  (Math.atan2(touchB.clientY - touchA.clientY, touchB.clientX - touchA.clientX) * 180) /
+  Math.PI;
+
+const loadImageFromFile = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    const image = new Image();
+    reader.onload = () => {
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("Unable to load image"));
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("Unable to read image"));
+    reader.readAsDataURL(file);
+  });
+
+const drawWrappedText = (ctx, text, x, y, maxWidth, lineHeight) => {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (!words.length) return;
+  const lines = [];
+  let line = "";
+  words.forEach((word) => {
+    const testLine = line ? `${line} ${word}` : word;
+    if (ctx.measureText(testLine).width > maxWidth && line) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = testLine;
+    }
+  });
+  if (line) lines.push(line);
+  const totalHeight = lines.length * lineHeight;
+  let startY = y - totalHeight / 2 + lineHeight / 2;
+  lines.forEach((item, index) => {
+    const lineY = startY + index * lineHeight;
+    ctx.strokeText(item, x, lineY);
+    ctx.fillText(item, x, lineY);
+  });
+};
 
 const StoryListItem = memo(function StoryListItem({ group, index, onOpen }) {
   const handleOpen = useCallback(() => onOpen(index), [onOpen, index]);
@@ -75,6 +128,35 @@ export default function StoryBar() {
   const [pendingFile, setPendingFile] = useState(null);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewDuration, setPreviewDuration] = useState("");
+  const [storyText, setStoryText] = useState("");
+  const textTransformRef = useRef({
+    x: 0,
+    y: 0,
+    scale: 1,
+    rotation: 0,
+  });
+  const [showGuides, setShowGuides] = useState({ h: false, v: false });
+  const guidesRef = useRef({ h: false, v: false });
+  const [isMobilePreview, setIsMobilePreview] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 767px)").matches;
+  });
+  const storyPreviewRef = useRef(null);
+  const storyTextRef = useRef(null);
+  const storyTransformRafRef = useRef(null);
+  const touchStateRef = useRef({
+    mode: null,
+    startX: 0,
+    startY: 0,
+    originX: 0,
+    originY: 0,
+    startDistance: 0,
+    startAngle: 0,
+    originScale: 1,
+    originRotation: 0,
+    startCenterX: 0,
+    startCenterY: 0,
+  });
   const [uploadStage, setUploadStage] = useState("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadSpeed, setUploadSpeed] = useState("");
@@ -110,6 +192,19 @@ export default function StoryBar() {
       story.createdBy ||
       ""
     );
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const openPicker = () => requestAnimationFrame(() => fileInputRef.current?.click());
+    const handleStoryCreate = () => openPicker();
+    window.addEventListener("incampus:createStory", handleStoryCreate);
+    const shouldOpen = sessionStorage.getItem("incampus:createStory") === "1";
+    if (shouldOpen) {
+      sessionStorage.removeItem("incampus:createStory");
+      openPicker();
+    }
+    return () => window.removeEventListener("incampus:createStory", handleStoryCreate);
   }, []);
 
   useEffect(() => {
@@ -149,6 +244,25 @@ export default function StoryBar() {
     };
   }, [uploadPreview]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    const handleResize = () => {
+      setIsMobilePreview(window.matchMedia("(max-width: 767px)").matches);
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (storyTransformRafRef.current) {
+        cancelAnimationFrame(storyTransformRafRef.current);
+        storyTransformRafRef.current = null;
+      }
+    };
+  }, []);
+
   const formatDuration = (seconds) => {
     if (!Number.isFinite(seconds)) return "";
     const mins = Math.floor(seconds / 60);
@@ -173,6 +287,10 @@ export default function StoryBar() {
     setPendingFile(null);
     setPreviewOpen(false);
     setPreviewDuration("");
+    setStoryText("");
+    textTransformRef.current = { x: 0, y: 0, scale: 1, rotation: 0 };
+    guidesRef.current = { h: false, v: false };
+    setShowGuides({ h: false, v: false });
     setUploadStage("idle");
     setUploadProgress(0);
     setUploadSpeed("");
@@ -221,17 +339,32 @@ export default function StoryBar() {
     if (story?.authorIsVerified !== undefined || story?.authorVerified !== undefined) {
       return Boolean(story.authorIsVerified || story.authorVerified);
     }
-    if (story?.author?.isVerified !== undefined) {
-      return Boolean(story.author.isVerified);
+    if (story?.author?.isVerified !== undefined || story?.author?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        story.author.isVerified ||
+          story.author.isVerifiedCommunity ||
+          story.author.verifiedCommunity ||
+          story.author.communityVerified
+      );
     }
     if (story?.userIsVerified !== undefined || story?.userVerified !== undefined) {
       return Boolean(story.userIsVerified || story.userVerified);
     }
-    if (entity?.isVerified !== undefined) {
-      return Boolean(entity.isVerified);
+    if (entity?.isVerified !== undefined || entity?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        entity.isVerified ||
+          entity.isVerifiedCommunity ||
+          entity.verifiedCommunity ||
+          entity.communityVerified
+      );
     }
-    if (cachedUser?.isVerified !== undefined) {
-      return Boolean(cachedUser.isVerified);
+    if (cachedUser?.isVerified !== undefined || cachedUser?.isVerifiedCommunity !== undefined) {
+      return Boolean(
+        cachedUser.isVerified ||
+          cachedUser.isVerifiedCommunity ||
+          cachedUser.verifiedCommunity ||
+          cachedUser.communityVerified
+      );
     }
     if (story?.verification?.status) {
       return story.verification.status === "verified";
@@ -239,7 +372,14 @@ export default function StoryBar() {
     if (entity?.verification?.status) {
       return entity.verification.status === "verified";
     }
-    return Boolean(story?.isVerified || story?.verified || story?.is_verified);
+    return Boolean(
+      story?.isVerified ||
+        story?.isVerifiedCommunity ||
+        story?.verifiedCommunity ||
+        story?.communityVerified ||
+        story?.verified ||
+        story?.is_verified
+    );
   }, []);
 
   const resolveStoryCampus = useCallback((story, cachedUser) => {
@@ -447,6 +587,10 @@ export default function StoryBar() {
     setUploadPreview({ url: previewUrl, type: isVideo ? "video" : "image" });
     setPendingFile(file);
     setPreviewOpen(true);
+    setStoryText("");
+    textTransformRef.current = { x: 0, y: 0, scale: 1, rotation: 0 };
+    guidesRef.current = { h: false, v: false };
+    setShowGuides({ h: false, v: false });
     setUploadProgress(0);
     setUploadStage("idle");
     setUploadError("");
@@ -498,6 +642,72 @@ export default function StoryBar() {
 
   const isUploading = uploadStage === "uploading" || uploadStage === "processing";
 
+  const buildStoryImageWithText = useCallback(
+    async (file) => {
+      if (!file || !storyText.trim()) return file;
+      const image = await loadImageFromFile(file);
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return file;
+
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+      const container = storyPreviewRef.current;
+      const containerWidth = container?.clientWidth || image.width;
+      const containerHeight = container?.clientHeight || image.height;
+      const scale = Math.min(containerWidth / image.width, containerHeight / image.height);
+      const displayWidth = image.width * scale;
+      const displayHeight = image.height * scale;
+      const offsetX = (containerWidth - displayWidth) / 2;
+      const offsetY = (containerHeight - displayHeight) / 2;
+
+      const transform = textTransformRef.current;
+      const centerX = containerWidth / 2 + transform.x;
+      const centerY = containerHeight / 2 + transform.y;
+      const imageX = (centerX - offsetX) / scale;
+      const imageY = (centerY - offsetY) / scale;
+
+      const fontSize = Math.max(
+        18,
+        (STORY_TEXT_BASE_SIZE * transform.scale) / Math.max(scale, 0.01)
+      );
+      ctx.save();
+      ctx.translate(imageX, imageY);
+      ctx.rotate((transform.rotation * Math.PI) / 180);
+      ctx.font = `600 ${fontSize}px "Poppins", "Sora", sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#faf0e6";
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = Math.max(2, fontSize * 0.12);
+      ctx.shadowColor = "rgba(0,0,0,0.45)";
+      ctx.shadowBlur = Math.max(6, fontSize * 0.3);
+      drawWrappedText(ctx, storyText.trim(), 0, 0, canvas.width * 0.8, fontSize * 1.2);
+      ctx.restore();
+
+      return new Promise((resolve) => {
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              resolve(file);
+              return;
+            }
+            resolve(
+              new File([blob], file.name.replace(/\.[^/.]+$/, ".jpg"), {
+                type: "image/jpeg",
+              })
+            );
+          },
+          "image/jpeg",
+          0.86
+        );
+      });
+    },
+    [storyText]
+  );
+
   const handleCancelUpload = () => {
     if (uploadAbortRef.current) {
       uploadAbortRef.current();
@@ -516,9 +726,13 @@ export default function StoryBar() {
     lastProgressRef.current = { loaded: 0, time: uploadStartRef.current };
 
     try {
+      let fileToUpload = pendingFile;
+      if (uploadPreview?.type === "image" && storyText.trim()) {
+        fileToUpload = await buildStoryImageWithText(pendingFile);
+      }
       const meta = buildStoryMeta();
       const createdStory = await createStoryWithProgress(
-        pendingFile,
+        fileToUpload,
         meta,
         (percent, info) => {
           setUploadProgress(percent);
@@ -600,6 +814,140 @@ export default function StoryBar() {
       setPreviewDuration("");
     }
   };
+
+  const applyStoryTransform = useCallback((next) => {
+    const target = storyTextRef.current;
+    if (!target) return;
+    if (storyTransformRafRef.current) {
+      cancelAnimationFrame(storyTransformRafRef.current);
+    }
+    storyTransformRafRef.current = requestAnimationFrame(() => {
+      target.style.setProperty("--tx", `${next.x}px`);
+      target.style.setProperty("--ty", `${next.y}px`);
+      target.style.setProperty("--rot", `${next.rotation}deg`);
+      target.style.setProperty("--scale", `${next.scale}`);
+    });
+  }, []);
+
+  const updateGuides = useCallback((x, y) => {
+    const v = Math.abs(x) <= STORY_TEXT_SNAP_PX;
+    const h = Math.abs(y) <= STORY_TEXT_SNAP_PX;
+    if (guidesRef.current.v !== v || guidesRef.current.h !== h) {
+      guidesRef.current = { v, h };
+      setShowGuides({ v, h });
+    }
+  }, []);
+
+  const handleStoryTouchStart = useCallback(
+    (event) => {
+      if (!isMobilePreview) return;
+      if (!storyText.trim()) return;
+      const touches = event.touches;
+      if (touches.length === 1) {
+        const touch = touches[0];
+        touchStateRef.current = {
+          mode: "drag",
+          startX: touch.clientX,
+          startY: touch.clientY,
+          originX: textTransformRef.current.x,
+          originY: textTransformRef.current.y,
+          startDistance: 0,
+          startAngle: 0,
+          originScale: textTransformRef.current.scale,
+          originRotation: textTransformRef.current.rotation,
+          startCenterX: 0,
+          startCenterY: 0,
+        };
+      } else if (touches.length === 2) {
+        const [t1, t2] = touches;
+        const centerX = (t1.clientX + t2.clientX) / 2;
+        const centerY = (t1.clientY + t2.clientY) / 2;
+        touchStateRef.current = {
+          mode: "pinch",
+          startX: 0,
+          startY: 0,
+          originX: textTransformRef.current.x,
+          originY: textTransformRef.current.y,
+          startDistance: getTouchDistance(t1, t2),
+          startAngle: getTouchAngle(t1, t2),
+          originScale: textTransformRef.current.scale,
+          originRotation: textTransformRef.current.rotation,
+          startCenterX: centerX,
+          startCenterY: centerY,
+        };
+      }
+    },
+    [isMobilePreview, storyText]
+  );
+
+  const handleStoryTouchMove = useCallback(
+    (event) => {
+      if (!isMobilePreview) return;
+      if (!storyText.trim()) return;
+      const touches = event.touches;
+      if (!touchStateRef.current.mode) return;
+      // Avoid preventDefault here; React touch events are passive by default.
+      if (touchStateRef.current.mode === "drag" && touches.length === 1) {
+        const touch = touches[0];
+        const dx = touch.clientX - touchStateRef.current.startX;
+        const dy = touch.clientY - touchStateRef.current.startY;
+        let nextX = touchStateRef.current.originX + dx;
+        let nextY = touchStateRef.current.originY + dy;
+        if (Math.abs(nextX) <= STORY_TEXT_SNAP_PX) nextX = 0;
+        if (Math.abs(nextY) <= STORY_TEXT_SNAP_PX) nextY = 0;
+        updateGuides(nextX, nextY);
+        const next = {
+          ...textTransformRef.current,
+          x: nextX,
+          y: nextY,
+        };
+        textTransformRef.current = next;
+        applyStoryTransform(next);
+      } else if (touchStateRef.current.mode === "pinch" && touches.length === 2) {
+        const [t1, t2] = touches;
+        const distance = getTouchDistance(t1, t2);
+        const angle = getTouchAngle(t1, t2);
+        const scale = clampValue(
+          touchStateRef.current.originScale * (distance / touchStateRef.current.startDistance),
+          STORY_TEXT_SCALE_MIN,
+          STORY_TEXT_SCALE_MAX
+        );
+        const rotation = touchStateRef.current.originRotation + (angle - touchStateRef.current.startAngle);
+        const centerX = (t1.clientX + t2.clientX) / 2;
+        const centerY = (t1.clientY + t2.clientY) / 2;
+        let nextX =
+          touchStateRef.current.originX + (centerX - touchStateRef.current.startCenterX);
+        let nextY =
+          touchStateRef.current.originY + (centerY - touchStateRef.current.startCenterY);
+        if (Math.abs(nextX) <= STORY_TEXT_SNAP_PX) nextX = 0;
+        if (Math.abs(nextY) <= STORY_TEXT_SNAP_PX) nextY = 0;
+        updateGuides(nextX, nextY);
+        const next = {
+          x: nextX,
+          y: nextY,
+          scale,
+          rotation,
+        };
+        textTransformRef.current = next;
+        applyStoryTransform(next);
+      }
+    },
+    [isMobilePreview, storyText, applyStoryTransform, updateGuides]
+  );
+
+  const handleStoryTouchEnd = useCallback(() => {
+    if (!isMobilePreview) return;
+    if (!touchStateRef.current.mode) return;
+    touchStateRef.current.mode = null;
+    guidesRef.current = { h: false, v: false };
+    setShowGuides({ h: false, v: false });
+  }, [isMobilePreview]);
+
+  useEffect(() => {
+    if (!previewOpen) return;
+    if (!storyTextRef.current) return;
+    applyStoryTransform(textTransformRef.current);
+  }, [previewOpen, storyText, applyStoryTransform]);
 
   const openStory = useCallback((index) => {
     setSelectedStoryIndex(index);
@@ -840,9 +1188,36 @@ export default function StoryBar() {
                     />
                   )}
                 </div>
+
+                {uploadPreview.type === "image" && isMobilePreview && (
+                  <div className="space-y-2">
+                    <p className="text-[11px] uppercase tracking-[0.2em] text-[#b9b4c7]">
+                      Text Overlay
+                    </p>
+                    <input
+                      type="text"
+                      value={storyText}
+                      onChange={(e) => {
+                        setStoryText(e.target.value);
+                        if (!e.target.value) {
+                          textTransformRef.current = { x: 0, y: 0, scale: 1, rotation: 0 };
+                        }
+                      }}
+                      placeholder="Add text to your story"
+                      className="w-full rounded-2xl glass-input px-4 py-2 text-xs"
+                      maxLength={80}
+                    />
+                    <p className="text-[11px] text-[#b9b4c7]">
+                      Drag to move. Pinch to resize. Rotate with two fingers.
+                    </p>
+                  </div>
+                )}
               </div>
 
-              <div className="relative w-full h-72 rounded-2xl overflow-hidden bg-black/40">
+              <div
+                ref={storyPreviewRef}
+                className="relative w-full h-72 rounded-2xl overflow-hidden bg-black/40"
+              >
                 {uploadPreview.type === "video" ? (
                   <video
                     src={uploadPreview.url}
@@ -860,6 +1235,32 @@ export default function StoryBar() {
                     className="w-full h-full object-contain"
                     onLoad={handlePreviewLoaded}
                   />
+                )}
+
+                {uploadPreview.type === "image" && isMobilePreview && storyText.trim() && (
+                  <>
+                    {showGuides.v && (
+                      <div className="absolute left-1/2 top-0 h-full w-px bg-white/30" />
+                    )}
+                    {showGuides.h && (
+                      <div className="absolute top-1/2 left-0 w-full h-px bg-white/30" />
+                    )}
+                    <div
+                      ref={storyTextRef}
+                      className="absolute left-1/2 top-1/2 select-none text-[#faf0e6] font-semibold"
+                      style={{
+                        touchAction: "none",
+                        transform:
+                          "translate(-50%, -50%) translate(var(--tx, 0px), var(--ty, 0px)) rotate(var(--rot, 0deg)) scale(var(--scale, 1))",
+                      }}
+                      onTouchStart={handleStoryTouchStart}
+                      onTouchMove={handleStoryTouchMove}
+                      onTouchEnd={handleStoryTouchEnd}
+                      onTouchCancel={handleStoryTouchEnd}
+                    >
+                      {storyText}
+                    </div>
+                  </>
                 )}
 
                 {(isUploading || uploadStage === "error" || uploadStage === "success") && (

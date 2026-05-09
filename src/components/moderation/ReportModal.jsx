@@ -1,12 +1,15 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { motion as Motion, AnimatePresence } from "framer-motion";
 
 const DEFAULT_REASONS = [
   "Spam",
-  "Abuse",
-  "Hate Speech",
-  "Fake Account",
   "Harassment",
+  "Hate Speech",
+  "Violence",
+  "Adult Content",
+  "Misinformation",
+  "Other",
 ];
 
 const buildReasonsKey = (reasons = []) => reasons.join("|");
@@ -33,7 +36,7 @@ const ReportModalContent = ({ onClose, onSubmit, title, reasons }) => {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70 p-4"
+      className="fixed inset-0 z-[120] flex items-end sm:items-center justify-center bg-black/70 p-4"
       onClick={onClose}
     >
       <Motion.div
@@ -117,8 +120,7 @@ export default function ReportModal({
   reasons = DEFAULT_REASONS,
 }) {
   const reasonsKey = buildReasonsKey(reasons);
-
-  return (
+  const modal = (
     <AnimatePresence>
       {isOpen && (
         <ReportModalContent
@@ -131,4 +133,7 @@ export default function ReportModal({
       )}
     </AnimatePresence>
   );
+
+  if (typeof document === "undefined") return modal;
+  return createPortal(modal, document.body);
 }

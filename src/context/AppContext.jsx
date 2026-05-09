@@ -14,6 +14,7 @@ import {
   rejectFriendRequest as apiRejectFriendRequest,
   cancelFriendRequest as apiCancelFriendRequest,
   removeFriend as apiRemoveFriend,
+  getUserProfileBundle,
 } from "../services/api";
 import { getSocket } from "../services/socket";
 import AppContext from "./appContextBase";
@@ -117,19 +118,75 @@ const normalizeStoriesList = (list) => {
   return flat;
 };
 
+const resolvePostIdentity = (post) => {
+  if (!post) return "";
+  const id = resolveEntityId(post?._id || post?.id || post?.postId || post?.post_id);
+  if (id) return id;
+  const authorId = resolveEntityId(
+    post?.authorId ||
+      post?.author_id ||
+      post?.userId ||
+      post?.user_id ||
+      post?.author?._id ||
+      post?.author?.id ||
+      post?.author
+  );
+  const createdAt =
+    post?.createdAt || post?.created_at || post?.timestamp || post?.time || "";
+  if (authorId || createdAt) return `${authorId || "post"}-${createdAt || "time"}`;
+  return "";
+};
+
+const mergePostsByNewest = (incoming, existing) => {
+  const primary = Array.isArray(incoming) ? incoming : [];
+  const secondary = Array.isArray(existing) ? existing : [];
+  if (primary.length === 0) return secondary;
+  if (secondary.length === 0) return primary;
+  const next = [];
+  const seen = new Set();
+  primary.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id) {
+      if (seen.has(id)) return;
+      seen.add(id);
+    }
+    next.push(post);
+  });
+  secondary.forEach((post) => {
+    const id = resolvePostIdentity(post);
+    if (id && seen.has(id)) return;
+    if (id) seen.add(id);
+    next.push(post);
+  });
+  return next;
+};
+
 const resolveEntityId = (value) => {
   if (!value) return "";
-  if (typeof value === "string" || typeof value === "number") return String(value);
-  return String(
-    value._id ||
+  if (typeof value === "string" || typeof value === "number") {
+    const raw = String(value).trim();
+    if (!raw) return "";
+    const lowered = raw.toLowerCase();
+    if (raw === "[object Object]" || lowered === "undefined" || lowered === "null") {
+      return "";
+    }
+    return raw;
+  }
+  if (typeof value === "object") {
+    if (value.$oid) return String(value.$oid);
+    const nested =
+      value._id ||
       value.id ||
       value.userId ||
       value.user_id ||
       value.profileId ||
+      value.profile_id ||
       value.ownerId ||
       value.authorId ||
-      ""
-  );
+      "";
+    if (nested) return resolveEntityId(nested);
+  }
+  return "";
 };
 
 const isMessageNotification = (notif) => {
@@ -284,7 +341,14 @@ export const AppProvider = ({ children }) => {
   const [usersCache, setUsersCache] = useState({});
   const [chatMeta, setChatMeta] = useState({});
   const [chatToasts, setChatToasts] = useState([]);
-  const [activeChatId, setActiveChatId] = useState(null);
+  const [activeChatId, setActiveChatId] = useState(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return localStorage.getItem("incampus:activeChatId") || null;
+    } catch {
+      return null;
+    }
+  });
   const [chatViewActive, setChatViewActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const postsRequestRef = useRef(false);
@@ -316,7 +380,7 @@ export const AppProvider = ({ children }) => {
         queryFn: () => fetchPosts(),
         staleTime: 30000,
       });
-      setPosts(postsData);
+      setPosts((prev) => mergePostsByNewest(postsData, prev));
       postsLoadedRef.current = true;
     } catch (_error) {
       void _error;
@@ -478,10 +542,10 @@ export const AppProvider = ({ children }) => {
 
   const setFriendStatus = useCallback(
     (userId, status, options = {}) => {
-      if (!userId) return;
+      const id = resolveEntityId(userId);
+      if (!id) return;
       const resolvedStatus = status || "none";
       const force = options.force === true;
-      const id = String(userId);
       if (resolvedStatus === "pending_sent") {
         setPendingSentOverride(id, true);
       } else {
@@ -510,8 +574,8 @@ export const AppProvider = ({ children }) => {
 
   const getFriendStatus = useCallback(
     (userId) => {
-      if (!userId) return "none";
-      const id = String(userId);
+      const id = resolveEntityId(userId);
+      if (!id) return "none";
       if (blockedUsers.some((blockedId) => String(blockedId) === id)) return "blocked";
       const hasFriendMap = friendMapLoaded || Object.keys(friendMap || {}).length > 0;
       if (hasFriendMap && Object.prototype.hasOwnProperty.call(friendMap, id)) {
@@ -618,8 +682,8 @@ export const AppProvider = ({ children }) => {
 
   const ensureFriendStatus = useCallback(
     async (userId) => {
-      if (!userId) return "none";
-      const id = String(userId);
+      const id = resolveEntityId(userId);
+      if (!id) return "none";
       if (getFriendStatus(id) !== "none") return getFriendStatus(id);
       if (Object.prototype.hasOwnProperty.call(friendMap, id)) {
         return friendMap[id] || "none";
@@ -647,13 +711,14 @@ export const AppProvider = ({ children }) => {
 
   const sendFriendRequest = useCallback(
     async (targetUserId) => {
-      if (!targetUserId) return null;
-      setFriendStatus(targetUserId, "pending_sent", { force: true });
+      const id = resolveEntityId(targetUserId);
+      if (!id) return null;
+      setFriendStatus(id, "pending_sent", { force: true });
       try {
-        const res = await apiSendFriendRequest(targetUserId);
+        const res = await apiSendFriendRequest(id);
         return res;
       } catch (error) {
-        setFriendStatus(targetUserId, "none", { force: true });
+        setFriendStatus(id, "none", { force: true });
         throw error;
       }
     },
@@ -697,9 +762,10 @@ export const AppProvider = ({ children }) => {
 
   const rejectFriend = useCallback(
     async (requesterId) => {
-      if (!requesterId) return null;
-      const res = await apiRejectFriendRequest(requesterId);
-      setFriendStatus(requesterId, "none", { force: true });
+      const id = resolveEntityId(requesterId);
+      if (!id) return null;
+      const res = await apiRejectFriendRequest(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]
@@ -707,9 +773,10 @@ export const AppProvider = ({ children }) => {
 
   const cancelFriend = useCallback(
     async (recipientId) => {
-      if (!recipientId) return null;
-      const res = await apiCancelFriendRequest(recipientId);
-      setFriendStatus(recipientId, "none", { force: true });
+      const id = resolveEntityId(recipientId);
+      if (!id) return null;
+      const res = await apiCancelFriendRequest(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]
@@ -717,9 +784,10 @@ export const AppProvider = ({ children }) => {
 
   const removeFriend = useCallback(
     async (friendId) => {
-      if (!friendId) return null;
-      const res = await apiRemoveFriend(friendId);
-      setFriendStatus(friendId, "none", { force: true });
+      const id = resolveEntityId(friendId);
+      if (!id) return null;
+      const res = await apiRemoveFriend(id);
+      setFriendStatus(id, "none", { force: true });
       return res;
     },
     [setFriendStatus]
@@ -727,18 +795,99 @@ export const AppProvider = ({ children }) => {
 
   const cacheUser = useCallback((userData) => {
     if (!userData || !userData._id) return;
+    const resolvedFullName =
+      userData?.fullName ||
+      userData?.full_name ||
+      userData?.displayName ||
+      userData?.display_name ||
+      userData?.name ||
+      [userData?.firstName, userData?.lastName].filter(Boolean).join(" ") ||
+      "";
+    const resolvedAccountType =
+      userData?.accountType ||
+      userData?.account_type ||
+      userData?.userType ||
+      userData?.user_type ||
+      userData?.type ||
+      userData?.kind ||
+      "";
+    const resolvedStudentType =
+      userData?.studentType || userData?.student_type || userData?.student_type;
+    const resolvedCommunityName =
+      userData?.communityName || userData?.community_name || "";
+    const resolvedCommunityType =
+      userData?.communityType || userData?.community_type || "";
+    const resolvedCommunityEmail =
+      userData?.communityEmail ||
+      userData?.community_email ||
+      userData?.contactEmail ||
+      userData?.contact_email ||
+      userData?.email ||
+      userData?.mail ||
+      "";
+    const resolvedAvatar =
+      userData?.profilePicUrl ||
+      userData?.profilePic ||
+      userData?.profile_picture ||
+      userData?.profile_pic ||
+      userData?.avatarUrl ||
+      userData?.avatar ||
+      userData?.photoURL ||
+      userData?.photoUrl ||
+      userData?.photo ||
+      userData?.picture ||
+      userData?.imageUrl ||
+      userData?.image ||
+      "";
+    const isVerifiedCommunity = Boolean(
+      userData?.isVerifiedCommunity ||
+        userData?.verifiedCommunity ||
+        userData?.communityVerified ||
+        userData?.is_community_verified ||
+        userData?.verification?.community === "verified" ||
+        userData?.verification?.community === true
+    );
+    const isVerified = Boolean(
+      userData?.isVerified ||
+        userData?.verified ||
+        userData?.is_verified ||
+        userData?.verification?.status === "verified" ||
+        isVerifiedCommunity
+    );
     setUsersCache((prev) => ({
       ...prev,
       [userData._id]: {
         id: userData._id,
-        name: userData.fullName,
-        displayName: userData.fullName?.replace(/ \[DEV\]| \[ANON TEST\]/g, "") || "User",
-        profilePicUrl: userData.profilePicUrl,
+        name: resolvedFullName || userData.username || "User",
+        displayName:
+          String(resolvedFullName || userData.username || "User").replace(
+            / \[DEV\]| \[ANON TEST\]/g,
+            ""
+          ) || "User",
+        profilePicUrl: resolvedAvatar,
         username: userData.username,
-        isVerified: Boolean(userData?.isVerified),
+        accountType: resolvedAccountType,
+        userType: resolvedAccountType,
+        studentType: resolvedStudentType,
+        communityName: resolvedCommunityName,
+        communityType: resolvedCommunityType,
+        communityEmail: resolvedCommunityEmail,
+        isVerified,
+        isVerifiedCommunity,
       },
     }));
   }, []);
+
+  const prefetchUserProfile = useCallback(
+    async (userId, seedUser) => {
+      if (!userId) return null;
+      if (seedUser) cacheUser(seedUser);
+      const bundle = await getUserProfileBundle(userId);
+      if (bundle?.user) cacheUser(bundle.user);
+      return bundle;
+    },
+    [cacheUser]
+  );
 
   const getUserFromCache = useCallback(
     (userId) => {
@@ -765,9 +914,18 @@ export const AppProvider = ({ children }) => {
           ...(updates.isVerified !== undefined
             ? { isVerified: Boolean(updates.isVerified) }
             : {}),
+          ...(updates.isVerifiedCommunity !== undefined
+            ? { isVerifiedCommunity: Boolean(updates.isVerifiedCommunity) }
+            : {}),
           ...(updates.communityDescription !== undefined
             ? { communityDescription: updates.communityDescription }
             : {}),
+          ...(updates.accountType ? { accountType: updates.accountType } : {}),
+          ...(updates.userType ? { userType: updates.userType } : {}),
+          ...(updates.studentType ? { studentType: updates.studentType } : {}),
+          ...(updates.communityName ? { communityName: updates.communityName } : {}),
+          ...(updates.communityType ? { communityType: updates.communityType } : {}),
+          ...(updates.communityEmail ? { communityEmail: updates.communityEmail } : {}),
         },
       };
     });
@@ -1021,6 +1179,16 @@ export const AppProvider = ({ children }) => {
 
   useEffect(() => {
     activeChatIdRef.current = activeChatId;
+    if (typeof window === "undefined") return;
+    try {
+      if (activeChatId) {
+        localStorage.setItem("incampus:activeChatId", String(activeChatId));
+      } else {
+        localStorage.removeItem("incampus:activeChatId");
+      }
+    } catch {
+      // ignore storage errors
+    }
   }, [activeChatId]);
 
   useEffect(() => {
@@ -1468,6 +1636,7 @@ export const AppProvider = ({ children }) => {
     loadStories,
     loadNotifications,
     cacheUser,
+    prefetchUserProfile,
     updateCachedUser,
     updateAuthorProfile,
     getUserFromCache,
